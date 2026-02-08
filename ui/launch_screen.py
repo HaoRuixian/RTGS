@@ -1,180 +1,268 @@
-# ui/launch_screen.py
 from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-                             QPushButton, QLabel, QFrame, QSizePolicy)
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QColor, QPalette, QPixmap
+                             QPushButton, QLabel, QFrame, QSizePolicy, QGraphicsDropShadowEffect)
+from PySide6.QtCore import Qt, Signal, QSize
+from PySide6.QtGui import QFont, QColor, QPixmap, QPainter, QPen, QBrush, QIcon
+from PySide6.QtSvgWidgets import QSvgWidget
+from PySide6.QtSvg import QSvgRenderer
 from pathlib import Path
 
-from ui.style import get_app_stylesheet
+# --- SVG ---
+ICONS = {
+    # Monitoring
+    "monitoring": '''<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+    </svg>''',
+    
+    # Positioning
+    "positioning": '''<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        <circle cx="12" cy="10" r="2"/>
+    </svg>''',
+    
+    # Reflectometry
+    "reflectometry": '''<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 19h20" opacity="0.3"/> 
+        <path d="M3 5l9 11 9-11"/>
+        <path d="M12 16v5" stroke-dasharray="2 2"/>
+    </svg>''',
+    
+    # Refractometry
+    "refractometry": '''<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M2 8h20" opacity="0.2"/>
+        <path d="M2 16h20" opacity="0.2"/>
+        <path d="M5 3l4 5 2 8 5 5"/>
+    </svg>'''
+}
+WINDOW_ICON_SVG = '''
+<svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="12" cy="12" r="3" fill="#00A0FF"/>
+    <path d="M12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22" stroke="#00A0FF" stroke-width="2" stroke-linecap="round" opacity="0.3"/>
+    <path d="M12 5C15.866 5 19 8.13401 19 12C19 15.866 15.866 19 12 19" stroke="#00A0FF" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
+    <path d="M12 8C14.2091 8 16 9.79086 16 12C16 14.2091 14.2091 16 12 16" stroke="#00A0FF" stroke-width="2" stroke-linecap="round"/>
+</svg>
+'''
 
-
-class LaunchScreen(QMainWindow):
-    """
-    launch screen for module selection.
-    """
-    module_selected = Signal(str)
-
-    def __init__(self):
+class ModuleCard(QPushButton):
+    def __init__(self, title, description, icon_key, accent_color="#2196F3"):
         super().__init__()
-        self.setWindowTitle("GNSS RT Monitor - Launch")
-        self.resize(1000, 640)
-        self.setup_ui()
-        self.apply_stylesheet()
-
-    def setup_ui(self):
-        self.setStyleSheet(get_app_stylesheet())
+        self.setFixedSize(520, 120)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         
-        central = QWidget()
-        self.setCentralWidget(central)
-        main_layout = QHBoxLayout(central)
-        main_layout.setContentsMargins(24, 24, 24, 24)
-        main_layout.setSpacing(20)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(25, 20, 25, 20)
+        layout.setSpacing(20)
 
-        # Left panel: application info / branding
-        left_panel = QFrame()
-        left_panel.setFixedWidth(360)
-        left_panel.setStyleSheet("background: transparent;")
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(8, 8, 8, 8)
-        left_layout.setSpacing(12)
-
-        app_title = QLabel("GNSS RT Monitor")
-        app_title.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
-        app_title.setStyleSheet("color: #263238;")
-        left_layout.addWidget(app_title)
-
-        subtitle = QLabel("Real-time GNSS Processing and Geological applications")
-        subtitle.setWordWrap(True)
-        subtitle.setFont(QFont("Segoe UI", 10))
-        subtitle.setStyleSheet("color: #455A64;")
-        left_layout.addWidget(subtitle)
-
-        left_layout.addSpacing(8)
-
-        description = QLabel(
-            "A professional-grade system for real-time GNSS monitoring,\n"
-            "signal quality assessment, and reflectometry analysis.\n"
-            "Designed for research and engineering workflows."
-        )
-        description.setWordWrap(True)
-        description.setFont(QFont("Segoe UI", 9))
-        description.setStyleSheet("color: #607D8B;")
-        left_layout.addWidget(description)
-
-        left_layout.addSpacing(12)
-
-        # Add image in the middle of left panel
-        image_label = QLabel()
-        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # 左侧图标 (使用 QSvgWidget)
+        self.icon_widget = QSvgWidget()
+        self.icon_widget.setFixedSize(45, 45)
+        # 将 SVG 字符串中的颜色替换为当前主题色
+        svg_data = ICONS[icon_key].format(color=accent_color)
+        self.icon_widget.load(svg_data.encode('utf-8'))
         
-        # Try to load image - adjust path as needed
-        image_path = Path(__file__).parent.parent / "assets" / "logo.png"
-        if image_path.exists():
-            pixmap = QPixmap(str(image_path))
-            # Scale image to fit (max 280x200)
-            scaled_pixmap = pixmap.scaledToWidth(280, Qt.TransformationMode.SmoothTransformation)
-            image_label.setPixmap(scaled_pixmap)
-        else:
-            # Placeholder if image not found
-            image_label.setText("GNSS Logo\n(Place logo.png in assets folder)")
-            image_label.setStyleSheet("color: #90A4AE; font-style: italic;")
+        # 图标容器（带圆角背景）
+        icon_bg = QFrame()
+        icon_bg.setFixedSize(70, 70)
+        icon_bg.setStyleSheet(f"background-color: {accent_color}10; border-radius: 15px;")
+        icon_bg_layout = QVBoxLayout(icon_bg)
+        icon_bg_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_bg_layout.addWidget(self.icon_widget)
+        layout.addWidget(icon_bg)
+
+        # 文字区
+        text_layout = QVBoxLayout()
+        text_layout.setSpacing(5)
+        text_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         
-        left_layout.addWidget(image_label)
+        self.title_label = QLabel(title)
+        self.title_label.setStyleSheet("font-size: 17px; font-weight: 700; color: #263238; background: transparent;")
+        
+        self.desc_label = QLabel(description)
+        self.desc_label.setWordWrap(True)
+        self.desc_label.setStyleSheet("font-size: 12px; color: #546E7A; background: transparent; line-height: 140%;")
+        
+        text_layout.addWidget(self.title_label)
+        text_layout.addWidget(self.desc_label)
+        layout.addLayout(text_layout)
+        
+        self.accent_color = accent_color
+        self._set_style(False)
 
-        left_layout.addStretch()
+        # 阴影
+        self.shadow = QGraphicsDropShadowEffect(self)
+        self.shadow.setBlurRadius(20)
+        self.shadow.setXOffset(0)
+        self.shadow.setYOffset(6)
+        self.shadow.setColor(QColor(0, 0, 0, 25))
+        self.setGraphicsEffect(self.shadow)
 
-        version = QLabel("Version 0.1")
-        version.setFont(QFont("Segoe UI", 9))
-        version.setStyleSheet("color: #90A4AE;")
-        left_layout.addWidget(version)
-
-        copyright = QLabel("© 2026 Ruixian Hao. All rights reserved.")
-        copyright.setFont(QFont("Segoe UI", 9))
-        copyright.setStyleSheet("color: #90A4AE;")
-        left_layout.addWidget(copyright)
-
-        main_layout.addWidget(left_panel)
-
-        # ====== Right panel: module selection ======
-        right_panel  = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(18)
-
-        accent = "#1E88E5"
-
-        self.monitoring_btn = self._make_card_button(
-            "Monitoring",
-            "Real-time GNSS signal monitoring, SNR plots and satellite tables.",
-            accent
-        )
-        self.positioning_btn = self._make_card_button(
-            "Positioning",
-            "Real-time positioning, accuracy metrics and trajectory logging.",
-            accent
-        )
-        self.reflectometry_btn = self._make_card_button(
-            "Reflectometry",
-            "Interferogram and spectral analysis for surface reflection studies.",
-            accent
-        )
-        self.refractometry_btn = self._make_card_button(
-            "Refractometry",
-            "Real-time tropospheric and ionospheric parameter estimation.",
-            accent
-        )
-
-        right_layout.addWidget(self.monitoring_btn)
-        right_layout.addWidget(self.positioning_btn)
-        right_layout.addWidget(self.reflectometry_btn)
-        right_layout.addWidget(self.refractometry_btn)
-        right_layout.addStretch()
-
-        main_layout.addWidget(right_panel)
-
-        # Connections
-        self.monitoring_btn.clicked.connect(lambda: self.module_selected.emit('monitoring'))
-        self.positioning_btn.clicked.connect(lambda: self.module_selected.emit('positioning'))
-        self.reflectometry_btn.clicked.connect(lambda: self.module_selected.emit('reflectometry'))
-        self.refractometry_btn.clicked.connect(lambda: self.module_selected.emit('refractometry'))
-
-    def _make_card_button(self, title: str, subtitle: str, color: str) -> QPushButton:
-        btn = QPushButton()
-        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        btn.setMinimumHeight(120)
-        btn.setCursor(Qt.CursorShape.PointingHandCursor)
-
-        btn.setStyleSheet(f"""
+    def _set_style(self, hovered):
+        border_color = self.accent_color if hovered else "#ECEFF1"
+        bg_color = "#FFFFFF" if not hovered else "#FAFDFF"
+        self.setStyleSheet(f"""
             QPushButton {{
-                background-color: #FFFFFF;
-                border: 1px solid #CFD8DC;
-                border-radius: 8px;
-                padding: 14px;
+                background-color: {bg_color};
+                border: 1px solid {border_color};
+                border-radius: 16px;
                 text-align: left;
-            }}
-            QPushButton:hover {{
-                border: 1px solid {color};
-            }}
-            QPushButton:pressed {{
-                background-color: #ECEFF1;
             }}
         """)
 
-        layout = QVBoxLayout(btn)
-        layout.setContentsMargins(6, 2, 6, 2)
+    def enterEvent(self, event):
+        self._set_style(True)
+        super().enterEvent(event)
 
-        title_lbl = QLabel(title)
-        title_lbl.setFont(QFont("Segoe UI", 12, QFont.Weight.DemiBold))
-        title_lbl.setStyleSheet("color: #263238;")
-        layout.addWidget(title_lbl)
+    def leaveEvent(self, event):
+        self._set_style(False)
+        super().leaveEvent(event)
 
-        sub_lbl = QLabel(subtitle)
-        sub_lbl.setWordWrap(True)
-        sub_lbl.setFont(QFont("Segoe UI", 9))
-        sub_lbl.setStyleSheet("color: #607D8B;")
-        layout.addWidget(sub_lbl)
 
-        return btn
+class LaunchScreen(QMainWindow):
+    module_selected = Signal(str)
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("RTGS - Launch")
+        self.resize(1100, 720)
+        self.setStyleSheet("background-color: #F8F9FA;")
+        self.set_window_icon(WINDOW_ICON_SVG)
+        
+        self.setStyleSheet("background-color: #F8F9FA;")
+        self.setup_ui()
 
-    def apply_stylesheet(self):
-        self.setStyleSheet(get_app_stylesheet())
+    def set_window_icon(self, svg_str):
+        """将 SVG 字符串转换为窗口图标"""
+        renderer = QSvgRenderer(svg_str.encode('utf-8'))
+        
+        # 创建一个 256x256 的高清 Pixmap
+        pixmap = QPixmap(256, 256)
+        pixmap.fill(Qt.GlobalColor.transparent) # 设置背景透明
+        
+        painter = QPainter(pixmap)
+        renderer.render(painter)
+        painter.end()
+        
+        # 设置为窗口图标
+        self.setWindowIcon(QIcon(pixmap))
+        
+        # 如果是 Windows 系统，还需要设置 App User Model ID 才能在任务栏显示独立图标
+        import ctypes
+        myappid = 'mycompany.myproduct.subproduct.version' # 随便起个唯一名字
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+
+
+    def setup_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # --- 左侧品牌面板 ---
+        left_panel = QFrame()
+        left_panel.setFixedWidth(380)
+        left_panel.setStyleSheet("""
+            QFrame {
+                background-color: #1A1C1E; 
+                border-right: 1px solid #2C2E30;
+            }
+            QLabel { color: #E3E2E6; background: transparent; }
+        """)
+        
+        left_layout = QVBoxLayout(left_panel)
+        # 增加边距，特别是顶部边距，让内容沉下来
+        left_layout.setContentsMargins(50, 80, 50, 50)
+        left_layout.setSpacing(0) # 间距通过 addSpacing 精确控制
+        
+        # 1. 标题区
+        app_title = QLabel("RTGS")
+        app_title.setFont(QFont("Segoe UI", 42, QFont.Weight.Bold))
+        app_title.setStyleSheet("color: #FFFFFF; letter-spacing: 3px;")
+        left_layout.addWidget(app_title)
+
+        left_layout.addSpacing(5) # 精确控制标题和副标题间距
+
+        subtitle = QLabel("Real-Time GNSS Studio")
+        subtitle.setFont(QFont("Segoe UI", 14, QFont.Weight.Light))
+        subtitle.setStyleSheet("color: #00A0FF;") # 赋予一个主题色，更有活力
+        left_layout.addWidget(subtitle)
+
+        left_layout.addSpacing(30)
+        
+        # 装饰线
+        line = QFrame()
+        line.setFixedWidth(40)
+        line.setFixedHeight(3)
+        line.setStyleSheet("background-color: #00A0FF; border-radius: 1px;")
+        left_layout.addWidget(line)
+
+        left_layout.addSpacing(30)
+
+        # 2. 描述区
+        desc = QLabel(
+            "Professional-grade suite for multi-constellation "
+            "GNSS data processing, signal analysis, and "
+            "atmospheric research."
+        )
+        desc.setWordWrap(True)
+        desc.setFont(QFont("Segoe UI", 11))
+        desc.setStyleSheet("color: #A8AAB2; line-height: 160%;")
+        left_layout.addWidget(desc)
+
+        left_layout.addSpacing(25)
+
+        # 作者信息
+        author_label = QLabel("Developer: Ruixian Hao\nEmail: vitamin_n@outlook.com")
+        author_label.setFont(QFont("Segoe UI", 9, QFont.Weight.DemiBold))
+        author_label.setStyleSheet("color: #E3E2E6;")
+        left_layout.addWidget(author_label)
+
+        # 伸缩空间：将后面的内容推到底部
+        left_layout.addStretch()
+
+        # 3. 底部信息区 (版本与版权)
+        # 版本号
+        version_info = QLabel("VERSION 0.1.0-ALPHA")
+        version_info.setFont(QFont("Consolas", 9)) # 使用等宽字体更有极客感
+        version_info.setStyleSheet("color: #44474E; letter-spacing: 1px;")
+        left_layout.addWidget(version_info)
+        
+        left_layout.addSpacing(8)
+
+        # 版权声明
+        copyright_info = QLabel("© 2026 Ruixian Hao.\nAll Rights Reserved.")
+        copyright_info.setWordWrap(True)
+        copyright_info.setFont(QFont("Segoe UI", 8))
+        copyright_info.setStyleSheet("color: #44474E; line-height: 130%;")
+        left_layout.addWidget(copyright_info)
+        
+        main_layout.addWidget(left_panel)
+        
+
+        # --- 右侧功能区 ---
+        right_container = QWidget()
+        right_layout = QVBoxLayout(right_container)
+        right_layout.setContentsMargins(60, 0, 60, 0)
+        right_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        header_text = QLabel("Select Workbench")
+        header_text.setStyleSheet("font-size: 22px; font-weight: 600; color: #1A1C1E; margin-bottom: 30px;")
+        right_layout.addWidget(header_text)
+
+
+        modules = [
+            ("monitoring", "Signal Quality Monitoring", 
+             "Real-time observation of SNR/CNR, constellation health.", "#0064D2"),
+            ("positioning", "Precise Positioning", 
+             "High-precision RTK/PPP solutions with multi-frequency fusion.", "#0064D2"),
+            ("reflectometry", "GNSS-Reflectometry", 
+             "Analysis of surface-reflected signals for environmental sensing.", "#0064D2"),
+            ("refractometry", "GNSS-Refractometry", 
+             "Tropospheric and ionospheric delay modeling and ZTD estimation.", "#0064D2")
+        ]
+
+        for mod_id, title, desc, color in modules:
+            btn = ModuleCard(title, desc, mod_id, color)
+            btn.clicked.connect(lambda chk, m=mod_id: self.module_selected.emit(m))
+            right_layout.addWidget(btn)
+            right_layout.addSpacing(15)
+
+        main_layout.addWidget(right_container)

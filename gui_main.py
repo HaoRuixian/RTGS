@@ -1,7 +1,21 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
+==========================
 RTGS - RealTimeGNSS Studio
-Main GUI Application Entry Point
+==========================
+
+Main GUI Application for RTGS (Real-Time GNSS Studio).
+
+Author:  RuixianHao
+Date:    2026-02-08
+Email:   vitamin_n@outlook.com
+
+Copyright
+© RuixianHao. All rights reserved.
+
+Created for research and engineering purposes in the field of
+real-time GNSS data processing and analysis.
 """
 
 import sys

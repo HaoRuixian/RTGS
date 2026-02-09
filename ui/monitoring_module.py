@@ -318,7 +318,7 @@ class MonitoringModule(QMainWindow):
 
         headers = [
             "PRN", "Sys", "El(°)", "Az(°)", "Freq",
-            "SNR", "Pseudorange (m)", "Phase (cyc)"
+            "SNR (dBHz)", "Pseudorange (m)", "Phase (cyc)", "Doppler (Hz)"
         ]
 
         for tab_name in self.table_groups:
@@ -332,6 +332,7 @@ class MonitoringModule(QMainWindow):
             header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
             header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
             header.setSectionResizeMode(7, QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(8, QHeaderView.ResizeMode.Stretch)
 
             table.verticalHeader().setVisible(False)
 
@@ -672,6 +673,7 @@ class MonitoringModule(QMainWindow):
                     snr = getattr(sig, 'snr', 0)
                     if snr == 0: 
                         continue  # Skip invalid/zero SNR signals
+                    doppler = getattr(sig, 'doppler', 0)
                     
                     # Get pseudorange and phase (may be None/zero if not available)
                     pr = getattr(sig, 'pseudorange', 0)
@@ -690,7 +692,8 @@ class MonitoringModule(QMainWindow):
                         code,                           # Signal code (1C, 5Q, 2W, etc)
                         f"{snr:.1f}",                   # SNR [dB-Hz]
                         pr_str,                         # Pseudorange [meters]
-                        ph_str                          # Phase [cycles]
+                        ph_str,                         # Phase [cycles]
+                        f"{doppler:.3f}",               # Doppler [Hz]
                     ]
 
                     # Step 9: Add row to applicable tables based on constellation filter

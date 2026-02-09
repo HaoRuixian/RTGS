@@ -547,7 +547,7 @@ class LoggingThread(threading.Thread):
                         writer.writerow(fields)
                 elif format_type == 'rinex':
                     # RINEX-like simplified header with metadata
-                    current_file.write("# RINEX3-like simplified log\n")
+                    current_file.write("# RINEX3 (not support now)\n")
                     current_file.write(f"# Mountpoint: {mount}\n")
                     current_file.write(f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
                     current_file.write("# Fields: " + ",".join(fields) + "\n")
@@ -696,6 +696,7 @@ class LoggingThread(threading.Thread):
                     snr = getattr(sig, 'snr', 0) or 0
                     pr = getattr(sig, 'pseudorange', None)
                     ph = getattr(sig, 'phase', None)
+                    doppler = getattr(sig, 'doppler', 0) or 0
                     
                     # Build value map for flexible field selection
                     valmap = {
@@ -704,9 +705,10 @@ class LoggingThread(threading.Thread):
                         'El(°)': f"{el:.1f}",
                         'Az(°)': f"{az:.1f}",
                         'Freq': code,
-                        'SNR': f"{snr:.1f}",
+                        'SNR (dBHz)': f"{snr:.1f}",
                         'Pseudorange (m)': f"{(pr if pr is not None else '')}",
-                        'Phase (cyc)': f"{(ph if ph is not None else '')}"
+                        'Phase (cyc)': f"{(ph if ph is not None else '')}",
+                        'Doppler (Hz)': f"{doppler:.3f}"
                     }
                     
                     row = [valmap.get(f, '') for f in fields]

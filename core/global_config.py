@@ -48,6 +48,13 @@ class GlobalConfig:
     
     # GNSS system filters (G=GPS, R=GLONASS, E=Galileo, C=Beidou)
     target_systems: List[str] = field(default_factory=lambda: ['G', 'R', 'E', 'C'])
+    # Positioning related settings (SPP/PPP/RTK parameters)
+    positioning_settings: dict = field(default_factory=lambda: {
+        'cutoff_elevation_deg': 10.0,
+        'weight_mode': 'elevation',  # or 'snr'
+        'random_walk': 0.0,
+        'smoothing_window': 0
+    })
     
     def get_connection_settings(self, stream_type: str) -> ConnectionSettings:
         """
@@ -90,6 +97,18 @@ class GlobalConfig:
         for key, value in settings.items():
             if hasattr(self, key):
                 setattr(self, key, value)
+
+    def get_positioning_settings(self) -> Dict[str, Any]:
+        """Return the positioning settings dictionary."""
+        return self.positioning_settings
+
+    def update_positioning_settings(self, settings: Dict[str, Any]) -> None:
+        """Update positioning-related settings.
+
+        Only keys present in the provided dict will be updated.
+        """
+        for key, value in settings.items():
+            self.positioning_settings[key] = value
 
 
 # Create a singleton instance of GlobalConfig that can be imported and used globally
@@ -138,3 +157,13 @@ def update_general_settings(settings: Dict[str, Any]) -> None:
         settings: Dictionary containing the general settings to update
     """
     global_config.update_general_settings(settings)
+
+
+def get_positioning_settings() -> Dict[str, Any]:
+    """Convenience function to get positioning settings."""
+    return global_config.get_positioning_settings()
+
+
+def update_positioning_settings(settings: Dict[str, Any]) -> None:
+    """Convenience function to update positioning settings."""
+    global_config.update_positioning_settings(settings)

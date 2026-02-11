@@ -151,7 +151,7 @@ class LogSettingsDialog(QDialog):
         
         self.fields_list = QListWidget()
         self.fields_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
-        default_fields = ["PRN", "Sys", "El(°)", "Az(°)", "Freq", "SNR (dBHz)", "Pseudorange (m)", "Phase (cyc)", "Doppler (Hz)"]
+        default_fields = ["UTC Time", "PRN", "Sys", "El(°)", "Az(°)", "Freq", "SNR (dBHz)", "Pseudorange (m)", "Phase (cyc)", "Doppler (Hz)"]
         for f in default_fields:
             item = QListWidgetItem(f)
             self.fields_list.addItem(item)

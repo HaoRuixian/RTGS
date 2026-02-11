@@ -320,6 +320,10 @@ class DataProcessingThread(threading.Thread):
         self.eph_count = 0
         self.last_log_time = time.time()
         self.first_epoch = True
+        # Pending partial epoch merging: gps_time -> {'epoch': EpochObservation, 'last_update': time.time()}
+        self.pending_epochs = {}
+        # Merge timeout in seconds: wait this long for additional system messages for same epoch
+        self.EPOCH_MERGE_TIMEOUT = 0.15
         
     def run(self):
         """
@@ -362,19 +366,44 @@ class DataProcessingThread(threading.Thread):
                 # Step 3: Process RTCM message through handler
                 # Handler manages ephemeris caching and emits EpochObservation when all satellites for epoch are received
                 epoch_data = self.handler.process_message(msg)
-                
-                # Step 4: If epoch complete (all satellites for time instant), emit epoch signal to UI
+
+                # Step 4: If handler returned an EpochObservation, merge by gps_time
                 if epoch_data:
+                    key = float(getattr(epoch_data, 'gps_time', 0.0))
+                    nowt = time.time()
+                    if key in self.pending_epochs:
+                        # Merge satellites and signals into pending epoch
+                        pending = self.pending_epochs[key]
+                        existing = pending['epoch']
+                        # Merge satellite dictionaries (overwrite/extend)
+                        for sat_k, sat_v in epoch_data.satellites.items():
+                            existing.satellites[sat_k] = sat_v
+                        pending['last_update'] = nowt
+                    else:
+                        # New pending epoch
+                        self.pending_epochs[key] = {'epoch': epoch_data, 'last_update': nowt}
+
+                # Emit pending epochs that have not been updated recently (merge timeout)
+                to_emit = []
+                tnow = time.time()
+                for k, info in list(self.pending_epochs.items()):
+                    if tnow - info['last_update'] >= self.EPOCH_MERGE_TIMEOUT:
+                        to_emit.append(k)
+
+                for k in to_emit:
+                    info = self.pending_epochs.pop(k, None)
+                    if info is None: continue
+                    epoch_out = info['epoch']
                     self.epoch_count += 1
                     if self.first_epoch:
-                        # Log summary of first received epoch
-                        n_sats = len(epoch_data.satellites)
-                        n_sigs = sum(len(sat.signals) for sat in epoch_data.satellites.values())
+                        n_sats = len(epoch_out.satellites)
+                        n_sigs = sum(len(sat.signals) for sat in epoch_out.satellites.values())
                         self.signals.log_signal.emit(
-                            f"[{self.name}] First epoch received: {n_sats} satellites, {n_sigs} signals"
+                            f"[{self.name}] First epoch received (merged): {n_sats} satellites, {n_sigs} signals"
                         )
                         self.first_epoch = False
-                    self.signals.epoch_signal.emit(epoch_data)
+                    # Emit merged epoch
+                    self.signals.epoch_signal.emit(epoch_out)
                 
                 # Step 5: Periodic statistics output every 30 seconds
                 now = time.time()
@@ -424,7 +453,7 @@ class LoggingThread(threading.Thread):
     - Real-time status reporting
     """
     
-    def __init__(self, settings: dict, ring_buffers: dict, merged_satellites: dict, signals: StreamSignals, logging_buffer: RingBuffer = None):
+    def __init__(self, settings: dict, ring_buffers: dict, merged_satellites: dict, signals: StreamSignals, logging_buffer: RingBuffer = None, get_latest_epoch=None):
         """
         Initialize logging thread.
         
@@ -439,6 +468,7 @@ class LoggingThread(threading.Thread):
             merged_satellites: dict reference to monitoring_module's merged_satellites
             signals: StreamSignals instance for emitting log messages
             logging_buffer: RingBuffer专用的logging缓冲区（Binary格式时使用）
+            get_latest_epoch: Optional callable that returns the latest EpochObservation
         """
         super().__init__()
         self.settings = settings
@@ -446,6 +476,7 @@ class LoggingThread(threading.Thread):
         self.merged_satellites = merged_satellites
         self.signals = signals
         self.logging_buffer = logging_buffer
+        self.get_latest_epoch = get_latest_epoch
         self.daemon = True
         self.running = True
         self.stop_event = threading.Event()
@@ -675,6 +706,17 @@ class LoggingThread(threading.Thread):
             # Get snapshot of current satellite data
             snapshot = dict(self.merged_satellites)
             
+            # Get latest epoch data for UTC time
+            epoch_data = None
+            utc_datetime = None
+            if self.get_latest_epoch:
+                epoch_data = self.get_latest_epoch()
+                if epoch_data:
+                    utc_datetime = getattr(epoch_data, 'utc_datetime', None)
+            
+            # Format UTC time string: YYYY-MM-DD HH:MM:SS
+            utc_time_str = utc_datetime.strftime('%Y-%m-%d %H:%M:%S') if utc_datetime else ''
+            
             rows = []
             sys_map = {'G': 'GPS', 'R': 'GLO', 'E': 'GAL', 'C': 'BDS', 'J': 'QZS', 'S': 'SBS'}
             
@@ -699,7 +741,9 @@ class LoggingThread(threading.Thread):
                     doppler = getattr(sig, 'doppler', 0) or 0
                     
                     # Build value map for flexible field selection
+                    # Include UTC time fields
                     valmap = {
+                        'UTC Time': utc_time_str,
                         'PRN': key,
                         'Sys': sys_map.get(sys_char, sys_char),
                         'El(°)': f"{el:.1f}",

@@ -728,8 +728,9 @@ class GNSSMonitorWindow(QMainWindow):
         self.sat_history.clear()
         self.signals.log_signal.emit("Cleared data cache")
         
-        # 创建共享的RTCM处理器
-        self.handler = RTCMHandler()
+        # 创建（或获取）共享的RTCM处理器
+        from core.rtcm_handler import get_shared_handler
+        self.handler = get_shared_handler()
         
         # 为OBS流创建多线程管线
         if self.settings['OBS']['host']:

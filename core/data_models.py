@@ -3,6 +3,7 @@ Data models for storing GNSS observations and satellite states.
 """
 from dataclasses import dataclass, field
 from typing import Dict, Optional
+from datetime import datetime
 
 @dataclass
 class SignalData:
@@ -40,3 +41,4 @@ class EpochObservation:
     """
     gps_time: float       # GPS Time of Week (seconds)
     satellites: Dict[str, SatelliteState] = field(default_factory=dict)
+    utc_datetime: Optional[datetime] = None  # Absolute UTC time (year, month, day, hour, minute, second)

@@ -4,7 +4,7 @@ Adapted for pyrtcm's flattened attribute structure.
 """
 import numpy as np
 from core.data_models import EpochObservation, SatelliteState, SignalData
-from datetime import datetime, timedelta, timezone
+from core.gnss_time import GNSSTime
 from core.geo_utils import calculate_az_el, get_freq
 import core.BE2pos as BE2pos 
 from core.global_config import get_global_config, update_general_settings
@@ -15,6 +15,9 @@ class RTCMHandler:
     def __init__(self):
         self.ephemeris_cache = {} 
         self.lock = threading.Lock()
+        self.last_gps_week = None  # Track GPS week for continuity
+
+    # Time conversions delegated to core.gnss_time.GNSSTime
 
     def process_message(self, msg):
         """
@@ -185,8 +188,8 @@ class RTCMHandler:
             eph = {
                 'SatType': 'GLO',
                 'PRN': prn,
-                'Tb': tb_seconds+ self.gps_day_of_week() * 24*3600,      # Time of ephemeris (seconds within day)
-                'tk': tk_seconds+ self.gps_day_of_week() * 24*3600,      # Time within frame
+                'Tb': tb_seconds + GNSSTime.gps_day_of_week() * 24*3600,      # Time of ephemeris (seconds within day)
+                'tk': tk_seconds + GNSSTime.gps_day_of_week() * 24*3600,      # Time within frame
                 'FreqChannel': freq_chn, 
                 
                 # Position in km
@@ -320,8 +323,13 @@ class RTCMHandler:
                 return None
             epoch_time = getattr(msg, time_attr) / 1000.0
             if sys_id == 'R': # GLONASS is time of day
-                epoch_time = epoch_time - 3*60*60 + self.gps_day_of_week() * 24*3600
-            epoch_data = EpochObservation(gps_time=epoch_time)
+                epoch_time = epoch_time - 3*60*60 + GNSSTime.gps_day_of_week() * 24*3600
+            
+            # Calculate UTC datetime from GPS time using GNSSTime
+            gps_weeks = GNSSTime.current_gps_week()
+            utc_datetime = GNSSTime.gps_to_utc_datetime(gps_weeks, epoch_time)
+            
+            epoch_data = EpochObservation(gps_time=epoch_time, utc_datetime=utc_datetime)
 
             # ------------------------------ Cell Parsing -------------------------------
             cell_prn_map = {}
@@ -455,13 +463,17 @@ class RTCMHandler:
 
             return epoch_data
 
-    def gps_day_of_week(self):
-        utc = datetime.utcnow().replace(tzinfo=timezone.utc)
-        gpst = utc + timedelta(seconds=18)
-        
-        gps_epoch = datetime(1980, 1, 6, tzinfo=timezone.utc)
-        
-        delta_days = (gpst - gps_epoch).days
-        gdow = delta_days % 7
 
-        return gdow
+# Shared singleton factory for modules that need a common RTCMHandler
+_shared_rtcm_handler = None
+
+def get_shared_handler():
+    """Return a shared RTCMHandler instance (singleton).
+
+    Use this to ensure ephemeris cache and parsing state are shared across
+    monitoring/positioning/logging modules when they run together.
+    """
+    global _shared_rtcm_handler
+    if _shared_rtcm_handler is None:
+        _shared_rtcm_handler = RTCMHandler()
+    return _shared_rtcm_handler

@@ -146,6 +146,7 @@ class MonitoringModule(QMainWindow):
         }
         self.logging_active = False
         self.logging_thread = None
+        self.latest_epoch_data = None  # Store latest EpochObservation for logging and positioning
         
         # Step 7: Build UI layout
         self.setup_ui()
@@ -455,15 +456,19 @@ class MonitoringModule(QMainWindow):
         Handle incoming epoch from DataProcessingThread and update UI.
         
         Procedure:
-        1. Extract epoch timestamp and satellite count
-        2. Merge epoch satellites into merged_satellites dict (maintains current state)
-        3. Update satellite history (elevation, SNR time series for analysis tab)
-        4. Apply GUI update throttling: only refresh if enough time has elapsed
-        5. Log periodic statistics (every 5 seconds)
+        1. Store latest epoch data for logging and positioning modules
+        2. Extract epoch timestamp and satellite count
+        3. Merge epoch satellites into merged_satellites dict (maintains current state)
+        4. Update satellite history (elevation, SNR time series for analysis tab)
+        5. Apply GUI update throttling: only refresh if enough time has elapsed
+        6. Log periodic statistics (every 5 seconds)
         
         Thread safety: Runs in UI thread (slot callback), safe to update widgets.
         Throttling: Limits full widget refresh to 3-5 Hz to avoid excessive redrawing.
         """
+        # Step 0: Store latest epoch data
+        self.latest_epoch_data = epoch_data
+        
         now = time.time()
         current_dt = datetime.now()
         n_sats = len(epoch_data.satellites)
@@ -944,7 +949,8 @@ class MonitoringModule(QMainWindow):
             ring_buffers=self.ring_buffers,
             merged_satellites=self.merged_satellites,
             signals=self.signals,
-            logging_buffer=self.logging_buffer_ref
+            logging_buffer=self.logging_buffer_ref,
+            get_latest_epoch=lambda: self.latest_epoch_data
         )
         self.logging_active = True
         self.logging_thread.start()
@@ -1054,10 +1060,11 @@ class MonitoringModule(QMainWindow):
         self.sat_history.clear()
         self.signals.log_signal.emit("Cleared data cache")
         
-        # Step 6: Create fresh RTCMHandler instance
+        # Step 6: Use shared RTCMHandler instance
         # Handler manages ephemeris caching and message parsing
-        # Each restart gets a new handler (ephemeris cache resets)
-        self.handler = RTCMHandler()
+        # Use shared handler so other modules (positioning, logging) see same ephemeris
+        from core.rtcm_handler import get_shared_handler
+        self.handler = get_shared_handler()
         
         # Step 7: Initialize OBS (Observation) stream thread pipeline
         # OBS streams provide raw observations (pseudorange, phase, SNR)

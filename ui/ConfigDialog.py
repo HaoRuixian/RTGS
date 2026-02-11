@@ -12,6 +12,8 @@ class ConfigDialog(QDialog):
         self.setWindowTitle("Data Source Settings")
         self.resize(500, 800)  # Reduced default height
         self.settings = initial_settings or {}
+        # Flag set when user clicked Connect (auto-connect requested)
+        self.auto_connect = False
         self.setMinimumSize(450, 500)  # Reduced minimum size
         self.init_ui()
 
@@ -221,7 +223,8 @@ class ConfigDialog(QDialog):
         save_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
         if not save_icon.isNull():
             b_save.setIcon(save_icon)
-        b_save.clicked.connect(self.accept)
+        # When Connect is clicked, mark auto_connect and accept dialog
+        b_save.clicked.connect(self.on_connect)
         btns.addWidget(b_load)
         btns.addStretch()
         btns.addWidget(b_save)
@@ -288,6 +291,11 @@ class ConfigDialog(QDialog):
             return [port.device for port in serial.tools.list_ports.comports()]
         except:
             return ["COM1", "COM2", "COM3"]
+
+    def on_connect(self):
+        """User pressed Connect: mark auto_connect and accept dialog."""
+        self.auto_connect = True
+        self.accept()
 
     def load_file(self):
         f, _ = QFileDialog.getOpenFileName(self, "Select Config", "", "Python (*.py)")

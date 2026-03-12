@@ -142,7 +142,7 @@ class LogSettingsDialog(QDialog):
         h_radio.addWidget(self.radio_rinex)
         format_vbox.addLayout(h_radio)
 
-        # 字段列表
+        # CSV字段列表
         self.fields_container = QWidget()
         fields_vbox = QVBoxLayout(self.fields_container)
         fields_vbox.setContentsMargins(0, 5, 0, 0)
@@ -160,6 +160,54 @@ class LogSettingsDialog(QDialog):
         fields_vbox.addWidget(self.fields_label)
         fields_vbox.addWidget(self.fields_list)
         format_vbox.addWidget(self.fields_container)
+        
+        # RINEX配置容器
+        self.rinex_container = QWidget()
+        rinex_vbox = QVBoxLayout(self.rinex_container)
+        rinex_vbox.setContentsMargins(0, 5, 0, 0)
+        rinex_vbox.setSpacing(12)
+        
+        # RINEX参数配置
+        rinex_form = QFormLayout()
+        
+        self.station_code_input = QLineEdit()
+        self.station_code_input.setMaxLength(4)
+        self.station_code_input.setPlaceholderText("e.g., SCOA")
+        self.station_code_input.setText("RTGS")
+        rinex_form.addRow("Station Code (4 chars):", self.station_code_input)
+        
+        self.receiver_number_input = QLineEdit()
+        self.receiver_number_input.setMaxLength(2)
+        self.receiver_number_input.setPlaceholderText("e.g., 00")
+        self.receiver_number_input.setText("00")
+        rinex_form.addRow("Receiver No. (2 chars):", self.receiver_number_input)
+        
+        self.country_code_input = QLineEdit()
+        self.country_code_input.setMaxLength(3)
+        self.country_code_input.setPlaceholderText("e.g., CHN, FRA")
+        self.country_code_input.setText("CHN")
+        rinex_form.addRow("Country Code (3 chars):", self.country_code_input)
+        
+        self.period_input = QLineEdit()
+        self.period_input.setMaxLength(3)
+        self.period_input.setPlaceholderText("e.g., 01D, 01H")
+        self.period_input.setText("01D")
+        rinex_form.addRow("Period (e.g., 01D):", self.period_input)
+        
+        self.interval_input = QLineEdit()
+        self.interval_input.setMaxLength(3)
+        self.interval_input.setPlaceholderText("e.g., 30S, 1S")
+        self.interval_input.setText("30S")
+        rinex_form.addRow("Interval (e.g., 30S):", self.interval_input)
+        
+        self.datatype_input = QLineEdit()
+        self.datatype_input.setMaxLength(2)
+        self.datatype_input.setPlaceholderText("e.g., MO")
+        self.datatype_input.setText("MO")
+        rinex_form.addRow("Data Type:", self.datatype_input)
+        
+        rinex_vbox.addLayout(rinex_form)
+        format_vbox.addWidget(self.rinex_container)
         
         format_group.setLayout(format_vbox)
         self.main_layout.addWidget(format_group)
@@ -195,6 +243,8 @@ class LogSettingsDialog(QDialog):
 
         # 信号连接
         self.radio_csv.toggled.connect(self.on_format_changed)
+        self.radio_binary.toggled.connect(self.on_format_changed)
+        self.radio_rinex.toggled.connect(self.on_format_changed)
         
         # 初始化状态
         self.radio_csv.setChecked(True)
@@ -202,9 +252,12 @@ class LogSettingsDialog(QDialog):
         self.update_recording_state()
 
     def on_format_changed(self):
-        """显示或隐藏字段选择器并平滑调整窗口高度"""
+        """显示或隐藏字段选择器和RINEX配置面板"""
         is_csv = self.radio_csv.isChecked()
+        is_rinex = self.radio_rinex.isChecked()
+        
         self.fields_container.setVisible(is_csv)
+        self.rinex_container.setVisible(is_rinex)
         self.adjustSize()
 
     def browse(self):
@@ -262,6 +315,12 @@ class LogSettingsDialog(QDialog):
         self.radio_binary.setEnabled(enabled)
         self.radio_rinex.setEnabled(enabled)
         self.fields_list.setEnabled(enabled)
+        self.station_code_input.setEnabled(enabled)
+        self.receiver_number_input.setEnabled(enabled)
+        self.country_code_input.setEnabled(enabled)
+        self.period_input.setEnabled(enabled)
+        self.interval_input.setEnabled(enabled)
+        self.datatype_input.setEnabled(enabled)
 
     def update_recording_info(self, text):
         self.recording_info.append(f"> {text}")
@@ -278,16 +337,38 @@ class LogSettingsDialog(QDialog):
         if fmt == "csv": self.radio_csv.setChecked(True)
         elif fmt == "binary": self.radio_binary.setChecked(True)
         elif fmt == "rinex": self.radio_rinex.setChecked(True)
+        
+        # Load RINEX options
+        rinex_opts = s.get("rinex_options", {})
+        self.station_code_input.setText(rinex_opts.get("station_code", "RTGS"))
+        self.receiver_number_input.setText(rinex_opts.get("receiver_number", "00"))
+        self.country_code_input.setText(rinex_opts.get("country_code", "CHN"))
+        self.period_input.setText(rinex_opts.get("period", "01D"))
+        self.interval_input.setText(rinex_opts.get("interval", "30S"))
+        self.datatype_input.setText(rinex_opts.get("datatype", "MO"))
 
     def get_settings(self):
         fmt = "csv"
         if self.radio_binary.isChecked(): fmt = "binary"
         elif self.radio_rinex.isChecked(): fmt = "rinex"
         
-        return {
+        settings = {
             "directory": self.dir_edit.text(),
             "split_minutes": self.split_spin.value(),
             "sample_interval": self.sample_spin.value(),
             "format": fmt,
             "fields": [it.text() for it in self.fields_list.selectedItems()]
         }
+        
+        # Add RINEX options
+        if fmt == "rinex":
+            settings["rinex_options"] = {
+                "station_code": self.station_code_input.text() or "RTGS",
+                "receiver_number": self.receiver_number_input.text() or "00",
+                "country_code": self.country_code_input.text() or "CHN",
+                "period": self.period_input.text() or "01D",
+                "interval": self.interval_input.text() or "30S",
+                "datatype": self.datatype_input.text() or "MO"
+            }
+        
+        return settings

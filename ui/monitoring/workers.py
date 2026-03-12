@@ -18,13 +18,16 @@ import os
 import sys
 import csv
 from queue import Queue
+from typing import List
 from PySide6.QtCore import QObject, Signal
 from pyrtcm import RTCMReader
+from datetime import datetime
 
 from core.global_config import get_global_config
 from core.ntrip_client import NtripClient
 from core.serial_client import SerialClient
 from core.ring_buffer import RingBuffer
+from core.rinex3_writer import RINEX3Writer
 
 
 class StreamSignals(QObject):
@@ -524,12 +527,13 @@ class LoggingThread(threading.Thread):
         
         current_file = None
         writer = None
+        rinex_writer = None
         file_start = 0
         last_sample_time = time.time()  # Track time for CSV sampling interval
         
         def open_new_file():
             """Open a new log file with timestamp and write appropriate header."""
-            nonlocal current_file, writer, file_start
+            nonlocal current_file, writer, rinex_writer, file_start
             
             try:
                 # Step 1: Generate timestamp-based filename
@@ -566,37 +570,51 @@ class LoggingThread(threading.Thread):
                     # Binary mode for raw RTCM data with large buffer
                     current_file = open(path, 'wb', buffering=65536)  # 64KB buffer
                     writer = None
+                    rinex_writer = None
+                elif format_type == 'rinex':
+                    # RINEX3 format: use dedicated writer
+                    # Extract custom RINEX options from settings
+                    rinex_opts = {
+                        'station_code': settings.get('rinex_options', {}).get('station_code', 'RTGS'),
+                        'receiver_number': settings.get('rinex_options', {}).get('receiver_number', '00'),
+                        'country_code': settings.get('rinex_options', {}).get('country_code', 'CHN'),
+                        'period': settings.get('rinex_options', {}).get('period', '01D'),
+                        'interval': settings.get('rinex_options', {}).get('interval', '30S'),
+                        'datatype': settings.get('rinex_options', {}).get('datatype', 'MO'),
+                    }
+                    
+                    rinex_writer = RINEX3Writer(path,
+                                                marker_name=safe_mount,
+                                                marker_number="0",
+                                                **rinex_opts)
+                    if not rinex_writer.open():
+                        raise Exception(f"Failed to open RINEX file: {path}")
+                    # Auto-detect observation types from current merged satellites
+                    sys_obs_types = self._detect_obs_types()
+                    if not rinex_writer.write_header(sys_obs_types=sys_obs_types, receiver_type="Generic", antenna_type=safe_mount):
+                        raise Exception("Failed to write RINEX header")
+                    current_file = None
+                    writer = None
                 else:
-                    # Text mode for CSV/RINEX formats
+                    # Text mode for CSV format
                     current_file = open(path, 'a', newline='', encoding='utf-8', buffering=65536)
                     writer = csv.writer(current_file)
-                
-                # Step 4: Write format-specific headers
-                if format_type == 'csv':
+                    rinex_writer = None
                     # CSV header row: field names
                     if writer:
                         writer.writerow(fields)
-                elif format_type == 'rinex':
-                    # RINEX-like simplified header with metadata
-                    current_file.write("# RINEX3 (not support now)\n")
-                    current_file.write(f"# Mountpoint: {mount}\n")
-                    current_file.write(f"# Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    current_file.write("# Fields: " + ",".join(fields) + "\n")
-                elif format_type == 'binary':
-                    # Binary RTCM files have no header (raw data only)
-                    pass
                 
                 file_start = time.time()
                 self.signals.log_signal.emit(f"[Logging] Opened: {fname} (format: {format_type}, File #{self.file_count})")
-                return current_file, writer
+                return current_file, writer, rinex_writer
                 
             except Exception as e:
                 self.signals.log_signal.emit(f"[Logging] Error opening file: {e}")
-                return None, None
+                return None, None, None
         
         # Step 1: Open first log file
-        current_file, writer = open_new_file()
-        if current_file is None:
+        current_file, writer, rinex_writer = open_new_file()
+        if (format_type != 'rinex' and current_file is None) or (format_type == 'rinex' and rinex_writer is None):
             return
         
         # Add initial status signal with start time
@@ -608,12 +626,15 @@ class LoggingThread(threading.Thread):
                 # Step 2a: Check if file rotation is needed (split_minutes elapsed)
                 if time.time() - file_start >= split_secs:
                     try:
-                        current_file.close()
+                        if format_type == 'rinex' and rinex_writer:
+                            rinex_writer.close()
+                        elif current_file:
+                            current_file.close()
                     except:
                         pass
                     # Open new file with new timestamp
-                    current_file, writer = open_new_file()
-                    if current_file is None:
+                    current_file, writer, rinex_writer = open_new_file()
+                    if (format_type != 'rinex' and current_file is None) or (format_type == 'rinex' and rinex_writer is None):
                         break
                     last_sample_time = time.time()
                 
@@ -629,7 +650,10 @@ class LoggingThread(threading.Thread):
                     # CSV/RINEX format: sample and write satellite data at specified interval
                     # Only writes if sample_interval seconds have elapsed since last write
                     if current_time - last_sample_time >= sample_interval:
-                        self._save_text_format(current_file, writer, fields, format_type)
+                        if format_type == 'rinex':
+                            self._save_rinex_obs(rinex_writer)
+                        else:
+                            self._save_csv_obs(current_file, writer, fields)
                         last_sample_time = current_time
                     # Longer sleep for text formats since sampling is lower frequency
                     time.sleep(0.1)
@@ -642,7 +666,9 @@ class LoggingThread(threading.Thread):
                 time.sleep(1)
         
         # Step 3: Cleanup on shutdown
-        if current_file:
+        if format_type == 'rinex' and rinex_writer:
+            rinex_writer.close()
+        elif current_file:
             current_file.close()
         
         duration = time.time() - self.start_time
@@ -692,15 +718,112 @@ class LoggingThread(threading.Thread):
         except Exception as e:
             self.signals.log_signal.emit(f"[Logging] Error saving binary RTCM: {e}")
     
-    def _save_text_format(self, file_handle, writer, fields, format_type):
+    def _detect_obs_types(self) -> dict:
         """
-        Save processed satellite data in text format (CSV or RINEX-like).
+        Auto-detect observation types from current merged satellites.
+        
+        Scans merged_satellites and extracts signal codes to build sys_obs_types dict.
+        Falls back to standard defaults if no signals are found.
+        
+        Returns:
+            Dict mapping system (e.g., 'G', 'R') to list of observation codes
+            e.g., {'G': ['C1C', 'L1C', 'D1C', 'S1C']}
+        """
+        sys_obs_types: dict = {}
+        obs_codes_per_sys: dict = {}
+        
+        # Scan all satellites to collect raw signal IDs
+        try:
+            for sat_id, sat_state in self.merged_satellites.items():
+                if not sat_id or len(sat_id) < 2:
+                    continue
+
+                sys = sat_id[0]
+                if sys not in obs_codes_per_sys:
+                    obs_codes_per_sys[sys] = set()
+
+                signals = getattr(sat_state, 'signals', {})
+                if isinstance(signals, dict):
+                    for sig_id in signals.keys():
+                        obs_codes_per_sys[sys].add(sig_id)
+        except Exception as e:
+            self.signals.log_signal.emit(f"[Logging] Warning: Error scanning satellites for obs types: {e}")
+
+        # Convert raw signal IDs into RINEX observation codes
+        for sys, sig_ids in obs_codes_per_sys.items():
+            obs_list: List[str] = []
+            for sig in sorted(sig_ids):
+                # append code, phase, doppler, snr for each signal
+                obs_list.append(f"C{sig}")
+                obs_list.append(f"L{sig}")
+                obs_list.append(f"D{sig}")
+                obs_list.append(f"S{sig}")
+            if obs_list:  # Only add if we found signals for this system
+                sys_obs_types[sys] = obs_list
+
+        # Provide standard defaults if nothing was detected
+        if not sys_obs_types:
+            # Default observation types for common systems
+            sys_obs_types = {
+                'G': ['C1C', 'L1C', 'D1C', 'S1C'],  # GPS L1
+                'R': ['C4A', 'L4A', 'D4A', 'S4A'],  # GLONASS
+                'E': ['C1C', 'L1C', 'D1C', 'S1C'],  # Galileo E1
+                'C': ['C2D', 'L2D', 'D2D', 'S2D'],  # BeiDou B1I
+            }
+        
+        return sys_obs_types
+    
+    def _save_rinex_obs(self, rinex_writer):
+        """
+        Save observation data in RINEX 3 format.
+        
+        Args:
+            rinex_writer: RINEX3Writer instance
+        """
+        try:
+            # Get snapshot of current satellite data
+            snapshot = dict(self.merged_satellites)
+            
+            if not snapshot:
+                # No satellites to record, skip silently (frequent)
+                return
+            
+            # Get latest epoch data for UTC time
+            epoch_time = None
+            if self.get_latest_epoch:
+                try:
+                    epoch_data = self.get_latest_epoch()
+                    if epoch_data and hasattr(epoch_data, 'utc_datetime'):
+                        epoch_time = epoch_data.utc_datetime
+                except:
+                    pass
+            
+            # Use current time if epoch time not available
+            if not epoch_time:
+                epoch_time = datetime.utcnow()
+            
+            # Write observation epoch - ensure header was written first
+            if not rinex_writer.header_written:
+                self.signals.log_signal.emit(f"[Logging] Warning: RINEX header not written before first observation")
+                return
+                
+            success = rinex_writer.write_observation(epoch_time, snapshot)
+            if not success:
+                self.signals.log_signal.emit(f"[Logging] Warning: Failed to write RINEX observation epoch")
+            
+        except Exception as e:
+            self.signals.log_signal.emit(f"[Logging] Error saving RINEX observation: {e}")
+            import traceback
+            self.signals.log_signal.emit(f"[Logging] Traceback: {traceback.format_exc()}")
+    
+    def _save_csv_obs(self, file_handle, writer, fields):
+        """
+        Save observation data in CSV format.
         
         Args:
             file_handle: Open file handle
-            writer: CSV writer object (None for RINEX)
+            writer: CSV writer object
             fields: List of field names to save
-            format_type: 'csv' or 'rinex'
         """
         try:
             # Get snapshot of current satellite data
@@ -758,21 +881,15 @@ class LoggingThread(threading.Thread):
                     row = [valmap.get(f, '') for f in fields]
                     rows.append(row)
             
-            # Write rows based on format
-            if format_type == 'rinex':
-                # Space-separated format for RINEX-like output
-                for row in rows:
-                    file_handle.write(' '.join(str(x) for x in row) + '\n')
-            else:
-                # CSV format
-                for row in rows:
-                    writer.writerow(row)
+            # Write rows in CSV format
+            for row in rows:
+                writer.writerow(row)
             
             if rows:
                 file_handle.flush()
                 
         except Exception as e:
-            self.signals.log_signal.emit(f"[Logging] Error saving text format: {e}")
+            self.signals.log_signal.emit(f"[Logging] Error saving CSV observation: {e}")
     
     def stop(self):
         """Stop the logging thread gracefully."""

@@ -55,18 +55,67 @@ class ConfigDialog(QDialog):
         # Serial port fields
         self.obs_port = QComboBox()
         self.obs_port.addItems(self._get_available_ports() or ["No ports found"])
-        self.obs_port.setCurrentText(self.settings.get('OBS', {}).get('port', 'COM1'))
+        self.obs_port.setCurrentText(str(self.settings.get('OBS', {}).get('port', 'COM1')))
         
-        self.obs_baudrate = QSpinBox()
-        self.obs_baudrate.setMinimum(300)
-        self.obs_baudrate.setMaximum(921600)
-        self.obs_baudrate.setValue(int(self.settings.get('OBS', {}).get('baudrate', 115200)))
+        # Baud rate dropdown with common values
+        self.obs_baudrate = QComboBox()
+        common_baudrates = ["300", "1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600"]
+        self.obs_baudrate.addItems(common_baudrates)
+        default_baudrate = str(self.settings.get('OBS', {}).get('baudrate', 115200))
+        if default_baudrate in common_baudrates:
+            self.obs_baudrate.setCurrentText(default_baudrate)
+        else:
+            self.obs_baudrate.setCurrentText("115200")
+        
+        # Data bits dropdown
+        self.obs_databits = QComboBox()
+        self.obs_databits.addItems(["5", "6", "7", "8"])
+        databits_val = str(self.settings.get('OBS', {}).get('databits', 8))
+        if databits_val in ["5", "6", "7", "8"]:
+            self.obs_databits.setCurrentText(databits_val)
+        else:
+            self.obs_databits.setCurrentText("8")
+        
+        # Stop bits dropdown
+        self.obs_stopbits = QComboBox()
+        self.obs_stopbits.addItems(["1", "1.5", "2"])
+        stopbits_val = str(self.settings.get('OBS', {}).get('stopbits', 1))
+        if stopbits_val in ["1", "1.5", "2"]:
+            self.obs_stopbits.setCurrentText(stopbits_val)
+        else:
+            self.obs_stopbits.setCurrentText("1")
+        
+        # Parity dropdown
+        self.obs_parity = QComboBox()
+        self.obs_parity.addItems(["None", "Even", "Odd", "Mark", "Space"])
+        parity_val = self.settings.get('OBS', {}).get('parity', 'None')
+        if parity_val in ["None", "Even", "Odd", "Mark", "Space"]:
+            self.obs_parity.setCurrentText(parity_val)
+        else:
+            self.obs_parity.setCurrentText("None")
+        
+        # Flow control dropdown
+        self.obs_flowctrl = QComboBox()
+        self.obs_flowctrl.addItems(["None", "RTS/CTS", "XOn/XOff"])
+        flowctrl_val = self.settings.get('OBS', {}).get('flowctrl', 'None')
+        if flowctrl_val in ["None", "RTS/CTS", "XOn/XOff"]:
+            self.obs_flowctrl.setCurrentText(flowctrl_val)
+        else:
+            self.obs_flowctrl.setCurrentText("None")
         
         self.lbl_obs_serial_port = QLabel("Serial Port:")
         self.lbl_obs_baudrate = QLabel("Baud Rate:")
+        self.lbl_obs_databits = QLabel("Data Bits:")
+        self.lbl_obs_stopbits = QLabel("Stop Bits:")
+        self.lbl_obs_parity = QLabel("Parity:")
+        self.lbl_obs_flowctrl = QLabel("Flow Control:")
         
         fl_obs.addRow(self.lbl_obs_serial_port, self.obs_port)
         fl_obs.addRow(self.lbl_obs_baudrate, self.obs_baudrate)
+        fl_obs.addRow(self.lbl_obs_databits, self.obs_databits)
+        fl_obs.addRow(self.lbl_obs_stopbits, self.obs_stopbits)
+        fl_obs.addRow(self.lbl_obs_parity, self.obs_parity)
+        fl_obs.addRow(self.lbl_obs_flowctrl, self.obs_flowctrl)
         
         grp_obs.setLayout(fl_obs)
         layout.addWidget(grp_obs)
@@ -113,18 +162,67 @@ class ConfigDialog(QDialog):
         # Serial port fields for EPH
         self.eph_port = QComboBox()
         self.eph_port.addItems(self._get_available_ports() or ["No ports found"])
-        self.eph_port.setCurrentText(self.settings.get('EPH', {}).get('port', 'COM2'))
+        self.eph_port.setCurrentText(str(self.settings.get('EPH', {}).get('port', 'COM2')))
         
-        self.eph_baudrate = QSpinBox()
-        self.eph_baudrate.setMinimum(300)
-        self.eph_baudrate.setMaximum(921600)
-        self.eph_baudrate.setValue(int(self.settings.get('EPH', {}).get('baudrate', 115200)))
+        # Baud rate dropdown with common values
+        self.eph_baudrate = QComboBox()
+        common_baudrates = ["300", "1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600"]
+        self.eph_baudrate.addItems(common_baudrates)
+        default_eph_baudrate = str(self.settings.get('EPH', {}).get('baudrate', 115200))
+        if default_eph_baudrate in common_baudrates:
+            self.eph_baudrate.setCurrentText(default_eph_baudrate)
+        else:
+            self.eph_baudrate.setCurrentText("115200")
+        
+        # Data bits dropdown
+        self.eph_databits = QComboBox()
+        self.eph_databits.addItems(["5", "6", "7", "8"])
+        eph_databits_val = str(self.settings.get('EPH', {}).get('databits', 8))
+        if eph_databits_val in ["5", "6", "7", "8"]:
+            self.eph_databits.setCurrentText(eph_databits_val)
+        else:
+            self.eph_databits.setCurrentText("8")
+        
+        # Stop bits dropdown
+        self.eph_stopbits = QComboBox()
+        self.eph_stopbits.addItems(["1", "1.5", "2"])
+        eph_stopbits_val = str(self.settings.get('EPH', {}).get('stopbits', 1))
+        if eph_stopbits_val in ["1", "1.5", "2"]:
+            self.eph_stopbits.setCurrentText(eph_stopbits_val)
+        else:
+            self.eph_stopbits.setCurrentText("1")
+        
+        # Parity dropdown
+        self.eph_parity = QComboBox()
+        self.eph_parity.addItems(["None", "Even", "Odd", "Mark", "Space"])
+        eph_parity_val = self.settings.get('EPH', {}).get('parity', 'None')
+        if eph_parity_val in ["None", "Even", "Odd", "Mark", "Space"]:
+            self.eph_parity.setCurrentText(eph_parity_val)
+        else:
+            self.eph_parity.setCurrentText("None")
+        
+        # Flow control dropdown
+        self.eph_flowctrl = QComboBox()
+        self.eph_flowctrl.addItems(["None", "RTS/CTS", "XOn/XOff"])
+        eph_flowctrl_val = self.settings.get('EPH', {}).get('flowctrl', 'None')
+        if eph_flowctrl_val in ["None", "RTS/CTS", "XOn/XOff"]:
+            self.eph_flowctrl.setCurrentText(eph_flowctrl_val)
+        else:
+            self.eph_flowctrl.setCurrentText("None")
         
         self.lbl_eph_serial_port = QLabel("Serial Port:")
         self.lbl_eph_baudrate = QLabel("Baud Rate:")
+        self.lbl_eph_databits = QLabel("Data Bits:")
+        self.lbl_eph_stopbits = QLabel("Stop Bits:")
+        self.lbl_eph_parity = QLabel("Parity:")
+        self.lbl_eph_flowctrl = QLabel("Flow Control:")
         
         fl_eph.addRow(self.lbl_eph_serial_port, self.eph_port)
         fl_eph.addRow(self.lbl_eph_baudrate, self.eph_baudrate)
+        fl_eph.addRow(self.lbl_eph_databits, self.eph_databits)
+        fl_eph.addRow(self.lbl_eph_stopbits, self.eph_stopbits)
+        fl_eph.addRow(self.lbl_eph_parity, self.eph_parity)
+        fl_eph.addRow(self.lbl_eph_flowctrl, self.eph_flowctrl)
         
         grp_eph.setLayout(fl_eph)
         grp_eph.setEnabled(self.chk_eph.isChecked())
@@ -234,7 +332,11 @@ class ConfigDialog(QDialog):
                 'source': self.obs_source.currentText(),
                 'host': self.obs_h.text(),
                 'port': self.obs_p.text() if self.obs_source.currentText() == "NTRIP Server" else self.obs_port.currentText(),
-                'baudrate': self.obs_baudrate.value(),
+                'baudrate': int(self.obs_baudrate.currentText()),
+                'databits': int(self.obs_databits.currentText()),
+                'stopbits': float(self.obs_stopbits.currentText()),
+                'parity': self.obs_parity.currentText(),
+                'flowctrl': self.obs_flowctrl.currentText(),
                 'mountpoint': self.obs_m.text(),
                 'user': self.obs_u.text(),
                 'password': self.obs_pw.text()
@@ -244,7 +346,11 @@ class ConfigDialog(QDialog):
                 'source': self.eph_source.currentText(),
                 'host': self.eph_h.text(),
                 'port': self.eph_p.text() if self.eph_source.currentText() == "NTRIP Server" else self.eph_port.currentText(),
-                'baudrate': self.eph_baudrate.value(),
+                'baudrate': int(self.eph_baudrate.currentText()),
+                'databits': int(self.eph_databits.currentText()),
+                'stopbits': float(self.eph_stopbits.currentText()),
+                'parity': self.eph_parity.currentText(),
+                'flowctrl': self.eph_flowctrl.currentText(),
                 'mountpoint': self.eph_m.text(),
                 'user': self.eph_u.text(),
                 'password': self.eph_pw.text()

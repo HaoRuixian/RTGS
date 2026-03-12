@@ -3,293 +3,200 @@ Handles RTCM stream parsing based on strict RTCM 10403.3 Payload Definitions.
 Adapted for pyrtcm's flattened attribute structure.
 """
 import numpy as np
+import sys
+import io
+from contextlib import redirect_stderr
 from core.data_models import EpochObservation, SatelliteState, SignalData
 from core.gnss_time import GNSSTime
 from core.geo_utils import calculate_az_el, get_freq
 import core.BE2pos as BE2pos 
 from core.global_config import get_global_config, update_general_settings
+from core.broadcast_ephemeris import get_shared_broadcast_ephemeris
 import threading
 import math
 
+# Global singleton instance
+_shared_rtcm_handler = None
+
 class RTCMHandler:
     def __init__(self):
-        self.ephemeris_cache = {} 
+        self.broadcast_eph = get_shared_broadcast_ephemeris()
         self.lock = threading.Lock()
         self.last_gps_week = None  # Track GPS week for continuity
+        self.last_station_coords = None  # Store coordinates from 1005/1006 messages
 
     # Time conversions delegated to core.gnss_time.GNSSTime
 
-    def process_message(self, msg):
+    def process_message(self, msg, epoch_data=None):
         """
         Main entry point for RTCM message processing.
+        Includes error handling for pyrtcm parsing issues.
+        
+        Note: Unsupported message types (e.g., 1041/NavIC) may fail during parsing.
+        These are silently skipped without error output and will not affect epoch processing.
         """
-        msg_id = msg.identity
+        try:
+            # Suppress stderr during attribute access to avoid printing errors from 
+            # unsupported RTCM message types (e.g., 1041/NavIC with DF545)
+            with redirect_stderr(io.StringIO()):
+                msg_id = msg.identity
+        except (ValueError, AttributeError, TypeError):
+            # pyrtcm parsing error (e.g., negative shift count for unsupported DF fields)
+            # Gracefully skip this message and return current epoch data
+            return epoch_data
 
-        # --- Ephemeris Processing ---
-        if msg_id == "1019":
-            self._handle_gps_eph(msg)
-        elif msg_id == "1020":
-            self._handle_glo_eph(msg)
-        elif msg_id in ["1045", "1046"]:
-            self._handle_gal_eph(msg)
-        elif msg_id in ["1042", "63"]: # 1042 is standard BDS
-            self._handle_bds_eph(msg)
+        try:
+            # --- Ephemeris Processing ---
+            if msg_id == "1019":
+                self._handle_gps_eph(msg)
+            elif msg_id == "1020":
+                self._handle_glo_eph(msg)
+            elif msg_id in ["1045", "1046"]:
+                self._handle_gal_eph(msg)
+            elif msg_id in ["1042", "63"]:  # 1042 is standard BDS
+                self._handle_bds_eph(msg)
+                
+            # --- MSM Observations ---
+            elif msg_id[:3] in ["107", "108", "109", "111", "112", "113"]:
+                return self._handle_msm_obs(msg, epoch_data)
+                
+            # --- Station Coordinates ---
+            elif msg_id in ["1005", "1006"]:
+                # Store station coordinates for monitoring module to use.
+                # Will only update global config if monitoring mode is active.
+                if hasattr(msg, "DF025"):
+                    try:
+                        coords = [float(msg.DF025), float(msg.DF026), float(msg.DF027)]
+                        self.last_station_coords = coords
+                    except (ValueError, TypeError):
+                        pass
             
-        # --- MSM  ---
-        elif msg_id[:3] in ["107", "108", "109", "111", "112", "113"]:
-            return self._handle_msm_obs(msg)
+            # --- RTCM 10403.3 Standard: Network RTK Correction Messages (1015-1017, 1037-1039) ---
+            # These provide ionospheric and geometric corrections between reference stations
+            elif msg_id == "1015":
+                return self._handle_gps_iono_correction_diff(msg, epoch_data)
+            elif msg_id == "1016":
+                return self._handle_gps_geometric_correction_diff(msg, epoch_data)
+            elif msg_id == "1017":
+                return self._handle_gps_combined_correction_diff(msg, epoch_data)
+            elif msg_id == "1037":
+                return self._handle_glo_iono_correction_diff(msg, epoch_data)
+            elif msg_id == "1038":
+                return self._handle_glo_geometric_correction_diff(msg, epoch_data)
+            elif msg_id == "1039":
+                return self._handle_glo_combined_correction_diff(msg, epoch_data)
             
-        # --- Station Coordinates ---
-        elif msg_id in ["1005", "1006"]:
-            if hasattr(msg, "DF025"):
-                update_general_settings({'approx_rec_pos': [float(msg.DF025), float(msg.DF026), float(msg.DF027)]})
+            # --- RTCM 10403.3 Standard: GLONASS Code-Phase Biases (Message 1230) ---
+            # Note: Message 1230 is GLONASS L1/L2 Code-Phase Biases, NOT ionospheric correction
+            elif msg_id == "1230":
+                return self._handle_glo_code_phase_bias(msg, epoch_data)
+                
+            # --- RTCM 10403.3 Standard: SSR Messages (1057-1062 GPS, 1063-1068 GLONASS) ---
+            # GPS SSR Messages
+            elif msg_id == "1057":
+                return self._handle_gps_ssr_orbit(msg, epoch_data)
+            elif msg_id == "1058":
+                return self._handle_gps_ssr_clock(msg, epoch_data)
+            elif msg_id == "1059":
+                return self._handle_gps_ssr_code_bias(msg, epoch_data)
+            elif msg_id == "1060":
+                return self._handle_gps_ssr_combined(msg, epoch_data)
+            elif msg_id == "1061":
+                return self._handle_gps_ssr_ura(msg, epoch_data)
+            elif msg_id == "1062":
+                return self._handle_gps_ssr_high_rate_clock(msg, epoch_data)
+            # GLONASS SSR Messages
+            elif msg_id == "1063":
+                return self._handle_glo_ssr_orbit(msg, epoch_data)
+            elif msg_id == "1064":
+                return self._handle_glo_ssr_clock(msg, epoch_data)
+            elif msg_id == "1065":
+                return self._handle_glo_ssr_code_bias(msg, epoch_data)
+            elif msg_id == "1066":
+                return self._handle_glo_ssr_combined(msg, epoch_data)
+            elif msg_id == "1067":
+                return self._handle_glo_ssr_ura(msg, epoch_data)
+            elif msg_id == "1068":
+                return self._handle_glo_ssr_high_rate_clock(msg, epoch_data)
+            
+        except (ValueError, AttributeError, TypeError, KeyError):
+            # Silently skip messages with parsing errors
+            pass
+        
+        return epoch_data
 
-    def _update_cache(self, key, new_eph, time_tag_key='Toe'):
-        with self.lock:
-            if key not in self.ephemeris_cache:
-                self.ephemeris_cache[key] = new_eph
-                # print(f"[{key}] New Ephemeris loaded. Toe: {new_eph.get(time_tag_key)}")
-            else:
-                old_eph = self.ephemeris_cache[key]
-                if new_eph.get(time_tag_key) != old_eph.get(time_tag_key):
-                    self.ephemeris_cache[key] = new_eph
-                    # print(f"[{key}] Ephemeris updated. Old Toe: {old_eph.get(time_tag_key)} -> New: {new_eph.get(time_tag_key)}")
+    def _update_cache(self, key, new_eph, time_tag_key='toe'):
+        """Update ephemeris cache using shared BroadcastEphemeris."""
+        self.broadcast_eph.cache_ephemeris(new_eph, time_key=time_tag_key)
+    
+    def apply_station_coordinates(self):
+        """
+        Apply stored station coordinates (from 1005/1006 messages) to global config.
+        This method should only be called from the monitoring module.
+        
+        Returns:
+            Coordinates list [X, Y, Z] if available and applied, None otherwise.
+        """
+        if self.last_station_coords is not None:
+            try:
+                update_general_settings({'approx_rec_pos': self.last_station_coords})
+                return self.last_station_coords
+            except Exception:
+                pass
+        return None
 
     # -------------------------------------------------------------------------
     # GPS Parsing (Msg 1019)
     # -------------------------------------------------------------------------
     def _handle_gps_eph(self, msg):
         """
-        Maps RTCM 1019 to GPS Keplerian parameters.
-        Reference: DF definitions provided.
+        Parse RTCM 1019 - GPS Broadcast Ephemeris.
+        Reference: RTCM 10403.3 Table 3.5-21
         """
-        try:
-            prn = int(msg.DF009)
-            key = f"G{prn:02d}"
-
-            eph = {
-                'SatType': 'GPS',
-                'PRN': prn,
-                'Week': int(msg.DF076)+2048, # GPS Week
-                'Toe': float(msg.DF093),     # Reference Time Ephemeris
-                'Toc': float(msg.DF081),     # Reference Time Clock
-                'IODE': int(msg.DF071),      # Issue of Data, Ephemeris
-                
-                # 开普勒轨道参数
-                'sqrtA': float(msg.DF092),       # Square root of Semi-Major Axis
-                'Eccentricity': float(msg.DF090),
-                'M0': float(msg.DF088)*math.pi,          # Mean Anomaly
-                'omega': float(msg.DF099)*math.pi,       # Argument of Perigee
-                'i0': float(msg.DF097)*math.pi,          # Inclination
-                'OMEGA0': float(msg.DF095)*math.pi,      # Longitude of Ascending Node
-                'Delta_n': float(msg.DF087)*math.pi,     # Mean Motion Diff
-                'OMEGA_DOT': float(msg.DF100)*math.pi,   # Rate of Right Ascension
-                'IDOT': float(msg.DF079)*math.pi,        # Rate of Inclination
-                
-                # 摄动参数
-                'Cuc': float(msg.DF089),
-                'Cus': float(msg.DF091),
-                'Crc': float(msg.DF098),
-                'Crs': float(msg.DF086),
-                'Cic': float(msg.DF094),
-                'Cis': float(msg.DF096),
-                
-                # 钟差参数 (用于后续可能的钟差计算)
-                'af0': float(msg.DF084),
-                'af1': float(msg.DF083),
-                'af2': float(msg.DF082),
-                'TGD': float(msg.DF101),
-                
-                # 健康状况
-                'Health': int(msg.DF102)
-            }
-            
-            self._update_cache(key, eph, 'Toe')
-            
-        except AttributeError as e:
-            # print(f"Error parsing GPS 1019: {e}")
-            pass
+        eph = self.broadcast_eph.extract_gps_ephemeris(msg)
+        if eph:
+            self.broadcast_eph.cache_ephemeris(eph, time_key='toe')
 
     # -------------------------------------------------------------------------
     # Galileo Parsing (Msg 1045/1046)
     # -------------------------------------------------------------------------
     def _handle_gal_eph(self, msg):
         """
-        Maps RTCM 1045/1046 to Galileo parameters.
+        Parse RTCM 1045/1046 - Galileo Broadcast Ephemeris.
+        Reference: RTCM 10403.3 Table 3.5-31/32
         """
-        try:
-            prn = int(msg.DF252)
-            key = f"E{prn:02d}"
-            
-            eph = {
-                'SatType': 'GAL',
-                'PRN': prn,
-                'Week': int(msg.DF289)+1024,
-                'Toe': float(msg.DF304),
-                'Toc': float(msg.DF293),
-                'IODNav': int(msg.DF290),
-                
-                # 轨道参数 (Key名复用 GPS 的标准命名，方便计算函数统一调用)
-                'sqrtA': float(msg.DF303),
-                'Eccentricity': float(msg.DF301),
-                'M0': float(msg.DF299)*math.pi,
-                'omega': float(msg.DF310)*math.pi,
-                'i0': float(msg.DF308)*math.pi,
-                'OMEGA0': float(msg.DF306)*math.pi,
-                'Delta_n': float(msg.DF298)*math.pi,
-                'OMEGA_DOT': float(msg.DF311)*math.pi,
-                'IDOT': float(msg.DF292)*math.pi,
-                
-                # 摄动
-                'Cuc': float(msg.DF300),
-                'Cus': float(msg.DF302),
-                'Crc': float(msg.DF309),
-                'Crs': float(msg.DF297),
-                'Cic': float(msg.DF305),
-                'Cis': float(msg.DF307),
-                
-                # 钟差
-                'af0': float(msg.DF296),
-                'af1': float(msg.DF295),
-                'af2': float(msg.DF294),
-                'BGD_E1E5a': float(msg.DF312),
-                'BGD_E5bE1': float(msg.DF313)
-            }
-            
-            self._update_cache(key, eph, 'Toe')
-            
-        except AttributeError:
-            pass
+        eph = self.broadcast_eph.extract_galileo_ephemeris(msg)
+        if eph:
+            self.broadcast_eph.cache_ephemeris(eph, time_key='toe')
 
     # -------------------------------------------------------------------------
     # GLONASS Parsing (Msg 1020)
     # -------------------------------------------------------------------------
     def _handle_glo_eph(self, msg):
         """
-        Maps RTCM 1020 to GLONASS Cartesian State Vectors.
+        Parse RTCM 1020 - GLONASS Broadcast Ephemeris.
+        Reference: RTCM 10403.3 Table 3.5-25/26
         """
-        try:
-            prn = int(msg.DF038)
-            key = f"R{prn:02d}"
-            
-            # Table 3.4-6: DF value 7 corresponds to channel 0.
-            freq_chn = int(msg.DF040) - 7
-            
-            tb_seconds = float(msg.DF110) * 15 * 60.0 - 3*60*60
-            
-            # Time tk processing (bitwise parsing)
-            # DF107 is bit(12): hhhhh mmmmmm s
-            tk_raw = int(msg.DF107)
-            tk_h = (tk_raw >> 7) & 0x1F
-            tk_m = (tk_raw >> 1) & 0x3F
-            tk_s = (tk_raw & 0x01) * 30
-            tk_seconds = tk_h * 3600 + tk_m * 60 + tk_s - 3*60*60
-
-            eph = {
-                'SatType': 'GLO',
-                'PRN': prn,
-                'Tb': tb_seconds + GNSSTime.gps_day_of_week() * 24*3600,      # Time of ephemeris (seconds within day)
-                'tk': tk_seconds + GNSSTime.gps_day_of_week() * 24*3600,      # Time within frame
-                'FreqChannel': freq_chn, 
-                
-                # Position in km
-                'X': float(msg.DF112),
-                'Y': float(msg.DF115),
-                'Z': float(msg.DF118),
-                
-                # Velocity in km/s
-                'Vx': float(msg.DF111),
-                'Vy': float(msg.DF114),
-                'Vz': float(msg.DF117),
-                
-                # Acceleration (Solar/Lunar) in km/s²
-                'Ax': float(msg.DF113),
-                'Ay': float(msg.DF116),
-                'Az': float(msg.DF119),
-                
-                # Clock
-                'TauN': float(msg.DF124),   # Bias (sec)
-                'GammaN': float(msg.DF121), # Rel. Freq. Offset (dimensionless)
-                
-                'Health': int(msg.DF104) 
-            }
-            
-            self._update_cache(key, eph, 'Tb')
-            
-        except AttributeError:
-            pass
+        eph = self.broadcast_eph.extract_glonass_ephemeris(msg)
+        if eph:
+            self.broadcast_eph.cache_ephemeris(eph, time_key='tb')
             
     # -------------------------------------------------------------------------
     # BeiDou Parsing (Msg 1042)
     # -------------------------------------------------------------------------
     def _handle_bds_eph(self, msg):
         """
-        Maps RTCM 1042 to BDS Keplerian parameters.
-        Fixed: Units (semi-circles to radians) and Time Basis (BDS Week to GPS Week).
+        Parse RTCM 1042 - BeiDou Broadcast Ephemeris.
+        Reference: RTCM 10403.3 Table 3.5-40/41
         """
-        try:
-            if not hasattr(msg, "DF488"):
-                return
-            
-            prn = int(msg.DF488)
-            key = f"C{prn:02d}"
-            
-            # BDS Week starts from 2006, GPS from 1980. Offset is 1356 weeks.
-            # Most positioning libraries expect a continuous GPS-aligned week number.
-            bds_week = int(msg.DF489)
-            gps_week_aligned = bds_week + 1356 
+        eph = self.broadcast_eph.extract_bds_ephemeris(msg)
+        if eph:
+            self.broadcast_eph.cache_ephemeris(eph, time_key='toe')
 
-            eph = {
-                'SatType': 'BDS',
-                'PRN': prn,
-                'Week': gps_week_aligned,     # CRITICAL FIX 1: Time Basis Alignment
-                
-                # 时间参数
-                'Toe': float(msg.DF505),      # BDS Week Seconds
-                'Toc': float(msg.DF493),      
-                'AODE': int(msg.DF492),       
-                'AODC': int(msg.DF497),       
-                
-                # 开普勒轨道参数
-                'sqrtA': float(msg.DF504),        
-                'Eccentricity': float(msg.DF502), 
-                
-                # CRITICAL FIX 2: Multiply by PI (Semi-circles -> Radians)
-                'M0': float(msg.DF500) * math.pi,           
-                'omega': float(msg.DF511) * math.pi,        
-                'i0': float(msg.DF509) * math.pi,           
-                'OMEGA0': float(msg.DF507) * math.pi,       
-                'Delta_n': float(msg.DF499) * math.pi,      
-                'OMEGA_DOT': float(msg.DF512) * math.pi,    
-                'IDOT': float(msg.DF491) * math.pi,         
-                
-                # 摄动参数
-                'Cuc': float(msg.DF501),      
-                'Cus': float(msg.DF503),      
-                'Crc': float(msg.DF510),      
-                'Crs': float(msg.DF498),      
-                'Cic': float(msg.DF506),      
-                'Cis': float(msg.DF508),      
-                
-                # 卫星钟差参数
-                'af0': float(msg.DF496),      
-                'af1': float(msg.DF495),      
-                'af2': float(msg.DF494),      
-                
-                'TGD1': float(msg.DF513),     
-                'TGD2': float(msg.DF514),     
-                'Health': int(msg.DF515),     
-                'URAI': int(msg.DF490)        
-            }
-
-            self._update_cache(key, eph, 'Toe')
-            
-        except AttributeError:
-            pass
-
-    def _handle_msm_obs(self, msg):
+    def _handle_msm_obs(self, msg, epoch_data=None):
             """
             Parse RTCM 3.2 MSM7 observation message.
+            If epoch_data is provided, adds observations to it; otherwise creates new one.
             """
             # Constants
             CLIGHT = 299792458.0
@@ -317,19 +224,63 @@ class RTCMHandler:
             if sys_id not in config.target_systems:
                 return None
 
-            # Epoch Time (Receiver Time in seconds of week)
+            # Epoch Time (provided in milliseconds per system definitions)
             time_attr = cfg["time_df"]
             if not hasattr(msg, time_attr):
                 return None
-            epoch_time = getattr(msg, time_attr) / 1000.0
-            if sys_id == 'R': # GLONASS is time of day
-                epoch_time = epoch_time - 3*60*60 + GNSSTime.gps_day_of_week() * 24*3600
+            raw_ms = int(getattr(msg, time_attr))
+            epoch_time_s = raw_ms / 1000.0
+
+            # Determine GPS week and seconds-of-week corresponding to this epoch
+            # Default: assume current GPS week and align seconds-of-week, adjust per system
+            GPS_WEEK_SECONDS = 7 * 24 * 3600
+            current_gps_week = GNSSTime.current_gps_week()
+
+            if sys_id == 'G':
+                # GPS TOW: directly seconds within GPS week
+                gps_seconds = epoch_time_s % GPS_WEEK_SECONDS
+                gps_week = current_gps_week
+
+            elif sys_id == 'C':
+                # BeiDou TOW (BDT): field is milliseconds since BDS week start.
+                # BDS TOW is typically 14s less than GPS TOW for same epoch.
+                # Convert by adding 14s and assume current GPS week.
+                gps_seconds = (epoch_time_s + 14.0) % GPS_WEEK_SECONDS
+                gps_week = current_gps_week
+
+            elif sys_id == 'E':
+                # Galileo TOW (GST): treat as seconds-of-week and align to current GPS week
+                gps_seconds = epoch_time_s % GPS_WEEK_SECONDS
+                gps_week = current_gps_week
+
+            elif sys_id == 'R':
+                # GLONASS: DF034 gives milliseconds of day (0..86400e3). Defined as UTC(SU)+3h
+                # Convert to seconds-of-week by using current GPS day-of-week as reference
+                day_index = GNSSTime.gps_day_of_week()
+                # Subtract 3 hours to convert UTC(SU)+3h -> UTC seconds-of-day
+                seconds_of_day = (epoch_time_s) - 3 * 3600.0
+                # Ensure within 0..86400 range
+                seconds_of_day = seconds_of_day % (24 * 3600)
+                gps_seconds = (day_index * 24 * 3600) + seconds_of_day + 18
+                gps_week = current_gps_week
+
+            else:
+                # Fallback: treat as seconds-of-week in current GPS week
+                gps_seconds = epoch_time_s % GPS_WEEK_SECONDS
+                gps_week = current_gps_week
+
+            # Align gps_seconds to current week boundary if there is large discrepancy
+            # Ensure 0 <= gps_seconds < GPS_WEEK_SECONDS
+            epoch_time = gps_seconds % GPS_WEEK_SECONDS
+
+            # Convert to UTC datetime
+            utc_datetime = GNSSTime.gps_to_utc_datetime(gps_week, gps_seconds)
             
-            # Calculate UTC datetime from GPS time using GNSSTime
-            gps_weeks = GNSSTime.current_gps_week()
-            utc_datetime = GNSSTime.gps_to_utc_datetime(gps_weeks, epoch_time)
-            
-            epoch_data = EpochObservation(gps_time=epoch_time, utc_datetime=utc_datetime)
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=epoch_time, utc_datetime=utc_datetime)
+            else:
+                epoch_data.gps_time = epoch_time
+                epoch_data.utc_datetime = utc_datetime
 
             # ------------------------------ Cell Parsing -------------------------------
             cell_prn_map = {}
@@ -355,7 +306,7 @@ class RTCMHandler:
             prn_to_sat_idx = {prn: f"{k + 1:02d}" for k, prn in enumerate(sorted_prns)}
             sat_data_cache = {}
 
-            # ------------------------------ Process Satellites -------------------------------
+            # ------------------------------ Process Satellites (Parse Observations) -------
             for i in range(1, n_cell_found + 1):
                 if i not in cell_prn_map: continue
 
@@ -364,33 +315,10 @@ class RTCMHandler:
                 sat_idx = prn_to_sat_idx[prn]
                 sat_key = f"{sys_id}{prn:02d}"
 
-                # Create SatelliteState
+                # Create SatelliteState (but don't calculate position yet)
                 if sat_key not in epoch_data.satellites:
                     sat_state = SatelliteState(sys_id, prn)
                     epoch_data.satellites[sat_key] = sat_state
-                    
-                    # ================================================================
-                    # Calculate Satellite Position & Az/El
-                    # ================================================================
-                    if sat_key in self.ephemeris_cache:
-                        eph_data = self.ephemeris_cache[sat_key]
-                        
-                        # 1. Calculate Satellite Position (ECEF) using BE2pos
-                        # t_obs_gpst is passed as epoch_time (approximate is fine for initial step)
-                        sat_pos = BE2pos.brdc2pos(eph_data, sys_type, epoch_time)
-                        
-                        if sat_pos is not None:
-                            # Store Position
-                            sat_state.sat_pos_ecef = sat_pos.tolist()
-                            
-                            # 2. Calculate Azimuth / Elevation
-                            rec_pos = config.approx_rec_pos
-                            if rec_pos and not np.all(np.array(rec_pos) == 0):
-                                az, el = calculate_az_el(sat_pos, rec_pos)
-                                sat_state.azimuth = az
-                                sat_state.elevation = el
-                    # ================================================================
-
                 else:
                     sat_state = epoch_data.satellites[sat_key]
 
@@ -399,11 +327,13 @@ class RTCMHandler:
                     sig_id = str(getattr(msg, f"CELLSIG_{idx}"))
                 except AttributeError: continue
                 
-                # Simple GLONASS FCN handling could be added here via ephemeris lookup
-                fcn = 0 
-                if sys_id == 'R' and sat_key in self.ephemeris_cache:
-                    # Assuming FreqChannel was stored in handle_glo_eph
-                    fcn = self.ephemeris_cache[sat_key].get('FreqChannel', 0)
+                # GLONASS FCN lookup from shared BroadcastEphemeris
+                fcn = 0
+                if sys_id == 'R':
+                    eph_for_fcn = self.broadcast_eph.get_ephemeris(sat_key)
+                    if eph_for_fcn:
+                        # prefer standardized key name, fallback to older variants if present
+                        fcn = eph_for_fcn.get('frequency_channel', eph_for_fcn.get('FreqChannel', 0))
 
                 freq, _ = get_freq(sig_id, sat_key, fcn)
 
@@ -461,11 +391,805 @@ class RTCMHandler:
                     )
                     sat_state.signals[sig_id] = obs
 
+
+            # ================================================================
+            # Post-processing: Calculate Satellite Positions using Emission Time
+            # ================================================================
+            # For each satellite, compute the signal transmission time from its pseudorange,
+            # then use the emission time (reception_time - transmission_time) to compute position
+            
+            for sat_key, sat_state in epoch_data.satellites.items():
+                if not sat_state.signals:
+                    # No observations for this satellite, skip position calculation
+                    continue
+                
+                # Find the best pseudorange estimate (typically from C1C, C1S, C1L, C1X, C1P, C1W, C1Z, etc.)
+                best_pseudorange = None
+                signal_priority = ['C1C', 'C1S', 'C1L', 'C1X', 'C1P', 'C1W', 'C1Z', '1C']
+                
+                for sig_id in signal_priority:
+                    if sig_id in sat_state.signals:
+                        if sat_state.signals[sig_id].pseudorange > 0:
+                            best_pseudorange = sat_state.signals[sig_id].pseudorange
+                            break
+                
+                # If no code observation found, try to estimate from phase if available
+                if best_pseudorange is None:
+                    for sig_id, sig_data in sat_state.signals.items():
+                        if sig_data.pseudorange > 0:
+                            best_pseudorange = sig_data.pseudorange
+                            break
+                
+                if best_pseudorange is None or best_pseudorange == 0:
+                    # Cannot compute emission time without pseudorange
+                    continue
+                
+                # Calculate signal transmission time
+                transmission_time = best_pseudorange / CLIGHT
+                
+                # Calculate emission time (reception_time - transmission_time)
+                emission_time = epoch_time - transmission_time
+                
+                # Wrap emission time to be within current GPS week if needed
+                GPS_WEEK_SECONDS = 7 * 24 * 3600
+                emission_time = emission_time % GPS_WEEK_SECONDS
+                
+                # Get ephemeris and calculate position using emission time
+                eph_data = self.broadcast_eph.get_ephemeris(sat_key)
+                if eph_data:
+                    # Convert to format expected by BE2pos
+                    eph_for_calc = {
+                        'SatType': sys_type,
+                        'PRN': eph_data.get('PRN'),
+                    }
+                    
+                    # Add system-specific fields
+                    if sys_type == 'GLO':
+                        # GLONASS uses Cartesian coordinates
+                        eph_for_calc.update({
+                            'X': eph_data.get('X'),      # km
+                            'Y': eph_data.get('Y'),      # km
+                            'Z': eph_data.get('Z'),      # km
+                            'Vx': eph_data.get('Vx'),    # km/s
+                            'Vy': eph_data.get('Vy'),    # km/s
+                            'Vz': eph_data.get('Vz'),    # km/s
+                            'Ax': eph_data.get('Ax'),    # km/s²
+                            'Ay': eph_data.get('Ay'),    # km/s²
+                            'Az': eph_data.get('Az'),    # km/s²
+                            'tb': eph_data.get('tb'),    # Time of ephemeris (seconds within week)
+                            'tau_n': eph_data.get('tau_n'),
+                            'gamma_n': eph_data.get('gamma_n'),
+                        })
+                    else:
+                        # GPS, Galileo, BeiDou use Keplerian parameters
+                        eph_for_calc.update({
+                            'Week': eph_data.get('week'),
+                            'Toe': eph_data.get('toe'),
+                            'sqrtA': eph_data.get('sqrt_a'),
+                            'Eccentricity': eph_data.get('e'),
+                            'M0': eph_data.get('M0'),
+                            'omega': eph_data.get('omega'),
+                            'i0': eph_data.get('i0'),
+                            'OMEGA0': eph_data.get('Omega0'),
+                            'Delta_n': eph_data.get('delta_n'),
+                            'OMEGA_DOT': eph_data.get('Omega_dot'),
+                            'IDOT': eph_data.get('idot'),
+                            'Crs': eph_data.get('Crs'),
+                            'Crc': eph_data.get('Crc'),
+                            'Cus': eph_data.get('Cus'),
+                            'Cuc': eph_data.get('Cuc'),
+                            'Cis': eph_data.get('Cis'),
+                            'Cic': eph_data.get('Cic'),
+                            'af0': eph_data.get('af0'),
+                            'af1': eph_data.get('af1'),
+                            'af2': eph_data.get('af2'),
+                            'Toc': eph_data.get('toc'),
+                        })
+                    
+                    # Calculate Satellite Position using EMISSION TIME
+                    sat_pos = BE2pos.brdc2pos(eph_for_calc, sys_type, emission_time)
+                    
+                    if sat_pos is not None:
+                        # Store Position
+                        sat_state.sat_pos_ecef = sat_pos.tolist()
+                        
+                        # Calculate Azimuth / Elevation
+                        rec_pos = config.approx_rec_pos
+                        if rec_pos and not np.all(np.array(rec_pos) == 0):
+                            az, el = calculate_az_el(sat_pos, rec_pos)
+                            sat_state.azimuth = az
+                            sat_state.elevation = el
+            
+            # ================================================================
+            # Store reference to broadcast ephemeris for later access
+            # ================================================================
+            # Applications can access via: handler.broadcast_eph.get_ephemeris(sat_key)
+            
             return epoch_data
 
 
-# Shared singleton factory for modules that need a common RTCMHandler
-_shared_rtcm_handler = None
+    # =========================================================================
+    # RTCM 10403.3 Compliant Correction Handlers
+    # =========================================================================
+    # Note: All handlers use correct message IDs from RTCM 10403.3 standard
+    # Message 1230: GLONASS L1/L2 Code-Phase Biases (NOT ionospheric correction)
+    
+    def _handle_glo_code_phase_bias(self, msg, epoch_data):
+        """
+        Parse RTCM 1230 - GLONASS L1 and L2 Code-Phase Biases.
+        Reference: RTCM 10403.3 Table 3.5-109
+        Note: This message is NOT part of SSR and is NOT ionospheric correction.
+        It provides code-phase bias information specific to GLONASS signals.
+        """
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+                
+            # Message 1230 structure per RTCM standard:
+            # - Header with message type and common fields
+            # - Per-satellite code-phase bias data
+            #
+            # This is a GLONASS-specific message that is NOT standardized 
+            # in the same way as GPS/GLONASS SSR messages
+            
+            pass  # Implementation depends on specific pyrtcm structure for msg 1230
+            
+        except (AttributeError, ValueError):
+            pass
+        
+        return epoch_data
+    
+    # =========================================================================
+    # Network RTK Correction Messages (Messages 1015-1017, 1037-1039)
+    # =========================================================================
+    
+    def _handle_gps_iono_correction_diff(self, msg, epoch_data):
+        """
+        Parse RTCM 1015 - GPS Ionospheric Correction Differences.
+        Reference: RTCM 10403.3 Table 3.5-17 and 3.5-18
+        Uses DF fields: DF002, DF059, DF072, DF065, DF066, DF060, DF061, DF067, DF068, DF074, DF075, DF069
+        """
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            from core.data_models import IonosphericCorrection
+            
+            num_sats = getattr(msg, 'DF067', 0)
+            
+            for i in range(num_sats):
+                sat_id_attr = f'DF068_{i:02d}'
+                if hasattr(msg, sat_id_attr):
+                    sat_prn = int(getattr(msg, sat_id_attr))
+                    sat_key = f"G{sat_prn:02d}"
+                    
+                    # Ionospheric Correction Difference in meters (DF069, resolution 0.5mm)
+                    iono_diff = 0.0
+                    if hasattr(msg, f'DF069_{i:02d}'):
+                        iono_diff = float(getattr(msg, f'DF069_{i:02d}')) * 0.0005  # 0.5mm scale
+                    
+                    iono_corr = IonosphericCorrection(
+                        satellite_id=sat_key,
+                        stec=iono_diff,
+                        stec_rate=None,
+                        quality_indicator=int(getattr(msg, f'DF074_{i:02d}', 0)) if hasattr(msg, f'DF074_{i:02d}') else 0
+                    )
+                    epoch_data.ionospheric_corrections[sat_key] = iono_corr
+            
+            return epoch_data
+            
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_gps_geometric_correction_diff(self, msg, epoch_data):
+        """
+        Parse RTCM 1016 - GPS Geometric Correction Differences.
+        Reference: RTCM 10403.3 Table 3.5-17 and 3.5-19
+        Uses DF fields: Header + DF068, DF074, DF075, DF070, DF071
+        """
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            num_sats = getattr(msg, 'DF067', 0)
+            
+            # Geometric corrections are typically  processed along with ionospheric
+            # Store in a separate dict for geometric/tropospheric corrections
+            if not hasattr(epoch_data, 'geometric_corrections'):
+                epoch_data.geometric_corrections = {}
+            
+            for i in range(num_sats):
+                sat_id_attr = f'DF068_{i:02d}'
+                if hasattr(msg, sat_id_attr):
+                    sat_prn = int(getattr(msg, sat_id_attr))
+                    sat_key = f"G{sat_prn:02d}"
+                    
+                    # Geometric Correction Difference in meters (DF070, resolution 0.5mm)
+                    geom_diff = 0.0
+                    if hasattr(msg, f'DF070_{i:02d}'):
+                        geom_diff = float(getattr(msg, f'DF070_{i:02d}')) * 0.0005  # 0.5mm scale
+                    
+                    epoch_data.geometric_corrections[sat_key] = {
+                        'geometric_diff': geom_diff,
+                        'IODE': int(getattr(msg, f'DF071_{i:02d}', 0)) if hasattr(msg, f'DF071_{i:02d}') else 0
+                    }
+            
+            return epoch_data
+            
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_gps_combined_correction_diff(self, msg, epoch_data):
+        """
+        Parse RTCM 1017 - GPS Combined Geometric and Ionospheric Correction Differences.
+        Reference: RTCM 10403.3 Table 3.5-17 and 3.5-20
+        Combines data from messages 1015 and 1016
+        """
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            from core.data_models import IonosphericCorrection
+            
+            num_sats = getattr(msg, 'DF067', 0)
+            
+            if not hasattr(epoch_data, 'geometric_corrections'):
+                epoch_data.geometric_corrections = {}
+            
+            for i in range(num_sats):
+                sat_id_attr = f'DF068_{i:02d}'
+                if hasattr(msg, sat_id_attr):
+                    sat_prn = int(getattr(msg, sat_id_attr))
+                    sat_key = f"G{sat_prn:02d}"
+                    
+                    # Geometric Correction (DF070)
+                    geom_diff = 0.0
+                    if hasattr(msg, f'DF070_{i:02d}'):
+                        geom_diff = float(getattr(msg, f'DF070_{i:02d}')) * 0.0005
+                    
+                    # Ionospheric Correction (DF069)
+                    iono_diff = 0.0
+                    if hasattr(msg, f'DF069_{i:02d}'):
+                        iono_diff = float(getattr(msg, f'DF069_{i:02d}')) * 0.0005
+                    
+                    # Store both corrections
+                    iono_corr = IonosphericCorrection(
+                        satellite_id=sat_key,
+                        stec=iono_diff,
+                        stec_rate=None,
+                        quality_indicator=0
+                    )
+                    epoch_data.ionospheric_corrections[sat_key] = iono_corr
+                    
+                    epoch_data.geometric_corrections[sat_key] = {
+                        'geometric_diff': geom_diff,
+                        'IODE': int(getattr(msg, f'DF071_{i:02d}', 0)) if hasattr(msg, f'DF071_{i:02d}') else 0
+                    }
+            
+            return epoch_data
+            
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_glo_iono_correction_diff(self, msg, epoch_data):
+        """
+        Parse RTCM 1037 - GLONASS Ionospheric Correction Differences.
+        Reference: RTCM 10403.3, similar structure to GPS 1015
+        """
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            from core.data_models import IonosphericCorrection
+            
+            # Similar to message 1015 but for GLONASS
+            num_sats = getattr(msg, 'DF234', 0)  # GLONASS data entries field
+            
+            for i in range(num_sats):
+                sat_id_attr = f'DF038_{i:02d}'  # GLONASS Satellite ID
+                if hasattr(msg, sat_id_attr):
+                    sat_slot = int(getattr(msg, sat_id_attr))
+                    sat_key = f"R{sat_slot:02d}"
+                    
+                    # GLONASS Ionospheric Correction (DF237)
+                    iono_diff = 0.0
+                    if hasattr(msg, f'DF237_{i:02d}'):
+                        iono_diff = float(getattr(msg, f'DF237_{i:02d}')) * 0.0005
+                    
+                    iono_corr = IonosphericCorrection(
+                        satellite_id=sat_key,
+                        stec=iono_diff,
+                        stec_rate=None,
+                        quality_indicator=0
+                    )
+                    epoch_data.ionospheric_corrections[sat_key] = iono_corr
+            
+            return epoch_data
+            
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_glo_geometric_correction_diff(self, msg, epoch_data):
+        """
+        Parse RTCM 1038 - GLONASS Geometric Correction Differences.
+        """
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            if not hasattr(epoch_data, 'geometric_corrections'):
+                epoch_data.geometric_corrections = {}
+            
+            num_sats = getattr(msg, 'DF234', 0)
+            
+            for i in range(num_sats):
+                sat_id_attr = f'DF038_{i:02d}'
+                if hasattr(msg, sat_id_attr):
+                    sat_slot = int(getattr(msg, sat_id_attr))
+                    sat_key = f"R{sat_slot:02d}"
+                    
+                    # GLONASS Geometric Correction (DF238)
+                    geom_diff = 0.0
+                    if hasattr(msg, f'DF238_{i:02d}'):
+                        geom_diff = float(getattr(msg, f'DF238_{i:02d}')) * 0.0005
+                    
+                    epoch_data.geometric_corrections[sat_key] = {
+                        'geometric_diff': geom_diff,
+                        'IOD': int(getattr(msg, f'DF239_{i:02d}', 0)) if hasattr(msg, f'DF239_{i:02d}') else 0
+                    }
+            
+            return epoch_data
+            
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_glo_combined_correction_diff(self, msg, epoch_data):
+        """
+        Parse RTCM 1039 - GLONASS Combined Geometric and Ionospheric Correction Differences.
+        """
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            from core.data_models import IonosphericCorrection
+            
+            if not hasattr(epoch_data, 'geometric_corrections'):
+                epoch_data.geometric_corrections = {}
+            
+            num_sats = getattr(msg, 'DF234', 0)
+            
+            for i in range(num_sats):
+                sat_id_attr = f'DF038_{i:02d}'
+                if hasattr(msg, sat_id_attr):
+                    sat_slot = int(getattr(msg, sat_id_attr))
+                    sat_key = f"R{sat_slot:02d}"
+                    
+                    # Geometric Correction (DF238)
+                    geom_diff = 0.0
+                    if hasattr(msg, f'DF238_{i:02d}'):
+                        geom_diff = float(getattr(msg, f'DF238_{i:02d}')) * 0.0005
+                    
+                    # Ionospheric Correction (DF237)
+                    iono_diff = 0.0
+                    if hasattr(msg, f'DF237_{i:02d}'):
+                        iono_diff = float(getattr(msg, f'DF237_{i:02d}')) * 0.0005
+                    
+                    iono_corr = IonosphericCorrection(
+                        satellite_id=sat_key,
+                        stec=iono_diff,
+                        stec_rate=None,
+                        quality_indicator=0
+                    )
+                    epoch_data.ionospheric_corrections[sat_key] = iono_corr
+                    
+                    epoch_data.geometric_corrections[sat_key] = {
+                        'geometric_diff': geom_diff,
+                        'IOD': int(getattr(msg, f'DF239_{i:02d}', 0)) if hasattr(msg, f'DF239_{i:02d}') else 0
+                    }
+            
+            return epoch_data
+            
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    # =========================================================================
+    # SSR Messages (1057-1068) - State Space Representation
+    # =========================================================================
+    
+    def _handle_gps_ssr_orbit(self, msg, epoch_data):
+        """
+        Parse RTCM 1057 - SSR GPS Orbit Correction.
+        Reference: RTCM 10403.3 Table 3.5-37/38
+        """
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            from core.data_models import SatelliteClockCorrection
+            
+            num_sats = getattr(msg, 'DF387', 0)
+            
+            for i in range(num_sats):
+                sat_prn = int(getattr(msg, f'DF068_{i:02d}', 0))
+                sat_key = f"G{sat_prn:02d}"
+                
+                # Orbit corrections (scales per RTCM standard)
+                delta_radial = float(getattr(msg, f'DF365_{i:02d}', 0)) * 0.0001  # 0.1mm scale
+                delta_along = float(getattr(msg, f'DF366_{i:02d}', 0)) * 0.0004  # 0.4mm scale
+                delta_cross = float(getattr(msg, f'DF367_{i:02d}', 0)) * 0.0004  # 0.4mm scale
+                
+                corr = SatelliteClockCorrection(
+                    satellite_id=sat_key,
+                    delta_clock=0.0,
+                    delta_radial=delta_radial,
+                    delta_along_track=delta_along,
+                    delta_cross_track=delta_cross
+                )
+                epoch_data.satellite_clock_corrections[sat_key] = corr
+            
+            return epoch_data
+            
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_gps_ssr_clock(self, msg, epoch_data):
+        """
+        Parse RTCM 1058 - SSR GPS Clock Correction.
+        Reference: RTCM 10403.3 Table 3.5-39/40
+        """
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            from core.data_models import SatelliteClockCorrection
+            
+            num_sats = getattr(msg, 'DF387', 0)
+            
+            for i in range(num_sats):
+                sat_prn = int(getattr(msg, f'DF068_{i:02d}', 0))
+                sat_key = f"G{sat_prn:02d}"
+                
+                # Clock corrections (DF376-378 with 0.1mm scale for C0)
+                delta_c0 = float(getattr(msg, f'DF376_{i:02d}', 0)) * 0.0001  # 0.1mm
+                delta_c1 = float(getattr(msg, f'DF377_{i:02d}', 0)) * 0.000001  # 0.001mm/s
+                delta_c2 = float(getattr(msg, f'DF378_{i:02d}', 0)) * 0.00000002  # 0.00002mm/s²
+                
+                corr = SatelliteClockCorrection(
+                    satellite_id=sat_key,
+                    delta_clock=delta_c0,
+                    delta_clock_rate=delta_c1,
+                    delta_clock_accel=delta_c2
+                )
+                epoch_data.satellite_clock_corrections[sat_key] = corr
+            
+            return epoch_data
+            
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_gps_ssr_code_bias(self, msg, epoch_data):
+        """
+        Parse RTCM 1059 - SSR GPS Code Bias.
+        Reference: RTCM 10403.3 Table 3.5-41/42/43
+        """
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            from core.data_models import SatelliteBiasCorrection
+            
+            num_sats = getattr(msg, 'DF387', 0)
+            
+            for i in range(num_sats):
+                sat_prn = int(getattr(msg, f'DF068_{i:02d}', 0))
+                sat_key = f"G{sat_prn:02d}"
+                
+                num_codes = int(getattr(msg, f'DF379_{i:02d}', 0))
+                
+                code_biases_dict = {}
+                for j in range(num_codes):
+                    signal_id = int(getattr(msg, f'DF380_{i:02d}_{j:02d}', 0))
+                    bias_value = float(getattr(msg, f'DF383_{i:02d}_{j:02d}', 0)) * 0.01  # 0.01m scale
+                    code_biases_dict[signal_id] = bias_value
+                
+                corr = SatelliteBiasCorrection(
+                    satellite_id=sat_key,
+                    code_biases=code_biases_dict,
+                    phase_biases={}
+                )
+                epoch_data.satellite_bias_corrections[sat_key] = corr
+            
+            return epoch_data
+            
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_gps_ssr_combined(self, msg, epoch_data):
+        """
+        Parse RTCM 1060 - SSR GPS Combined Orbit and Clock Correction.
+        Reference: RTCM 10403.3 Table 3.5-44/45
+        """
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            from core.data_models import SatelliteClockCorrection
+            
+            num_sats = getattr(msg, 'DF387', 0)
+            
+            for i in range(num_sats):
+                sat_prn = int(getattr(msg, f'DF068_{i:02d}', 0))
+                sat_key = f"G{sat_prn:02d}"
+                
+                # Combined orbit and clock data
+                delta_radial = float(getattr(msg, f'DF365_{i:02d}', 0)) * 0.0001
+                delta_along = float(getattr(msg, f'DF366_{i:02d}', 0)) * 0.0004
+                delta_cross = float(getattr(msg, f'DF367_{i:02d}', 0)) * 0.0004
+                delta_c0 = float(getattr(msg, f'DF376_{i:02d}', 0)) * 0.0001
+                delta_c1 = float(getattr(msg, f'DF377_{i:02d}', 0)) * 0.000001
+                delta_c2 = float(getattr(msg, f'DF378_{i:02d}', 0)) * 0.00000002
+                
+                corr = SatelliteClockCorrection(
+                    satellite_id=sat_key,
+                    delta_clock=delta_c0,
+                    delta_clock_rate=delta_c1,
+                    delta_clock_accel=delta_c2,
+                    delta_radial=delta_radial,
+                    delta_along_track=delta_along,
+                    delta_cross_track=delta_cross
+                )
+                epoch_data.satellite_clock_corrections[sat_key] = corr
+            
+            return epoch_data
+            
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_gps_ssr_ura(self, msg, epoch_data):
+        """
+        Parse RTCM 1061 - SSR GPS URA (User Range Accuracy).
+        Reference: RTCM 10403.3 Table 3.5-46/47
+        """
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            # URA values are typically stored in a separate dictionary
+            if not hasattr(epoch_data, 'ssr_ura'):
+                epoch_data.ssr_ura = {}
+            
+            num_sats = getattr(msg, 'DF387', 0)
+            
+            for i in range(num_sats):
+                sat_prn = int(getattr(msg, f'DF068_{i:02d}', 0))
+                sat_key = f"G{sat_prn:02d}"
+                
+                ura_value = int(getattr(msg, f'DF389_{i:02d}', 0))
+                epoch_data.ssr_ura[sat_key] = ura_value
+            
+            return epoch_data
+            
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_gps_ssr_high_rate_clock(self, msg, epoch_data):
+        """
+        Parse RTCM 1062 - SSR GPS High Rate Clock Correction.
+        Reference: RTCM 10403.3 Table 3.5-48/49
+        """
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            from core.data_models import SatelliteClockCorrection
+            
+            num_sats = getattr(msg, 'DF387', 0)
+            
+            for i in range(num_sats):
+                sat_prn = int(getattr(msg, f'DF068_{i:02d}', 0))
+                sat_key = f"G{sat_prn:02d}"
+                
+                # High rate clock correction (DF390)
+                delta_clock_hr = float(getattr(msg, f'DF390_{i:02d}', 0)) * 0.0001  # 0.1mm scale
+                
+                corr = SatelliteClockCorrection(
+                    satellite_id=sat_key,
+                    delta_clock=delta_clock_hr
+                )
+                epoch_data.satellite_clock_corrections[sat_key] = corr
+            
+            return epoch_data
+            
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    # GLONASS SSR Message Handlers (1063-1068) follow similar patterns
+    # with GLONASS-specific satellite identifiers and data fields
+    
+    def _handle_glo_ssr_orbit(self, msg, epoch_data):
+        """Parse RTCM 1063 - SSR GLONASS Orbit Correction."""
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            # Similar to GPS 1057 but with GLONASS-specific fields
+            return epoch_data
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_glo_ssr_clock(self, msg, epoch_data):
+        """Parse RTCM 1064 - SSR GLONASS Clock Correction."""
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            # Similar to GPS 1058 but with GLONASS-specific fields
+            return epoch_data
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_glo_ssr_code_bias(self, msg, epoch_data):
+        """Parse RTCM 1065 - SSR GLONASS Code Bias."""
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            # Similar to GPS 1059 but with GLONASS-specific fields
+            return epoch_data
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_glo_ssr_combined(self, msg, epoch_data):
+        """Parse RTCM 1066 - SSR GLONASS Combined Orbit and Clock."""
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            # Similar to GPS 1060 but with GLONASS-specific fields
+            return epoch_data
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_glo_ssr_ura(self, msg, epoch_data):
+        """Parse RTCM 1067 - SSR GLONASS URA."""
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            # Similar to GPS 1061 but with GLONASS-specific fields
+            return epoch_data
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_glo_ssr_high_rate_clock(self, msg, epoch_data):
+        """Parse RTCM 1068 - SSR GLONASS High Rate Clock Correction."""
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            # Similar to GPS 1062 but with GLONASS-specific fields
+            return epoch_data
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    def _handle_glo_ssr_high_rate_clock(self, msg, epoch_data):
+        """Parse RTCM 1068 - SSR GLONASS High Rate Clock Correction."""
+        try:
+            if epoch_data is None:
+                epoch_data = EpochObservation(gps_time=0.0)
+            
+            # Similar to GPS 1062 but with GLONASS-specific fields
+            return epoch_data
+        except (AttributeError, ValueError):
+            return epoch_data
+    
+    # =========================================================================
+    # Public Methods for Accessing Correction Parameters
+    # =========================================================================
+    def get_broadcast_eph_correction(self, satellite_id):
+        """
+        Get broadcast ephemeris correction parameters for a specific satellite.
+        
+        Args:
+            satellite_id: e.g., "G01", "E02", "C03"
+            
+        Returns:
+            BroadcastEphemerisCorrections object or None if not available
+        """
+        if hasattr(self, 'broadcast_eph_cache'):
+            return self.broadcast_eph_cache.get(satellite_id)
+        return None
+    
+    def get_all_broadcast_eph_corrections(self):
+        """
+        Get all broadcast ephemeris corrections currently cached.
+        
+        Returns:
+            Dictionary of satellite_id -> BroadcastEphemerisCorrections
+        """
+        if hasattr(self, 'broadcast_eph_cache'):
+            return self.broadcast_eph_cache.copy()
+        return {}
+    
+    def get_tgd_correction(self, satellite_id):
+        """
+        Convenience method to get TGD (Total Group Delay) correction for a satellite.
+        
+        Args:
+            satellite_id: e.g., "G01", "C02"
+            
+        Returns:
+            TGD value in meters, or None if not available
+        """
+        corr = self.get_broadcast_eph_correction(satellite_id)
+        if corr:
+            return corr.TGD or corr.TGD1 or corr.TGD2
+        return None
+    
+    def get_bgd_correction(self, satellite_id):
+        """
+        Convenience method to get BGD (Bias Group Delay) correction for a satellite.
+        
+        Args:
+            satellite_id: e.g., "E02"
+            
+        Returns:
+            BGD value in meters, or None if not available
+        """
+        corr = self.get_broadcast_eph_correction(satellite_id)
+        if corr:
+            return corr.BGD_E1E5a or corr.BGD_E1E5b
+        return None
+    
+    def apply_ionospheric_correction(self, pseudorange, sig_id, stec_value):
+        """
+        Apply ionospheric STEC correction to pseudorange.
+        
+        Args:
+            pseudorange: Original pseudorange in meters
+            sig_id: Signal identifier (e.g., "1C", "1X")
+            stec_value: Slant Total Electron Content in TECu
+            
+        Returns:
+            Corrected pseudorange in meters
+        """
+        if stec_value is None:
+            return pseudorange
+        
+        # Ionospheric delay ~0.1017 * STEC (m/TECu) for TEC model
+        iono_delay = 0.1017 * stec_value
+        
+        # Dual frequency signals have different corrections
+        # This is a simplified model; actual implementation depends on signal and frequency
+        return pseudorange - iono_delay
+    
+    def apply_tropospheric_correction(self, pseudorange, elevation_angle, tropo_corr):
+        """
+        Apply tropospheric correction to pseudorange using slant delay.
+        
+        Args:
+            pseudorange: Original pseudorange in meters
+            elevation_angle: Elevation angle of satellite in radians
+            tropo_corr: TroposphericCorrection object
+            
+        Returns:
+            Corrected pseudorange in meters
+        """
+        if tropo_corr is None or tropo_corr.ztd_wet is None:
+            return pseudorange
+        
+        # Calculate mapping function (simplified)
+        # More accurate models (Niell, VMF1, etc.) can be used
+        sin_el = math.sin(elevation_angle)
+        if sin_el <= 0:
+            return pseudorange
+        
+        # Simplified wet delay mapping: ztd_wet / sin(elevation)
+        tropo_delay = tropo_corr.ztd_wet / sin_el
+        
+        return pseudorange - tropo_delay
+
+
 
 def get_shared_handler():
     """Return a shared RTCMHandler instance (singleton).

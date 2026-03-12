@@ -16,17 +16,19 @@ class Const:
     A_PZ90   = 6378136.0      # [m]
 
 def brdc2pos(eph_data, sys_type, t_obs_gpst):
-    config = get_global_config()
-    rec_pos = np.array(config.approx_rec_pos)
-    if np.all(rec_pos == 0):
-        return None    
-    
-    if sys_type == 'GLO':
-        sat_pos_final = SatPos_brdc_glo(t_obs_gpst, eph_data)
-    else:
-        sat_pos_final = SatPos_brdc(t_obs_gpst, eph_data)
-    
-    return sat_pos_final[0]
+
+    try:
+        if sys_type == 'GLO':
+            result = SatPos_brdc_glo(t_obs_gpst, eph_data)
+        else:
+            result = SatPos_brdc(t_obs_gpst, eph_data)
+        
+        if result is None:
+            return None
+        
+        return result[0]
+    except (KeyError, TypeError, ValueError, IndexError):
+        return None
 
 def check_t(t):
     """
@@ -164,14 +166,18 @@ def SatPos_brdc_glo(t_sow, eph):
     """
     计算 GLONASS 卫星位置 (RK4 积分)
     """
-    pos = np.array([eph['X'], eph['Y'], eph['Z']]) * 1000.0
-    vel = np.array([eph['Vx'], eph['Vy'], eph['Vz']]) * 1000.0
-    acc = np.array([eph['Ax'], eph['Ay'], eph['Az']]) * 1000.0
-    
-    toe = eph['Tb'] # Time of ephemeris (seconds within week)
-    
-    # 执行 Runge-Kutta 4 积分
-    return runge_kutta_4(toe, pos, vel, acc, t_sow)
+  
+    try:
+        pos = np.array([eph['X'], eph['Y'], eph['Z']]) * 1000.0
+        vel = np.array([eph['Vx'], eph['Vy'], eph['Vz']]) * 1000.0
+        acc = np.array([eph['Ax'], eph['Ay'], eph['Az']]) * 1000.0
+        
+        toe = eph['tb']  # Time of ephemeris (seconds within week)
+        
+        # 执行 Runge-Kutta 4 积分
+        return runge_kutta_4(toe, pos, vel, acc, t_sow)
+    except (KeyError, TypeError, ValueError):
+        return None
 
 def runge_kutta_4(toe, pos, vel, acc, t_target):
     """

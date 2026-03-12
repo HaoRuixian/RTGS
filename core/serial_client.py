@@ -30,21 +30,35 @@ class SerialClient:
     Attributes:
         port (str): Serial port name (e.g., 'COM3', '/dev/ttyUSB0')
         baudrate (int): Baud rate for serial communication (e.g., 115200)
+        databits (int): Number of data bits (5, 6, 7, or 8)
+        stopbits (float): Number of stop bits (1, 1.5, or 2)
+        parity (str): Parity setting ('None', 'Even', 'Odd', 'Mark', 'Space')
+        flowctrl (str): Flow control ('None', 'RTS/CTS', 'XOn/XOff')
         timeout (float): Read timeout in seconds
         ser (serial.Serial): Active serial port connection
     """
     
-    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 10.0):
+    def __init__(self, port: str, baudrate: int = 115200, databits: int = 8, 
+                 stopbits: float = 1, parity: str = 'None', flowctrl: str = 'None', 
+                 timeout: float = 10.0):
         """
         Initialize serial client with port parameters.
         
         Args:
             port (str): Serial port name (e.g., 'COM3' on Windows, '/dev/ttyUSB0' on Linux)
             baudrate (int): Baud rate (default: 115200)
+            databits (int): Data bits - 5, 6, 7, or 8 (default: 8)
+            stopbits (float): Stop bits - 1, 1.5, or 2 (default: 1)
+            parity (str): Parity - 'None', 'Even', 'Odd', 'Mark', 'Space' (default: 'None')
+            flowctrl (str): Flow control - 'None', 'RTS/CTS', 'XOn/XOff' (default: 'None')
             timeout (float): Read timeout in seconds (default: 10.0)
         """
         self.port = port
         self.baudrate = baudrate
+        self.databits = databits
+        self.stopbits = stopbits
+        self.parity = parity
+        self.flowctrl = flowctrl
         self.timeout = timeout
         self.ser = None
 
@@ -65,7 +79,15 @@ class SerialClient:
         if settings.source_type != "Serial Port":
             raise ValueError(f"Cannot create SerialClient from {stream_type} settings: source type is not Serial Port")
             
-        return cls(settings.serial_port, settings.baudrate, settings.timeout)
+        return cls(
+            settings.serial_port, 
+            settings.baudrate,
+            settings.databits if hasattr(settings, 'databits') else 8,
+            settings.stopbits if hasattr(settings, 'stopbits') else 1,
+            settings.parity if hasattr(settings, 'parity') else 'None',
+            settings.flowctrl if hasattr(settings, 'flowctrl') else 'None',
+            settings.timeout
+        )
 
     def connect(self) -> serial.Serial:
         """
@@ -81,14 +103,51 @@ class SerialClient:
             serial.SerialException: When port cannot be opened or is invalid
         """
         try:
+            # Map parity string to serial constants
+            parity_map = {
+                'None': serial.PARITY_NONE,
+                'Even': serial.PARITY_EVEN,
+                'Odd': serial.PARITY_ODD,
+                'Mark': serial.PARITY_MARK,
+                'Space': serial.PARITY_SPACE
+            }
+            parity = parity_map.get(self.parity, serial.PARITY_NONE)
+            
+            # Map databits to serial constants
+            databits_map = {
+                5: serial.FIVEBITS,
+                6: serial.SIXBITS,
+                7: serial.SEVENBITS,
+                8: serial.EIGHTBITS
+            }
+            bytesize = databits_map.get(self.databits, serial.EIGHTBITS)
+            
+            # Map stopbits to serial constants
+            stopbits_map = {
+                1: serial.STOPBITS_ONE,
+                1.5: serial.STOPBITS_ONE_POINT_FIVE,
+                2: serial.STOPBITS_TWO
+            }
+            stopbits = stopbits_map.get(self.stopbits, serial.STOPBITS_ONE)
+            
+            # Determine flow control settings
+            rtscts = False
+            xonxoff = False
+            if self.flowctrl == 'RTS/CTS':
+                rtscts = True
+            elif self.flowctrl == 'XOn/XOff':
+                xonxoff = True
+            
             # Open serial port with configured parameters
             self.ser = serial.Serial(
                 port=self.port,
                 baudrate=self.baudrate,
-                bytesize=serial.EIGHTBITS,
-                stopbits=serial.STOPBITS_ONE,
-                parity=serial.PARITY_NONE,
-                timeout=self.timeout
+                bytesize=bytesize,
+                stopbits=stopbits,
+                parity=parity,
+                timeout=self.timeout,
+                rtscts=rtscts,
+                xonxoff=xonxoff
             )
             
             # Verify connection

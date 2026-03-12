@@ -25,12 +25,34 @@ class PositioningConfig:
     """Positioning module configuration."""
     mode: PositioningMode = PositioningMode.SPP
     enabled: bool = True
+    
+    # Basic positioning parameters
     min_satellites: int = 4
-    min_elevation: float = 10.0  # degrees
+    min_elevation: float = 10.0  # degrees (cutoff angle)
     max_pdop: float = 10.0
+    
+    # Observation weighting
     weight_mode: str = 'elevation'  # 'equal', 'elevation', 'snr'
-    use_smoothing: bool = True
+    
+    # Ionosphere correction strategy
+    ionosphere_option: str = 'IFLC'  # 'IFLC' (dual-freq IF-LC) or 'SINGLE' (single-freq with TGD)
+    
+    # Troposphere model
+    troposphere_model: str = 'Sastamoinen'  # 'None', 'Sastamoinen', 'HMSL'
+    
+    # GNSS Systems to use
+    gnss_systems: List[str] = field(default_factory=lambda: ['G', 'R', 'E', 'C'])  # GPS, GLONASS, Galileo, BeiDou
+    
+    # Smoothing/filtering
+    use_smoothing: bool = False
     smoothing_window: int = 10  # epochs
+    
+    # Random walk noise (m/sqrt(s))
+    random_walk: float = 0.0
+    
+    # Solution status thresholds
+    uncertain_std_pos: float = 5.0  # meters - threshold for "uncertain" status
+    fixed_std_pos: float = 2.5  # meters - threshold for "fixed" status
 
 
 @dataclass
@@ -56,6 +78,8 @@ class PositioningSolution:
     # Clock parameters
     clock_bias: float = 0.0  # meters (dT * c)
     clock_drift: float = 0.0  # m/s (dT * c, drift)
+    # time offsets for other systems (seconds relative to GPS)
+    time_offsets: Dict[str, float] = field(default_factory=dict)
     
     # Accuracy metrics
     std_north: float = 0.0  # meters
@@ -86,6 +110,21 @@ class PositioningSolution:
     mode: PositioningMode = PositioningMode.SPP
     num_iterations: int = 0
     processing_time_ms: float = 0.0  # milliseconds
+
+    # ------------------------------------------------------------------
+    # convenience properties
+    # ------------------------------------------------------------------
+    @property
+    def position_ecef(self) -> List[float]:
+        """Return ECEF coordinates as a list [X, Y, Z].
+        
+        This property provides compatibility with other parts of the
+        codebase that expect a ``position_ecef`` attribute (for example
+        when using a previous ``PositioningSolution`` instance as an
+        initial guess).  The values are derived from the explicit
+        ``ecef_x``, ``ecef_y`` and ``ecef_z`` fields.
+        """
+        return [self.ecef_x, self.ecef_y, self.ecef_z]
 
 
 @dataclass

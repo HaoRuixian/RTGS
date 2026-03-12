@@ -77,20 +77,29 @@ class PositioningThread(threading.Thread):
         self.daemon = True
         self.running = True
         
-        # Positioning state
-        self.positioner = SPPPositioner(ephemeris_handler=handler)
-        self.position_track = PositionTrack()
-        
         # Configuration
         config = get_global_config()
-        self.approx_position = np.array(config.approx_rec_pos, dtype=float)
-        if np.all(self.approx_position == 0):
+        pos_config = config.get_positioning_settings()
+        
+        # Initialize SPPPositioner with configuration
+        self.positioner = SPPPositioner(ephemeris_handler=handler, config=pos_config)
+        self.position_track = PositionTrack()
+        
+        apr = config.approx_rec_pos
+        if apr is None:
+            self.approx_position = None
+        else:
+            try:
+                self.approx_position = np.array(apr, dtype=float)
+            except Exception:
+                self.approx_position = None
+        if self.approx_position is None or np.all(self.approx_position == 0):
             # Default to somewhere on Earth if not configured
             self.approx_position = np.array([4000000.0, 3000000.0, 5000000.0])
         
         self.mode = PositioningMode.SPP
-        self.min_satellites = 4
-        self.min_elevation = 10.0
+        self.min_satellites = pos_config.get('min_satellites', 4)
+        self.min_elevation = pos_config.get('cutoff_elevation_deg', 10.0)
         
         # Epoch caching and merging: combine observations from same UTC time
         # self.current_epoch_utc: normalized UTC time of the pending epoch (datetime object)
@@ -224,8 +233,17 @@ class PositioningThread(threading.Thread):
             start_time = time.time()
             
             # Use SPP to compute position
+            # Pass approx_position only if it was successfully updated from a previous solution
+            # Otherwise let the positioner compute an initial approximation from satellite positions
             if self.mode == PositioningMode.SPP:
-                result = self.positioner.process_epoch(epoch_obs, self.approx_position)
+                if self.last_position is not None:
+                    # Use previous solution as initial guess
+                    approx_pos = np.array(self.last_position.position_ecef, dtype=float)
+                else:
+                    # First epoch: let positioner compute initial approximation
+                    approx_pos = None
+                
+                result = self.positioner.process_epoch(epoch_obs, approx_pos)
             else:
                 # Placeholder for other modes
                 return None
@@ -233,8 +251,8 @@ class PositioningThread(threading.Thread):
             if result is None:
                 return None
             
-            # Update approximate position for next epoch
-            self.approx_position = np.array(result.position_ecef)
+            # Update approximate position for next epoch (now computed from actual solution)
+            # This becomes the initial guess for the next epoch
             
             # Convert RTCMHandler's PositioningResult to our PositioningSolution
             solution = self._convert_result_to_solution(result, epoch_obs)
@@ -294,6 +312,7 @@ class PositioningThread(threading.Thread):
             convergence=result.convergence,
             status=status,
             mode=self.mode,
+            time_offsets=getattr(result, 'time_offsets', {}),
         )
         
         # Compute residuals statistics

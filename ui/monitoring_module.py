@@ -456,16 +456,21 @@ class MonitoringModule(QMainWindow):
         Handle incoming epoch from DataProcessingThread and update UI.
         
         Procedure:
-        1. Store latest epoch data for logging and positioning modules
-        2. Extract epoch timestamp and satellite count
-        3. Merge epoch satellites into merged_satellites dict (maintains current state)
-        4. Update satellite history (elevation, SNR time series for analysis tab)
-        5. Apply GUI update throttling: only refresh if enough time has elapsed
-        6. Log periodic statistics (every 5 seconds)
+        1. Apply station coordinates from 1005/1006 messages (monitoring mode only)
+        2. Store latest epoch data for logging and positioning modules
+        3. Extract epoch timestamp and satellite count
+        4. Merge epoch satellites into merged_satellites dict (maintains current state)
+        5. Update satellite history (elevation, SNR time series for analysis tab)
+        6. Apply GUI update throttling: only refresh if enough time has elapsed
+        7. Log periodic statistics (every 5 seconds)
         
         Thread safety: Runs in UI thread (slot callback), safe to update widgets.
         Throttling: Limits full widget refresh to 3-5 Hz to avoid excessive redrawing.
         """
+        # Step 0a: Apply station coordinates from 1005/1006 messages (monitoring mode only)
+        if hasattr(self, 'handler') and self.handler:
+            self.handler.apply_station_coordinates()
+        
         # Step 0: Store latest epoch data
         self.latest_epoch_data = epoch_data
         

@@ -26,6 +26,10 @@ class ConnectionSettings:
     # Serial settings
     serial_port: str = "COM1"
     baudrate: int = 115200
+    databits: int = 8  # Data bits: 5, 6, 7, 8
+    stopbits: float = 1  # Stop bits: 1, 1.5, 2
+    parity: str = "None"  # Parity: None, Even, Odd, Mark, Space
+    flowctrl: str = "None"  # Flow control: None, RTS/CTS, XOn/XOff
     
     # Common settings
     enabled: bool = True
@@ -50,10 +54,31 @@ class GlobalConfig:
     target_systems: List[str] = field(default_factory=lambda: ['G', 'R', 'E', 'C'])
     # Positioning related settings (SPP/PPP/RTK parameters)
     positioning_settings: dict = field(default_factory=lambda: {
-        'cutoff_elevation_deg': 10.0,
-        'weight_mode': 'elevation',  # or 'snr'
-        'random_walk': 0.0,
-        'smoothing_window': 0
+        # Basic parameters
+        'cutoff_elevation_deg': 10.0,  # Minimum elevation angle (degrees)
+        'min_satellites': 4,
+        'max_pdop': 10.0,
+        
+        # Ionosphere correction
+        'ionosphere_option': 'IFLC',  # 'IFLC' (dual-freq IF-LC) or 'SINGLE' (single-freq)
+        
+        # Troposphere correction
+        'troposphere_model': 'Sastamoinen',  # 'None', 'Sastamoinen', 'HMSL'
+        
+        # GNSS systems
+        'gnss_systems': ['G', 'R', 'E', 'C'],  # GPS, GLONASS, Galileo, BeiDou
+        
+        # Observation weighting
+        'weight_mode': 'elevation',  # 'equal', 'elevation', 'snr'
+        
+        # Smoothing
+        'use_smoothing': False,
+        'smoothing_window': 10,  # epochs
+        'random_walk': 0.0,  # m/sqrt(s)
+        
+        # Solution status thresholds
+        'uncertain_std_pos': 5.0,  # meters
+        'fixed_std_pos': 2.5,  # meters
     })
     
     def get_connection_settings(self, stream_type: str) -> ConnectionSettings:
@@ -89,13 +114,30 @@ class GlobalConfig:
     
     def update_general_settings(self, settings: Dict[str, Any]) -> None:
         """
-        Update general settings like approx_rec_pos and target_systems.
-        
+        Update general settings like ``approx_rec_pos`` and ``target_systems``.
+
+        ``approx_rec_pos`` may be ``None`` to clear any previously stored
+        value.  When providing a non-null value we attempt to coerce it to a
+        list of floats for downstream users.
+
         Args:
             settings: Dictionary containing the general settings to update
         """
         for key, value in settings.items():
-            if hasattr(self, key):
+            if not hasattr(self, key):
+                continue
+            if key == 'approx_rec_pos':
+                if value is None:
+                    setattr(self, key, None)
+                else:
+                    # try to convert to list of floats
+                    try:
+                        coords = [float(v) for v in value]
+                        setattr(self, key, coords)
+                    except Exception:
+                        # ignore invalid values and leave existing setting
+                        pass
+            else:
                 setattr(self, key, value)
 
     def get_positioning_settings(self) -> Dict[str, Any]:

@@ -1,7 +1,12 @@
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QPalette
+from ui.responsive import compute_ui_scale
 
-def get_app_stylesheet():
+def ui_scale_for_width(width: int, height: int | None = None) -> float:
+    return compute_ui_scale(width, height)
+
+
+def get_app_stylesheet(scale: float = 1.0):
     """
     深度优化的蓝色系学术风格样式表。
     重点：深蓝色调、彻底覆盖白块、重构选项卡样式。
@@ -39,6 +44,15 @@ def get_app_stylesheet():
     # 通用变量
     radius = "6px"
     font_stack = "Inter, 'Segoe UI', Roboto, 'Helvetica Neue', Arial"
+    font_px = max(11, int(13 * scale))
+    button_pad_v = max(4, int(6 * scale))
+    button_pad_h = max(10, int(15 * scale))
+    input_pad_v = max(4, int(5 * scale))
+    input_pad_h = max(6, int(8 * scale))
+    tab_pad_v = max(6, int(8 * scale))
+    tab_pad_h = max(12, int(20 * scale))
+    header_pad = max(4, int(6 * scale))
+    status_font = max(10, int(11 * scale))
 
     stylesheet = f"""
     /* 全局背景重置，防止任何地方露白 */
@@ -46,7 +60,7 @@ def get_app_stylesheet():
         background-color: {bg_main};
         color: {fg_main};
         font-family: {font_stack};
-        font-size: 13px;
+        font-size: {font_px}px;
         outline: none;
     }}
 
@@ -68,7 +82,7 @@ def get_app_stylesheet():
         background-color: {bg_input};
         border: 1px solid {border};
         color: {fg_main};
-        padding: 6px 15px;
+        padding: {button_pad_v}px {button_pad_h}px;
         border-radius: {radius};
         font-weight: 500;
     }}
@@ -89,7 +103,7 @@ def get_app_stylesheet():
         background-color: {bg_input};
         border: 1px solid {border};
         border-radius: {radius};
-        padding: 5px 8px;
+        padding: {input_pad_v}px {input_pad_h}px;
         selection-background-color: {accent};
     }}
     QLineEdit:focus, QComboBox:focus {{
@@ -106,7 +120,7 @@ def get_app_stylesheet():
     QTabBar::tab {{
         background-color: {bg_main};
         color: {fg_muted};
-        padding: 8px 20px;
+        padding: {tab_pad_v}px {tab_pad_h}px;
         margin-right: 4px;
         border: 1px solid {border};
         border-bottom: none;
@@ -127,7 +141,7 @@ def get_app_stylesheet():
     QHeaderView::section {{
         background-color: {bg_input};
         color: {fg_muted};
-        padding: 6px;
+        padding: {header_pad}px;
         border: none;
         border-right: 1px solid {border};
         border-bottom: 1px solid {border};
@@ -200,7 +214,7 @@ def get_app_stylesheet():
         border-radius: 10px;
         padding: 2px 10px;
         font-weight: bold;
-        font-size: 11px;
+        font-size: {status_font}px;
     }}
     """
     return stylesheet

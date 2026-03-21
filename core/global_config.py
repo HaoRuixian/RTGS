@@ -50,8 +50,8 @@ class GlobalConfig:
     # Receiver approximate position (ECEF coordinates)
     approx_rec_pos: List[float] = field(default_factory=lambda: [0, 0, 0])
     
-    # GNSS system filters (G=GPS, R=GLONASS, E=Galileo, C=Beidou)
-    target_systems: List[str] = field(default_factory=lambda: ['G', 'R', 'E', 'C'])
+    # GNSS system filters
+    target_systems: List[str] = field(default_factory=lambda: ['G', 'R', 'E', 'C', 'J', 'S', 'I'])
     # Positioning related settings (SPP/PPP/RTK parameters)
     positioning_settings: dict = field(default_factory=lambda: {
         # Basic parameters
@@ -65,8 +65,8 @@ class GlobalConfig:
         # Troposphere correction
         'troposphere_model': 'Sastamoinen',  # 'None', 'Sastamoinen', 'HMSL'
         
-        # GNSS systems
-        'gnss_systems': ['G', 'R', 'E', 'C'],  # GPS, GLONASS, Galileo, BeiDou
+        # GNSS systems used by positioning
+        'gnss_systems': ['G', 'R', 'E', 'C', 'J', 'I'],  # GPS, GLONASS, Galileo, BeiDou, QZSS, IRNSS
         
         # Observation weighting
         'weight_mode': 'elevation',  # 'equal', 'elevation', 'snr'

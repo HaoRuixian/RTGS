@@ -1,12 +1,14 @@
 """
-Broadcast Ephemeris Management for GPS, GLONASS, Galileo, and BeiDou.
-Handles RTCM message parsing and ephemeris parameter extraction and caching.
-Reference: RTCM 10403.3 Standard (October 7, 2016)
+Broadcast ephemeris management for supported GNSS constellations.
+
+Handles RTCM message parsing and ephemeris parameter extraction/caching for
+GPS, GLONASS, Galileo, BeiDou, QZSS, IRNSS/NavIC, and SBAS.
 """
 
 import math
 import threading
 from core.gnss_time import GNSSTime
+from core.mixed_gnss_reader import getbitu
 from typing import Dict, Optional, Tuple
 
 
@@ -21,6 +23,41 @@ class BroadcastEphemeris:
         self.cache = {}  # Key: "G01", "R02", "E03", "C04", etc.
         self.lock = threading.Lock()
         self.last_updated = {}  # Track last update time for each satellite
+
+    def _align_gps_week(self, raw_week: int) -> int:
+        """
+        Expand a truncated GNSS week number to the nearest current GPS week.
+        """
+        current_week = GNSSTime.current_gps_week()
+        week = int(raw_week)
+        while week < current_week - 512:
+            week += 1024
+        while week > current_week + 512:
+            week -= 1024
+        return week
+
+    @staticmethod
+    def _getbits(buff: bytes, pos: int, length: int) -> int:
+        """Extract signed bits using RTKLIB's two's-complement convention."""
+        value = getbitu(buff, pos, length)
+        if length <= 0:
+            return 0
+        if value & (1 << (length - 1)):
+            value -= 1 << length
+        return value
+
+    @staticmethod
+    def _normalize_gps_sow(week: int, sow: float) -> Tuple[int, float]:
+        """Normalize GPS week and seconds-of-week after +/- day adjustments."""
+        gps_week_seconds = 7 * 24 * 3600
+        sow = float(sow)
+        while sow < 0.0:
+            sow += gps_week_seconds
+            week -= 1
+        while sow >= gps_week_seconds:
+            sow -= gps_week_seconds
+            week += 1
+        return week, sow
     
     # ========================================================================
     # GPS Ephemeris (Message 1019)
@@ -330,6 +367,184 @@ class BroadcastEphemeris:
             
         except (AttributeError, ValueError):
             return None
+
+    # ========================================================================
+    # QZSS Ephemeris (Message 1044)
+    # ========================================================================
+
+    def extract_qzss_ephemeris(self, msg) -> Optional[Dict]:
+        """
+        Extract QZSS ephemeris parameters from RTCM message 1044.
+        """
+        try:
+            slot = int(msg.DF429)
+            sat_key = f"J{slot:02d}"
+            prn = slot + 192
+
+            eph = {
+                'system': 'QZSS',
+                'satellite_id': sat_key,
+                'PRN': prn,
+                'slot_number': slot,
+                'week': self._align_gps_week(int(msg.DF452)),
+                'toe': float(msg.DF442),
+                'toc': float(msg.DF430),
+                'iode': int(msg.DF434),
+                'iodc': int(msg.DF456),
+                'a': float(msg.DF441) ** 2,
+                'sqrt_a': float(msg.DF441),
+                'e': float(msg.DF439),
+                'M0': float(msg.DF437) * math.pi,
+                'omega': float(msg.DF448) * math.pi,
+                'Omega0': float(msg.DF444) * math.pi,
+                'i0': float(msg.DF446) * math.pi,
+                'delta_n': float(msg.DF436) * math.pi,
+                'Omega_dot': float(msg.DF449) * math.pi,
+                'idot': float(msg.DF450) * math.pi,
+                'Crs': float(msg.DF435),
+                'Crc': float(msg.DF447),
+                'Cus': float(msg.DF440),
+                'Cuc': float(msg.DF438),
+                'Cis': float(msg.DF445),
+                'Cic': float(msg.DF443),
+                'af0': float(msg.DF433),
+                'af1': float(msg.DF432),
+                'af2': float(msg.DF431),
+                'TGD': float(msg.DF455),
+                'health': int(msg.DF454),
+                'ura': int(msg.DF453),
+                'fit_interval': 4 if int(getattr(msg, 'DF457', 0)) else 2,
+                'code_on_l2': self._parse_code_on_l2(int(getattr(msg, 'DF451', 0))),
+            }
+            return eph
+        except (AttributeError, ValueError):
+            return None
+
+    # ========================================================================
+    # IRNSS / NavIC Ephemeris (Message 1041)
+    # ========================================================================
+
+    def extract_irnss_ephemeris(self, msg) -> Optional[Dict]:
+        """
+        Extract IRNSS/NavIC ephemeris parameters from RTCM message 1041.
+        """
+        try:
+            prn = int(msg.DF516)
+            sat_key = f"I{prn:02d}"
+
+            health_flags = 0
+            if hasattr(msg, 'DF527'):
+                health_flags |= int(msg.DF527) << 1
+            if hasattr(msg, 'DF528'):
+                health_flags |= int(msg.DF528)
+
+            eph = {
+                'system': 'IRNSS',
+                'satellite_id': sat_key,
+                'PRN': prn,
+                'week': self._align_gps_week(int(msg.DF517)),
+                'toe': float(msg.DF537),
+                'toc': float(msg.DF522),
+                'iode': int(msg.DF525),
+                'iodc': int(msg.DF525),
+                'a': float(msg.DF539) ** 2,
+                'sqrt_a': float(msg.DF539),
+                'e': float(msg.DF538),
+                'M0': float(msg.DF536) * math.pi,
+                'omega': float(msg.DF541) * math.pi,
+                'Omega0': float(msg.DF540) * math.pi,
+                'i0': float(msg.DF543) * math.pi,
+                'delta_n': float(msg.DF524) * math.pi,
+                'Omega_dot': float(msg.DF542) * math.pi,
+                'idot': float(msg.DF535) * math.pi,
+                'Crs': float(msg.DF534),
+                'Crc': float(msg.DF533),
+                'Cus': float(msg.DF530),
+                'Cuc': float(msg.DF529),
+                'Cis': float(msg.DF532),
+                'Cic': float(msg.DF531),
+                'af0': float(msg.DF518),
+                'af1': float(msg.DF519),
+                'af2': float(msg.DF520),
+                'TGD': float(msg.DF523),
+                'ura': int(msg.DF521),
+                'health': health_flags,
+                'l5_flag': int(getattr(msg, 'DF527', 0)),
+                's_flag': int(getattr(msg, 'DF528', 0)),
+            }
+            return eph
+        except (AttributeError, ValueError):
+            return None
+
+    # ========================================================================
+    # SBAS Raw Navigation (RTKLIB sbsmsg_t / Type 9)
+    # ========================================================================
+
+    def extract_sbas_ephemeris(self, msg) -> Optional[Dict]:
+        """
+        Extract SBAS GEO navigation parameters from a raw SBAS message.
+
+        The input message mirrors RTKLIB's ``sbsmsg_t`` and is currently fed by
+        UBX-RXM-SFRBX decoding in the serial pipeline.
+        """
+        try:
+            if getattr(msg, "sbas_type", None) != 9:
+                return None
+
+            prn = int(msg.prn)
+            sat_key = f"S{prn:02d}"
+            frame = bytes(msg.msg)
+            week = int(msg.week)
+            tow = int(msg.tow)
+
+            # RTKLIB decode_sbstype9(): reference epoch within the nearest day.
+            t = getbitu(frame, 22, 13) * 16 - tow % 86400
+            if t <= -43200:
+                t += 86400
+            elif t > 43200:
+                t -= 86400
+
+            t0_week, t0_sow = self._normalize_gps_sow(week, tow + t)
+
+            sva = getbitu(frame, 35, 4)
+            svh = 1 if sva == 15 else 0
+
+            eph = {
+                'system': 'SBAS',
+                'satellite_id': sat_key,
+                'PRN': prn,
+                'week': t0_week,
+                'toe': float(t0_sow),
+                'toc': float(t0_sow),
+                't0': float(t0_sow),
+                'tof': float(tow),
+                'sva': int(sva),
+                'ura': int(sva),
+                'health': int(svh),
+                'svh': int(svh),
+                'pos': [
+                    self._getbits(frame, 39, 30) * 0.08,
+                    self._getbits(frame, 69, 30) * 0.08,
+                    self._getbits(frame, 99, 25) * 0.4,
+                ],
+                'vel': [
+                    self._getbits(frame, 124, 17) * 0.000625,
+                    self._getbits(frame, 141, 17) * 0.000625,
+                    self._getbits(frame, 158, 18) * 0.004,
+                ],
+                'acc': [
+                    self._getbits(frame, 176, 10) * 0.0000125,
+                    self._getbits(frame, 186, 10) * 0.0000125,
+                    self._getbits(frame, 196, 10) * 0.0000625,
+                ],
+                'af0': self._getbits(frame, 206, 12) * (2 ** -31),
+                'af1': self._getbits(frame, 218, 8) * (2 ** -40),
+                'af2': 0.0,
+                'source': getattr(msg, 'source', 'SBAS RAW'),
+            }
+            return eph
+        except (AttributeError, TypeError, ValueError):
+            return None
     
     # ========================================================================
     # Cache Management
@@ -381,7 +596,7 @@ class BroadcastEphemeris:
         Get all cached ephemeris, optionally filtered by system.
         
         Args:
-            system: 'GPS', 'GLONASS', 'Galileo', 'BeiDou', or None for all
+            system: constellation name or prefix, e.g. 'GPS', 'QZSS', 'I', or None
             
         Returns:
             Dictionary of satellite_id -> ephemeris_dict
@@ -391,7 +606,17 @@ class BroadcastEphemeris:
                 return self.cache.copy()
             
             # Filter by system prefix
-            prefix = system[0].upper()  # 'G', 'R', 'E', 'C'
+            prefix_map = {
+                'GPS': 'G',
+                'GLONASS': 'R',
+                'GALILEO': 'E',
+                'BEIDOU': 'C',
+                'QZSS': 'J',
+                'IRNSS': 'I',
+                'NAVIC': 'I',
+                'SBAS': 'S',
+            }
+            prefix = prefix_map.get(str(system).upper(), str(system)[0].upper())
             return {k: v for k, v in self.cache.items() if k[0] == prefix}
     
     def clear_cache(self, satellite_id: Optional[str] = None):

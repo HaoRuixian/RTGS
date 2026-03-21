@@ -32,7 +32,8 @@ from ui.positioning.widgets import (
 from ui.monitoring.workers import IOThread, DataProcessingThread, StreamSignals
 from ui.ConfigDialog import ConfigDialog
 from ui.positioning.positioning_config_dialog import PositioningConfigDialog
-from ui.style import get_app_stylesheet
+from ui.style import get_app_stylesheet, ui_scale_for_width
+from ui.responsive import adaptive_window_size, window_ui_scale
 from core.ring_buffer import RingBuffer
 from core.rtcm_handler import RTCMHandler, get_shared_handler
 from core.positioning_models import PositioningMode
@@ -54,7 +55,7 @@ class PositioningModule(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("RTGS - Positioning Module")
-        self.resize(1600, 1000)
+        adaptive_window_size(self, target=(1600, 1000), minimum=(1080, 700))
         
         # ======================================================================
         # Thread management
@@ -82,6 +83,7 @@ class PositioningModule(QMainWindow):
         self.positioning_thread = PositioningThread(
             "SPP", self.positioning_signals, self.positioning_ring_buffer, self.rtcm_handler
         )
+        self._compact_scale = None
         
         # ======================================================================
         # Stream configuration
@@ -139,10 +141,10 @@ class PositioningModule(QMainWindow):
         top_bar = QHBoxLayout()
         
         # Back button
-        btn_back = QPushButton("< Back to Launcher")
-        btn_back.setMaximumWidth(200)
-        btn_back.clicked.connect(self.on_back_to_launcher)
-        top_bar.addWidget(btn_back)
+        self.btn_back = QPushButton("< Back to Launcher")
+        self.btn_back.setMaximumWidth(200)
+        self.btn_back.clicked.connect(self.on_back_to_launcher)
+        top_bar.addWidget(self.btn_back)
         
         # Separator
         line = QFrame()
@@ -151,7 +153,8 @@ class PositioningModule(QMainWindow):
         top_bar.addWidget(line)
         
         # Mode selector
-        top_bar.addWidget(QLabel("Positioning Mode:"))
+        self.lbl_mode = QLabel("Positioning Mode:")
+        top_bar.addWidget(self.lbl_mode)
         self.combo_mode = QComboBox()
         self.combo_mode.addItems(["SPP (Single Point Positioning)", "PPP (Precise Point) [TBD]", "RTK (Real-Time) [TBD]"])
         self.combo_mode.setCurrentIndex(0)
@@ -160,16 +163,16 @@ class PositioningModule(QMainWindow):
         top_bar.addWidget(self.combo_mode)
         
         # Config button
-        btn_config = QPushButton("Config")
-        btn_config.setMaximumWidth(100)
-        btn_config.clicked.connect(self.open_config_dialog)
-        top_bar.addWidget(btn_config)
+        self.btn_config = QPushButton("Config")
+        self.btn_config.setMaximumWidth(100)
+        self.btn_config.clicked.connect(self.open_config_dialog)
+        top_bar.addWidget(self.btn_config)
 
         # Positioning settings button
-        btn_pos_settings = QPushButton("Pos Settings")
-        btn_pos_settings.setMaximumWidth(140)
-        btn_pos_settings.clicked.connect(self.open_positioning_settings_dialog)
-        top_bar.addWidget(btn_pos_settings)
+        self.btn_pos_settings = QPushButton("Pos Settings")
+        self.btn_pos_settings.setMaximumWidth(140)
+        self.btn_pos_settings.clicked.connect(self.open_positioning_settings_dialog)
+        top_bar.addWidget(self.btn_pos_settings)
         
         # Start/Stop button
         self.btn_start = QPushButton("Start Positioning")
@@ -179,7 +182,6 @@ class PositioningModule(QMainWindow):
         top_bar.addWidget(self.btn_start)
         
         # Status indicators
-        top_bar.addStretch()
         self.lbl_obs_status = QLabel("OBS: OFF")
         self.lbl_obs_status.setStyleSheet("background: #ddd; padding: 4px 8px; border-radius: 4px;")
         top_bar.addWidget(self.lbl_obs_status)
@@ -188,6 +190,7 @@ class PositioningModule(QMainWindow):
         self.lbl_pos_status.setStyleSheet("background: #ddd; padding: 4px 8px; border-radius: 4px;")
         top_bar.addWidget(self.lbl_pos_status)
         
+        top_bar.addStretch()
         main_layout.addLayout(top_bar)
         
         # ======================================================================
@@ -258,6 +261,33 @@ class PositioningModule(QMainWindow):
         splitter.setSizes([600, 1000])
         
         main_layout.addWidget(splitter, stretch=1)
+        self._apply_compact_ui()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_compact_ui()
+
+    def _apply_compact_ui(self):
+        if not hasattr(self, "map_widget") or not hasattr(self, "btn_back"):
+            return
+        scale = window_ui_scale(self)
+        if self._compact_scale == scale:
+            return
+
+        self._compact_scale = scale
+        self.setStyleSheet(get_app_stylesheet(scale))
+        self.map_widget.setMinimumHeight(max(280, int(400 * scale)))
+        self.log_area.setMaximumHeight(max(110, int(150 * scale)))
+        self.btn_back.setText("< Back to Launcher")
+        self.btn_pos_settings.setText("Pos Settings")
+        self.lbl_mode.setText("Positioning Mode:")
+        self._refresh_start_button_text()
+
+    def _refresh_start_button_text(self):
+        if getattr(self, "is_running", False):
+            self.btn_start.setText("Stop Positioning")
+        else:
+            self.btn_start.setText("Start Positioning")
 
     def open_config_dialog(self):
         """Open stream configuration dialog."""
@@ -267,6 +297,10 @@ class PositioningModule(QMainWindow):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.settings = dlg.get_settings()
             self.append_log("Settings updated")
+            if getattr(dlg, 'disconnect_requested', False):
+                self.append_log("Disconnect requested: stopping positioning and data streams")
+                self.stop_positioning()
+                return
             # If user requested Connect from the dialog, start streams only (do not start positioning)
             if getattr(dlg, 'auto_connect', False):
                 self.append_log("Auto-connect requested: starting data streams (positioning not started)")
@@ -321,7 +355,7 @@ class PositioningModule(QMainWindow):
                 self.positioning_thread.start()
 
             self.is_running = True
-            self.btn_start.setText("Stop Positioning")
+            self._refresh_start_button_text()
             self.btn_start.setStyleSheet("background: #ff6666;")
             self.append_log("Positioning started")
             
@@ -417,9 +451,11 @@ class PositioningModule(QMainWindow):
 
             self.io_threads.clear()
             self.processing_threads.clear()
+            self.ring_buffers.clear()
+            self.update_stream_status('OBS', False)
 
             self.is_running = False
-            self.btn_start.setText("Start Positioning")
+            self._refresh_start_button_text()
             self.btn_start.setStyleSheet("")
             self.append_log("Positioning stopped")
             
@@ -525,4 +561,4 @@ class PositioningModule(QMainWindow):
 
     def apply_stylesheet(self):
         """Apply application stylesheet."""
-        self.setStyleSheet(get_app_stylesheet())
+        self.setStyleSheet(get_app_stylesheet(self._compact_scale or 1.0))

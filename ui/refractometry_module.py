@@ -5,6 +5,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvasQTAgg
 from matplotlib.figure import Figure
+from ui.style import get_app_stylesheet, ui_scale_for_width
+from ui.responsive import adaptive_window_size, window_ui_scale
 
 
 class RefractometryModule(QMainWindow):
@@ -16,8 +18,10 @@ class RefractometryModule(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GNSS RT Monitor - Refractometry")
-        self.resize(1200, 750)
+        adaptive_window_size(self, target=(1360, 860), minimum=(980, 620))
+        self._compact_scale = None
         self.setup_ui()
+        self._apply_compact_ui()
 
     def setup_ui(self):
         central = QWidget()
@@ -46,6 +50,19 @@ class RefractometryModule(QMainWindow):
         self.tabs.addTab(self._create_gradients_tab(), "Tropospheric Gradients")
 
         layout.addWidget(self.tabs)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_compact_ui()
+
+    def _apply_compact_ui(self):
+        if not hasattr(self, "tabs"):
+            return
+        scale = window_ui_scale(self)
+        if self._compact_scale == scale:
+            return
+        self._compact_scale = scale
+        self.setStyleSheet(get_app_stylesheet(scale))
 
     def _create_ztd_tab(self):
         """Zenith Total Delay analysis tab."""

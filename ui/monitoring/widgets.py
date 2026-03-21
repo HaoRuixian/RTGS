@@ -45,10 +45,11 @@ class SkyplotWidget(FigureCanvas):
         ax.set_theta_direction(-1)
         
         # 设置仰角范围 (0-90)
-        ax.set_rlim(90, 0)
+        ax.set_rlim(0, 90)
         ax.set_yticks([0, 30, 60, 90])
         ax.set_yticklabels(['90°', '60°', '30°', '0°'], 
                            fontsize=8, color=self.theme['text_muted'])
+        ax.set_yticklabels(['90\u00b0', '60\u00b0', '30\u00b0', '0\u00b0'], fontsize=8, color=self.theme['text_muted'])
         
         # 设置方位角标签 (N, E, S, W)
         ax.set_thetagrids([0, 45, 90, 135, 180, 225, 270, 315], 
@@ -86,10 +87,11 @@ class SkyplotWidget(FigureCanvas):
             
             if el is not None and az is not None:
                 color = get_sys_color(sys_type)
-                
+                radius = 90.0 - float(el)
+
                 # 绘制卫星点：增加边缘颜色使其更有立体感
                 scatter = self.ax.scatter(
-                    np.radians(az), el, 
+                    np.radians(az), radius,
                     c=color, s=120, 
                     alpha=0.9, 
                     edgecolors=self.theme['bg'], 
@@ -99,7 +101,7 @@ class SkyplotWidget(FigureCanvas):
                 
                 # 卫星编号文字：放在圆点中心或略偏移
                 text = self.ax.text(
-                    np.radians(az), el, key, 
+                    np.radians(az), radius, key, 
                     fontsize=7, 
                     ha='center', va='center', 
                     fontweight='bold',
@@ -145,8 +147,8 @@ class MultiSignalBarWidget(FigureCanvas):
         
         # 绘制背景色带（增强学术感：区分强弱信号）
         ax.axhspan(0, 30, color='#FF0000', alpha=0.05)   # 弱信号区
-        ax.axhspan(30, 45, color='#FFA500', alpha=0.03)  # 中等信号
-        ax.axhspan(45, 60, color='#00FF00', alpha=0.05)  # 强信号区
+        ax.axhspan(30, 40, color='#FFA500', alpha=0.03)  # 中等信号
+        ax.axhspan(40, 60, color='#00FF00', alpha=0.05)  # 强信号区
 
         ax.grid(True, axis='y', color=self.theme['grid'], linestyle='--', alpha=0.4)
         
@@ -473,7 +475,8 @@ class SatelliteNumWidget(FigureCanvas):
             'E': 'Galileo',
             'C': 'BeiDou',
             'J': 'QZSS',
-            'S': 'SBAS'
+            'S': 'SBAS',
+            'I': 'IRNSS',
         }
         self.colors = {sys: get_sys_color(sys) for sys in self.systems.keys()}
         

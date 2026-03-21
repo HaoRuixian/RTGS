@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QPushButton,
 from PySide6.QtCore import Qt, Signal, QSize
 from PySide6.QtGui import QFont, QIcon, QColor
 from PySide6.QtWidgets import QFileDialog, QStyle
+from ui.responsive import adaptive_window_size
 
 # 定义全局样式
 STYLESHEET = """
@@ -83,7 +84,7 @@ class LogSettingsDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Data Logging Config")
         self.setModal(True)
-        self.resize(550, 700)
+        adaptive_window_size(self, target=(720, 760), minimum=(520, 560))
         self.is_recording = is_recording
         self.setStyleSheet(STYLESHEET)
 

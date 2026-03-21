@@ -1,0 +1,16 @@
+product_type,timestamp,value,unit,source_arc_count,confidence,metadata
+reflector_height,2026-03-19 00:14:45,4.200537371763556,m,1,0.95,{'arc_id': 'DEMO-G01-1C-0001'}
+sea_level,2026-03-19 00:14:45,2.599462628236444,m,1,0.95,"{'arc_id': 'DEMO-G01-1C-0001', 'reference_level_m': 6.8}"
+snow_depth,2026-03-19 00:14:45,0.5994626282364441,m,1,0.95,"{'arc_id': 'DEMO-G01-1C-0001', 'reference_height_m': 4.8}"
+reflector_height,2026-03-19 00:54:45,4.174890083048363,m,1,0.8519,{'arc_id': 'DEMO-E02-5Q-0002'}
+sea_level,2026-03-19 00:54:45,2.6251099169516365,m,1,0.8519,"{'arc_id': 'DEMO-E02-5Q-0002', 'reference_level_m': 6.8}"
+snow_depth,2026-03-19 00:54:45,0.6251099169516365,m,1,0.8519,"{'arc_id': 'DEMO-E02-5Q-0002', 'reference_height_m': 4.8}"
+reflector_height,2026-03-19 01:34:45,4.105276013678554,m,1,0.95,{'arc_id': 'DEMO-G03-1C-0003'}
+sea_level,2026-03-19 01:34:45,2.6947239863214456,m,1,0.95,"{'arc_id': 'DEMO-G03-1C-0003', 'reference_level_m': 6.8}"
+snow_depth,2026-03-19 01:34:45,0.6947239863214456,m,1,0.95,"{'arc_id': 'DEMO-G03-1C-0003', 'reference_height_m': 4.8}"
+reflector_height,2026-03-19 02:14:45,3.471421592574499,m,1,0.8643,{'arc_id': 'DEMO-E04-5Q-0004'}
+sea_level,2026-03-19 02:14:45,3.3285784074255007,m,1,0.8643,"{'arc_id': 'DEMO-E04-5Q-0004', 'reference_level_m': 6.8}"
+snow_depth,2026-03-19 02:14:45,1.3285784074255007,m,1,0.8643,"{'arc_id': 'DEMO-E04-5Q-0004', 'reference_height_m': 4.8}"
+reflector_height,2026-03-19 02:54:45,4.259159745969712,m,1,0.95,{'arc_id': 'DEMO-G05-1C-0005'}
+sea_level,2026-03-19 02:54:45,2.5408402540302877,m,1,0.95,"{'arc_id': 'DEMO-G05-1C-0005', 'reference_level_m': 6.8}"
+snow_depth,2026-03-19 02:54:45,0.5408402540302877,m,1,0.95,"{'arc_id': 'DEMO-G05-1C-0005', 'reference_height_m': 4.8}"

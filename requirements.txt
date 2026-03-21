@@ -1,0 +1,27 @@
+# RTGS (RealTime GNSS Studio) - Dependencies
+# Project: Real-Time GNSS Data Processing and Analysis
+# Author: RuixianHao
+
+# GUI Framework
+PySide6>=6.4.0
+
+# Data Processing & Scientific Computing
+numpy>=1.21.0
+matplotlib>=3.5.0
+pandas>=2.2.0
+scipy>=1.11.0
+PyYAML>=6.0
+
+# GNSS/RTCM Protocol Support
+pyrtcm>=1.5.0
+
+# Hardware Communication
+pyserial>=3.5
+
+# Development Tools (optional)
+# Uncomment for development:
+pytest>=7.0.0
+# pytest-cov>=3.0.0
+# black>=22.0.0
+# pylint>=2.0.0
+# mypy>=0.9.0

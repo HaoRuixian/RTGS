@@ -19,3 +19,5 @@ Thumbs.db
 # test
 test/
 log/
+GMR_Water_lib/
+rtklib_src/

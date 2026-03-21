@@ -1,22 +1,22 @@
-"""
+﻿"""
 Single Point Positioning (SPP) using pseudorange measurements.
 
 Theory:
   SPP solves for 4 unknowns (X, Y, Z, clock_bias) using pseudorange observations.
   The observation equation is:
-    P = ρ + dT·c + ε
+    P = 蟻 + dT路c + 蔚
   where:
     P: measured pseudorange (meters)
-    ρ: geometric range from satellite to receiver (meters)
+    蟻: geometric range from satellite to receiver (meters)
     dT: receiver clock bias (seconds)
     c: speed of light
-    ε: measurement noise
+    蔚: measurement noise
 
   For each satellite i:
-    P_i = sqrt((X_sat_i - X_rec)^2 + (Y_sat_i - Y_rec)^2 + (Z_sat_i - Z_rec)^2) + c·dT + ε_i
+    P_i = sqrt((X_sat_i - X_rec)^2 + (Y_sat_i - Y_rec)^2 + (Z_sat_i - Z_rec)^2) + c路dT + 蔚_i
 
   We linearize and solve using Least Squares:
-    x = (A^T·W·A)^(-1)·A^T·W·l
+    x = (A^T路W路A)^(-1)路A^T路W路l
   where:
     A: design matrix (partial derivatives)
     W: weight matrix (optional: based on elevation angle)
@@ -109,7 +109,7 @@ class SPPPositioner:
                 - min_satellites: Minimum number of satellites (default: 4)
                 - min_elevation: Minimum elevation angle in degrees (default: 10)
                 - weight_mode: 'equal', 'elevation', or 'snr' (default: 'elevation')
-                - gnss_systems: List of systems to use, e.g. ['G', 'R', 'E', 'C']
+        - gnss_systems: List of systems to use, e.g. ['G', 'R', 'E', 'C', 'J', 'I']
                 - uncertain_std_pos: Standard deviation threshold for "uncertain" status (m)
                 - fixed_std_pos: Standard deviation threshold for "fixed" status (m)
         """
@@ -126,21 +126,21 @@ class SPPPositioner:
         self.MIN_SATELLITES = config.get('min_satellites', self.DEFAULT_MIN_SATELLITES)
         self.MIN_ELEVATION = config.get('min_elevation', self.DEFAULT_MIN_ELEVATION)
         self.WEIGHT_MODE = config.get('weight_mode', self.DEFAULT_WEIGHT_MODE)
-        self.gnss_systems = config.get('gnss_systems', ['G', 'R', 'E', 'C'])
+        self.gnss_systems = config.get('gnss_systems', ['G', 'R', 'E', 'C', 'J', 'I'])
         self.uncertain_std_pos = config.get('uncertain_std_pos', 5.0)
         self.fixed_std_pos = config.get('fixed_std_pos', 2.5)
         
         self.logger.info(f"SPP Positioner initialized with config:")
         self.logger.info(f"  Ionosphere: {self.ionosphere_option}")
         self.logger.info(f"  Troposphere: {self.troposphere_model}")
-        self.logger.info(f"  Min elevation: {self.MIN_ELEVATION}°")
+        self.logger.info(f"  Min elevation: {self.MIN_ELEVATION}掳")
         self.logger.info(f"  Min satellites: {self.MIN_SATELLITES}")
         self.logger.info(f"  Weight mode: {self.WEIGHT_MODE}")
         self.logger.info(f"  GNSS systems: {self.gnss_systems}")
 
     def get_tgd_for_sys(self, sys, sat_key, sig_id):
         """
-        获取不同系统的 TGD/BGD 修正 (单位: 米)
+        鑾峰彇涓嶅悓绯荤粺鐨?TGD/BGD 淇 (鍗曚綅: 绫?
         """
         eph = self._fetch_ephemeris(sat_key)
         if not eph:
@@ -151,17 +151,17 @@ class SPPPositioner:
         try:
             # GPS (G) / QZSS (J)
             if sys in ['G', 'J']:
-                # GPS 钟差参考的是 L1/L2 无电离层组合
-                # 单频 L1 用户需要减去 TGD
+                # GPS 閽熷樊鍙傝€冪殑鏄?L1/L2 鏃犵數绂诲眰缁勫悎
+                # 鍗曢 L1 鐢ㄦ埛闇€瑕佸噺鍘?TGD
                 return float(eph.get('TGD', 0.0)) * CLIGHT
             
             # Galileo (E)
             elif sys == 'E':
-                # Galileo 比较特殊，取决于你用的信号和星历类型
-                # 默认：如果你用 E1 信号，通常参考 I/NAV 的 BGD_E1E5b
-                # 如果你用 E5a 信号，通常参考 F/NAV 的 BGD_E1E5a 
+                # Galileo 姣旇緝鐗规畩锛屽彇鍐充簬浣犵敤鐨勪俊鍙峰拰鏄熷巻绫诲瀷
+                # 榛樿锛氬鏋滀綘鐢?E1 淇″彿锛岄€氬父鍙傝€?I/NAV 鐨?BGD_E1E5b
+                # 濡傛灉浣犵敤 E5a 淇″彿锛岄€氬父鍙傝€?F/NAV 鐨?BGD_E1E5a 
                 if sig_id.startswith('1'): # E1
-                    # 优先获取 E1-E5b 的修正
+                    # 浼樺厛鑾峰彇 E1-E5b 鐨勪慨姝?
                     bgd = eph.get('BGD_E1E5b') or eph.get('BGD_E5bE1') or 0.0
                     return float(bgd) * CLIGHT
                 elif sig_id.startswith('5'): # E5a
@@ -170,18 +170,22 @@ class SPPPositioner:
                     
             # Beidou (C)
             elif sys == 'C':
-                # 北斗钟差参考的是 B3 频点 (Band 6)
-                # B1I (Band 2) 使用 TGD1
-                # B2I (Band 7) 使用 TGD2
-                # B1C (Band 1) 使用 TGD1 或特定的 ISC
+                # 鍖楁枟閽熷樊鍙傝€冪殑鏄?B3 棰戠偣 (Band 6)
+                # B1I (Band 2) 浣跨敤 TGD1
+                # B2I (Band 7) 浣跨敤 TGD2
+                # B1C (Band 1) 浣跨敤 TGD1 鎴栫壒瀹氱殑 ISC
                 if sig_id.startswith('2'): # B1I (Band 2)
                     return float(eph.get('TGD1', 0.0)) * CLIGHT
                 elif sig_id.startswith('7'): # B2I (Band 7)
                     return float(eph.get('TGD2', 0.0)) * CLIGHT
                 elif sig_id.startswith('1'): # B1C (Band 1)
-                    # 北斗三号 B1C 修正比较复杂，RTKLIB 针对不同版本有不同处理
-                    # 这里暂取 TGD1 (BDS-3 某些星历 B1C 映射到 TGD1)
+                    # 鍖楁枟涓夊彿 B1C 淇姣旇緝澶嶆潅锛孯TKLIB 閽堝涓嶅悓鐗堟湰鏈変笉鍚屽鐞?
+                    # 杩欓噷鏆傚彇 TGD1 (BDS-3 鏌愪簺鏄熷巻 B1C 鏄犲皠鍒?TGD1)
                     return float(eph.get('TGD1', 0.0)) * CLIGHT
+            
+            # IRNSS / NavIC (I)
+            elif sys == 'I':
+                return float(eph.get('TGD', 0.0)) * CLIGHT
                     
         except (ValueError, TypeError):
             return 0.0
@@ -203,16 +207,16 @@ class SPPPositioner:
         iono_opt = self.ionosphere_option
         sys = sat_key[0]
         
-        # --- 1. 寻找 P1 和 P2 ---
+        # --- 1. 瀵绘壘 P1 鍜?P2 ---
         P1, P2 = 0.0, 0.0
         sig1_id, sig2_id = None, None
         
-        # 逻辑简化：寻找主频和次频
+        # 閫昏緫绠€鍖栵細瀵绘壘涓婚鍜屾棰?
         for sid, val in pr_list:
             if sid.startswith('1'): # L1/E1/B1
                 sig1_id, P1 = sid, val
                 break
-        if sys == 'C' and not sig1_id: # 北斗 B1I 可能是 Band 2
+        if sys == 'C' and not sig1_id: # 鍖楁枟 B1I 鍙兘鏄?Band 2
             for sid, val in pr_list:
                 if sid.startswith('2'):
                     sig1_id, P1 = sid, val
@@ -220,25 +224,25 @@ class SPPPositioner:
 
         if not sig1_id: return 0.0, 0.0
 
-        # --- 2. 基础偏差修正 (DCB/Code Bias) ---
-        # 这里应该调用一个 apply_code_bias 的函数，暂时略过但需注意
+        # --- 2. 鍩虹鍋忓樊淇 (DCB/Code Bias) ---
+        # 杩欓噷搴旇璋冪敤涓€涓?apply_code_bias 鐨勫嚱鏁帮紝鏆傛椂鐣ヨ繃浣嗛渶娉ㄦ剰
         # P1 += self.get_cbias(sat_key, sig1_id)
 
-        # --- 3. 单频模式 ---
+        # --- 3. 鍗曢妯″紡 ---
         if iono_opt != "IFLC":
             tgd = self.get_tgd_for_sys(sys, sat_key, sig1_id)
-            # GLONASS 特殊处理
+            # GLONASS 鐗规畩澶勭悊
             if sys == 'R':
                 f1, _ = get_freq(sig1_id, sat_key, fcn)
-                f2_tmp, _ = get_freq("2C", sat_key, fcn) # 假设参考 G2
+                f2_tmp, _ = get_freq("2C", sat_key, fcn) # 鍋囪鍙傝€?G2
                 gamma = (f1 / f2_tmp)**2
                 return P1 - tgd / (gamma - 1.0), 0.3**2
             
-            # GPS/BDS/GAL 一般直接减 TGD
+            # GPS/BDS/GAL 涓€鑸洿鎺ュ噺 TGD
             return P1 - tgd, 0.3**2
 
-        # --- 4. 双频消电离层模式 (IFLC) ---
-        for band in ['2', '5', '7', '6']:
+        # --- 4. 鍙岄娑堢數绂诲眰妯″紡 (IFLC) ---
+        for band in ['2', '5', '7', '6', '9']:
             for sid, val in pr_list:
                 if sid.startswith(band) and sid != sig1_id:
                     sig2_id, P2 = sid, val
@@ -253,17 +257,17 @@ class SPPPositioner:
         f2, _ = get_freq(sig2_id, sat_key, fcn)
         gamma = (f1 / f2)**2
         
-        # IFLC 核心计算
+        # IFLC 鏍稿績璁＄畻
         P_IF = (P2 - gamma * P1) / (1.0 - gamma)
         
-        # 重要：北斗 IFLC 必须修正 TGD 组合项
+        # 閲嶈锛氬寳鏂?IFLC 蹇呴』淇 TGD 缁勫悎椤?
         if sys == 'C':
-            # 获取 B1I 的 TGD1 和 B2I 的 TGD2
+            # 鑾峰彇 B1I 鐨?TGD1 鍜?B2I 鐨?TGD2
             tgd1 = self.get_tgd_for_sys(sys, sat_key, '2C') # TGD_B1I
             tgd2 = self.get_tgd_for_sys(sys, sat_key, '7C') # TGD_B2I
             P_IF -= (tgd2 - gamma * tgd1) / (1.0 - gamma)
 
-        # IFLC 方差放大系数为 3.0 (方差则是 9.0)
+        # IFLC 鏂瑰樊鏀惧ぇ绯绘暟涓?3.0 (鏂瑰樊鍒欐槸 9.0)
         return P_IF, (0.3 * 3.0)**2
 
     
@@ -324,13 +328,13 @@ class SPPPositioner:
     
     def var_err(self, sat_key: str, el: float) -> float:
         """
-        计算伪距测量误差方差
+        璁＄畻浼窛娴嬮噺璇樊鏂瑰樊
         
-        参数:
-        opt: 配置字典, 包含 err (误差模型参数), eratio (码/相位误差比), ionoopt (电离层选项)
-        obs: 观测数据字典, 包含 SNR (信噪比), Pstd (接收机自带的伪距标准差)
-        el:  高度角 (弧度)
-        sys: 系统 ID
+        鍙傛暟:
+        opt: 閰嶇疆瀛楀吀, 鍖呭惈 err (璇樊妯″瀷鍙傛暟), eratio (鐮?鐩镐綅璇樊姣?, ionoopt (鐢电灞傞€夐」)
+        obs: 瑙傛祴鏁版嵁瀛楀吀, 鍖呭惈 SNR (淇″櫔姣?, Pstd (鎺ユ敹鏈鸿嚜甯︾殑浼窛鏍囧噯宸?
+        el:  楂樺害瑙?(寮у害)
+        sys: 绯荤粺 ID
         """
         fact = 1.0
         
@@ -342,7 +346,7 @@ class SPPPositioner:
         EFACT_QZS = 1.0
         EFACT_IRN = 1.0
 
-        # 1. 根据系统选择误差系数因子
+        # 1. 鏍规嵁绯荤粺閫夋嫨璇樊绯绘暟鍥犲瓙
         if sat_key[0] == 'G': fact = EFACT_GPS
         elif sat_key[0] == 'R': fact = EFACT_GLO
         elif sat_key[0] == 'S': fact = EFACT_SBS
@@ -352,42 +356,42 @@ class SPPPositioner:
         elif sat_key[0] == 'I': fact = EFACT_IRN
         else: fact = EFACT_GPS
 
-        # 3. 基础方差模型: var = a^2 + b^2 / sin(el)
-        # opt['err'][1] 是常数项 a
-        # opt['err'][2] 是高度角相关项 b
+        # 3. 鍩虹鏂瑰樊妯″瀷: var = a^2 + b^2 / sin(el)
+        # opt['err'][1] 鏄父鏁伴」 a
+        # opt['err'][2] 鏄珮搴﹁鐩稿叧椤?b
         err_a = 0.003
         err_b = 0.003
         try:
             varr = (err_a**2) + (err_b**2 / math.sin(el))
         except (ValueError, ZeroDivisionError):
             varr = err_a**2
-        # 4. SNR (信噪比) 影响项 (如果配置了参数)
-        # opt['err'][5] 是 snr_max, opt['err'][6] 是 snr 相关系数 c
+        # 4. SNR (淇″櫔姣? 褰卞搷椤?(濡傛灉閰嶇疆浜嗗弬鏁?
+        # opt['err'][5] 鏄?snr_max, opt['err'][6] 鏄?snr 鐩稿叧绯绘暟 c
         snr_max = 52.0
         snr_factor = 0.0
         if snr_factor > 0.0:
-            # 注意: RTKLIB 内部 SNR 通常是以 0.25 dBHz 为单位的整数，这里假设传入的是实际 dBHz
-            # 如果是 RTKLIB 原始数据，此处通常是 obs['SNR'][0] * 0.25
+            # 娉ㄦ剰: RTKLIB 鍐呴儴 SNR 閫氬父鏄互 0.25 dBHz 涓哄崟浣嶇殑鏁存暟锛岃繖閲屽亣璁句紶鍏ョ殑鏄疄闄?dBHz
+            # 濡傛灉鏄?RTKLIB 鍘熷鏁版嵁锛屾澶勯€氬父鏄?obs['SNR'][0] * 0.25
             snr_curr = obs['SNR'][0] 
             snr_diff = max(snr_max - snr_curr, 0)
             varr += (snr_factor**2) * math.pow(10, 0.1 * snr_diff)
 
-        # 5. 应用码/相位误差比 (Code/Phase Error Ratio)
-        # 伪距误差通常是相位误差的 100 倍左右
+        # 5. 搴旂敤鐮?鐩镐綅璇樊姣?(Code/Phase Error Ratio)
+        # 浼窛璇樊閫氬父鏄浉浣嶈宸殑 100 鍊嶅乏鍙?
         #varr *= (opt['eratio'][0]**2)
 
-        # 6. 接收机提供的测量标准差 (如果存在)
-        # opt['err'][7] 是接收机 Pstd 的权重因子 d
+        # 6. 鎺ユ敹鏈烘彁渚涚殑娴嬮噺鏍囧噯宸?(濡傛灉瀛樺湪)
+        # opt['err'][7] 鏄帴鏀舵満 Pstd 鐨勬潈閲嶅洜瀛?d
         pstd_factor = 0.0
         if pstd_factor > 0.0 :
             varr += (pstd_factor * obs['Pstd'][0])**2
 
-        # 7. 消电离层组合 (IFLC) 噪声放大
-        # 双频组合会放大测量噪声，通常认为标准差放大 3 倍，方差放大 9 倍
+        # 7. 娑堢數绂诲眰缁勫悎 (IFLC) 鍣０鏀惧ぇ
+        # 鍙岄缁勫悎浼氭斁澶ф祴閲忓櫔澹帮紝閫氬父璁や负鏍囧噯宸斁澶?3 鍊嶏紝鏂瑰樊鏀惧ぇ 9 鍊?
         if self.ionosphere_option == "IFLC":
             varr *= (3.0**2)
 
-        # 8. 最终乘上系统因子并返回
+        # 8. 鏈€缁堜箻涓婄郴缁熷洜瀛愬苟杩斿洖
         return (fact**2) * varr
     def _compute_initial_position(self, epoch_obs: object) -> Optional[np.ndarray]:
         """
@@ -460,7 +464,7 @@ class SPPPositioner:
                 except Exception:
                     pass
         except Exception:
-            # non‑fatal
+            # non鈥慺atal
             pass
 
         return initial_pos
@@ -609,12 +613,23 @@ class SPPPositioner:
                         'Vx': eph.get('Vx'),    # km/s
                         'Vy': eph.get('Vy'),    # km/s
                         'Vz': eph.get('Vz'),    # km/s
-                        'Ax': eph.get('Ax'),    # km/s²
-                        'Ay': eph.get('Ay'),    # km/s²
-                        'Az': eph.get('Az'),    # km/s²
+                        'Ax': eph.get('Ax'),    # km/s虏
+                        'Ay': eph.get('Ay'),    # km/s虏
+                        'Az': eph.get('Az'),    # km/s虏
                         'tb': eph.get('tb'),    # Time of ephemeris (seconds within week)
                         'tau_n': eph.get('tau_n'),
                         'gamma_n': eph.get('gamma_n'),
+                    })
+                elif sys_type == 'SBS':
+                    eph_for_calc.update({
+                        't0': eph.get('t0', eph.get('toe')),
+                        'pos': eph.get('pos'),
+                        'vel': eph.get('vel'),
+                        'acc': eph.get('acc'),
+                        'af0': eph.get('af0', 0.0),
+                        'af1': eph.get('af1', 0.0),
+                        'af2': eph.get('af2', 0.0),
+                        'Toc': eph.get('toc', eph.get('t0')),
                     })
                 else:
                     # GPS, Galileo, BeiDou use Keplerian parameters
@@ -671,17 +686,17 @@ class SPPPositioner:
                 self.logger.debug(f"Lack of valid satellites: ns={nv}")
                 break
 
-            # 3. 加权 (Weighting)
+            # 3. 鍔犳潈 (Weighting)
             sig = np.sqrt(var)
             v = v / sig
-            H = H / sig[:, np.newaxis]  # 每行除以对应的标准差
+            H = H / sig[:, np.newaxis]  # 姣忚闄や互瀵瑰簲鐨勬爣鍑嗗樊
 
             print(H)
-            # 4. 最小二乘求解 dx = (H^T * H)^-1 * H^T * v
+            # 4. 鏈€灏忎簩涔樻眰瑙?dx = (H^T * H)^-1 * H^T * v
             try:
-                # 使用 numpy 的 lstsq 或者直接计算正规方程
+                # 浣跨敤 numpy 鐨?lstsq 鎴栬€呯洿鎺ヨ绠楁瑙勬柟绋?
                 # dx, residuals, rank, s = np.linalg.lstsq(H_weighted, v_weighted, rcond=None)
-                # 1. 计算正规方程左侧 (9x43) @ (43x9) = (9x9)
+                # 1. 璁＄畻姝ｈ鏂圭▼宸︿晶 (9x43) @ (43x9) = (9x9)
                 HTH = H.T @ H 
                 Q = np.linalg.inv(HTH)
                 dx = Q @ (H.T @ v)
@@ -689,64 +704,64 @@ class SPPPositioner:
                 self.logger.debug("LSQ error: Matrix is singular.")
                 break
 
-            # 5. 更新状态量
+            # 5. 鏇存柊鐘舵€侀噺
             x_curr += dx
 
-            # 6. 检查收敛 (位置更新量小于阈值，如 0.1mm)
+            # 6. 妫€鏌ユ敹鏁?(浣嶇疆鏇存柊閲忓皬浜庨槇鍊硷紝濡?0.1mm)
             sol_stat = 0
             if np.linalg.norm(dx[:3]) < 1E-4:
-                # 7. 验证解的可靠性 (等同于 RTKLIB 的 valsol)
+                # 7. 楠岃瘉瑙ｇ殑鍙潬鎬?(绛夊悓浜?RTKLIB 鐨?valsol)
                 if self._validate_solution(v, nv, NX):
-                    sol_stat = 1 # 找到有效解
+                    sol_stat = 1 # 鎵惧埌鏈夋晥瑙?
                 break
         
         if sol_stat == 1:
-            # 8. 封装结果返回
+            # 8. 灏佽缁撴灉杩斿洖
             return self._finalize_result(epoch_obs, x_curr, Q, nv)
         
         return None
 
     def _validate_solution(self, v, nv, nx) -> bool:
-        """ 简单的残差验证 (Chi-square test 简化版) """
+        """ 绠€鍗曠殑娈嬪樊楠岃瘉 (Chi-square test 绠€鍖栫増) """
         if nv <= nx:
             return False
-        # 计算单位权标准差 (Standard deviation of unit weight)
-        # v 已经是加权后的残差或者需要在这里结合 var 计算
-        # 此处简化处理：
+        # 璁＄畻鍗曚綅鏉冩爣鍑嗗樊 (Standard deviation of unit weight)
+        # v 宸茬粡鏄姞鏉冨悗鐨勬畫宸垨鑰呴渶瑕佸湪杩欓噷缁撳悎 var 璁＄畻
+        # 姝ゅ绠€鍖栧鐞嗭細
         vv = np.dot(v, v)
         sigma0_sq = vv / (nv - nx)
-        if sigma0_sq > self.MAX_UNIT_VAR: # 预设一个阈值，如 30.0
+        if sigma0_sq > self.MAX_UNIT_VAR: # 棰勮涓€涓槇鍊硷紝濡?30.0
             return False
         return True
 
     def _finalize_result(self, epoch_obs, x, Q, ns) -> PositioningResult:
-        """ 整理最终的定位结果对象 """
-        # 时间修正：GPS time - receiver clock bias
+        """ 鏁寸悊鏈€缁堢殑瀹氫綅缁撴灉瀵硅薄 """
+        # 鏃堕棿淇锛欸PS time - receiver clock bias
         t_rx = epoch_obs.gps_time
-        # x[3] 是以米为单位的钟差，除以光速转为秒
+        # x[3] 鏄互绫充负鍗曚綅鐨勯挓宸紝闄や互鍏夐€熻浆涓虹
         corrected_time = t_rx - (x[3] / self.CLIGHT)
         
-        # 提取各个系统的钟偏 (s)
-        # dtr 对应 [GPS, GLO, GAL, BDS, IRN, QZS]
+        # 鎻愬彇鍚勪釜绯荤粺鐨勯挓鍋?(s)
+        # dtr 瀵瑰簲 [GPS, GLO, GAL, BDS, IRN, QZS]
         dtr = np.zeros(6)
         dtr[0] = x[3] / self.CLIGHT
         if len(x) > 4:
-            # 根据 SYS_OFFSET_INDICES 依次提取
-            # 注意：这里的逻辑需对应你在 _estimate_range_res 中 sys_idx 的设计
-            # 假设 sys_idx 4=GLO, 5=GAL, 6=BDS...
+            # 鏍规嵁 SYS_OFFSET_INDICES 渚濇鎻愬彇
+            # 娉ㄦ剰锛氳繖閲岀殑閫昏緫闇€瀵瑰簲浣犲湪 _estimate_range_res 涓?sys_idx 鐨勮璁?
+            # 鍋囪 sys_idx 4=GLO, 5=GAL, 6=BDS...
             for i, idx in enumerate(range(4, len(x))):
                 if i+1 < len(dtr):
                     dtr[i+1] = x[idx] / self.CLIGHT
 
-        # 构建 PositioningResult
+        # 鏋勫缓 PositioningResult
         res = PositioningResult(
             time=corrected_time,
             pos=x[:3],         # ECEF XYZ
-            vel=np.zeros(3),   # SPP 通常不估算速度，或通过多普勒估算
-            dtr=dtr,           # 各系统钟偏
-            cov=Q[:3, :3],     # 位置协方差
-            ns=ns,             # 使用卫星数
-            stat=1             # 状态码
+            vel=np.zeros(3),   # SPP 閫氬父涓嶄及绠楅€熷害锛屾垨閫氳繃澶氭櫘鍕掍及绠?
+            dtr=dtr,           # 鍚勭郴缁熼挓鍋?
+            cov=Q[:3, :3],     # 浣嶇疆鍗忔柟宸?
+            ns=ns,             # 浣跨敤鍗槦鏁?
+            stat=1             # 鐘舵€佺爜
         )
         return res
 
@@ -911,7 +926,7 @@ class SPPPositioner:
                 else:
                     H[indx,j] = 0.0
             
-            # adjust residual for multi‑system time offset and mark column in H
+            # adjust residual for multi鈥憇ystem time offset and mark column in H
             sys_idx = -1
             if sys_char == 'R': # GLONASS
                 sys_idx = 4
@@ -950,12 +965,12 @@ class SPPPositioner:
             h_constraint[icon + 3] = 1.0 
             var_constraint = 0.01
             
-            # 现在可以 append 了，因为它们已经是 list 了
+            # 鐜板湪鍙互 append 浜嗭紝鍥犱负瀹冧滑宸茬粡鏄?list 浜?
             v_list.append(v_constraint)
-            H_list.append(h_constraint.tolist()) # H 的每一行也要转成 list 或保持 1D array
+            H_list.append(h_constraint.tolist()) # H 鐨勬瘡涓€琛屼篃瑕佽浆鎴?list 鎴栦繚鎸?1D array
             var_list.append(var_constraint)
 
-        # --- 3. 约束完成后，统一转回 NumPy 数组返回 ---
+        # --- 3. 绾︽潫瀹屾垚鍚庯紝缁熶竴杞洖 NumPy 鏁扮粍杩斿洖 ---
         v_res_final = np.array(v_list)
         H_final = np.array(H_list)
         var_final = np.array(var_list)
@@ -998,14 +1013,14 @@ class SPPPositioner:
             return 0.0, 0.0
 
     def _add_isb_constraints(self, obs_data, x_curr):
-        """处理没看到的系统，防止矩阵求逆失败"""
+        """Add weak constraints for missing inter-system bias states."""
         present_sys_indices = set()
         for obj in obs_data:
             indices = np.where(obj['H'][4:] == 1.0)[0]
             if len(indices) > 0:
                 present_sys_indices.add(indices[0] + 4)
 
-        # 检查每个 ISB 状态位 (4, 5, 6, 7...)
+        # 妫€鏌ユ瘡涓?ISB 鐘舵€佷綅 (4, 5, 6, 7...)
         for i in range(4, len(x_curr)):
             if i not in present_sys_indices:
                 h_const = np.zeros(len(x_curr))
@@ -1014,7 +1029,7 @@ class SPPPositioner:
                     'sat': 'FIX',
                     'v': 0.0,
                     'H': h_const,
-                    'var': 0.01**2, # 给一个很小的方差，强制该系统偏置趋于 0
+                    'var': 0.01**2, # 缁欎竴涓緢灏忕殑鏂瑰樊锛屽己鍒惰绯荤粺鍋忕疆瓒嬩簬 0
                     'azel': (0, 0)
                 })
         return obs_data
@@ -1027,13 +1042,13 @@ class SPPPositioner:
         Iterative least-squares solution for SPP.
         
         Solves the system:
-          A·x = b
+          A * x = b
         where:
           A: Design matrix (n_sat x NX), each row contains the partial
              derivatives with respect to the three position components and
              one clock bias term plus additional columns for any multi-
-             system time offsets (e.g. GLONASS‑GPS, Galileo‑GPS, etc.).
-          x: State vector [ΔX, ΔY, ΔZ, dtr_gps, dtr_glo, dtr_gal, ...]
+             system time offsets (e.g. GLONASS-GPS, Galileo-GPS, etc.).
+          x: State vector [dX, dY, dZ, dtr_gps, dtr_glo, dtr_gal, ...]
              (clock bias and offsets are in meters)
           b: Pseudorange residuals
         """
@@ -1041,7 +1056,7 @@ class SPPPositioner:
         # one offset per additional system (GLONASS, Galileo, BeiDou, IRNSS).
         # This mirrors the C estpos routine where NX is typically 8.
         NX = 4 + len(SYS_OFFSET_INDICES)
-        x_curr = np.zeros(NX)  # [ΔX, ΔY, ΔZ, dtr_gps, dtr_glo, dtr_gal, ...] in meters
+        x_curr = np.zeros(NX)  # [螖X, 螖Y, 螖Z, dtr_gps, dtr_glo, dtr_gal, ...] in meters
         pos_curr = approx_position.copy()
 
         convergence = False
@@ -1356,3 +1371,5 @@ class SPPPositioner:
         except Exception as e:
             self.logger.warning(f"DOP computation failed: {str(e)}")
             return 0.0, 0.0, 0.0, 0.0, 0.0
+
+

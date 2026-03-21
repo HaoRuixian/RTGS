@@ -4,6 +4,9 @@ import os
 import sys
 from queue import Queue
 from PyQt6.QtCore import QObject, pyqtSignal
+from core.pyrtcm_compat import patch_pyrtcm_glonass_g3
+
+patch_pyrtcm_glonass_g3()
 from pyrtcm import RTCMReader
 
 from core.ntrip_client import NtripClient

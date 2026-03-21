@@ -28,7 +28,7 @@ def main():
     app.setApplicationVersion("0.1")
 
     manager = AppManager(app)
-    manager.show_launch_screen()  
+    manager.show_launch_screen()
 
     sys.exit(app.exec())
 

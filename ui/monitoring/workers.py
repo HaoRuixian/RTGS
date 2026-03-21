@@ -20,14 +20,18 @@ import csv
 from queue import Queue
 from typing import List
 from PySide6.QtCore import QObject, Signal
+from core.pyrtcm_compat import patch_pyrtcm_glonass_g3
+
+patch_pyrtcm_glonass_g3()
 from pyrtcm import RTCMReader
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from core.global_config import get_global_config
 from core.ntrip_client import NtripClient
 from core.serial_client import SerialClient
 from core.ring_buffer import RingBuffer
 from core.rinex3_writer import RINEX3Writer
+from core.mixed_gnss_reader import MixedGNSSReader
 
 
 class StreamSignals(QObject):
@@ -237,7 +241,7 @@ class IOThread(threading.Thread):
                 # Step 2c: Connected successfully - log and initialize RTCM reader
                 self.signals.log_signal.emit(f"[{self.name}] Connected to Serial {port}@{baudrate}")
                 self.signals.status_signal.emit(self.name, True)
-                reader = RTCMReader(sock)
+                reader = MixedGNSSReader(sock)
                 self.msg_count = 0
                 self.last_log_time = time.time()
 
@@ -245,8 +249,12 @@ class IOThread(threading.Thread):
                 for raw, msg in reader:
                     # Check for shutdown signal during message reception
                     if not self.running: break
-                    # Skip malformed messages (msg = None if parsing failed at socket level)
-                    if msg is None: continue
+                    # Keep unknown RTCM frames out of the processing path, but still
+                    # allow them to be logged as raw bytes if binary logging is active.
+                    if msg is None:
+                        if self.logging_buffer is not None and raw and raw[:1] == b'\xd3':
+                            self.logging_buffer.put((raw, msg), block=False)
+                        continue
                     
                     self.msg_count += 1
                     
@@ -264,7 +272,7 @@ class IOThread(threading.Thread):
                     self.ring_buffer.put((raw, msg), block=False)
                     
                     # Simultaneous non-blocking write to independent logging buffer
-                    if self.logging_buffer is not None:
+                    if self.logging_buffer is not None and getattr(msg, "protocol", "RTCM") != "UBX":
                         self.logging_buffer.put((raw, msg), block=False)
 
             except Exception as e:
@@ -321,6 +329,7 @@ class DataProcessingThread(threading.Thread):
         self.msg_count = 0
         self.msg_types = {}  # Track message types
         self.eph_count = 0
+        self.eph_status_reported = False
         self.last_log_time = time.time()
         self.first_epoch = True
         # Pending partial epoch merging: gps_time -> {'epoch': EpochObservation, 'last_update': time.time()}
@@ -358,13 +367,19 @@ class DataProcessingThread(threading.Thread):
                 self.msg_count += 1
                 
                 # Extract message type ID for statistics tracking
+                if msg is None:
+                    continue
+
                 msg_id = getattr(msg, 'identity', 'UNKNOWN')
                 self.msg_types[msg_id] = self.msg_types.get(msg_id, 0) + 1
                 
                 # Track ephemeris vs observation messages
                 # Message types: 1019=GPS EPH, 1020=GLONASS EPH, 1042=BDS EPH, 1045=Galileo EPH, 1046=Galileo EPH
-                if msg_id in ["1019", "1020", "1042", "1045", "1046", "63"]:
+                if msg_id in ["1019", "1020", "1041", "1042", "1044", "1045", "1046", "63", "SBAS_RAW_9"]:
                     self.eph_count += 1
+                    if not self.eph_status_reported:
+                        self.signals.status_signal.emit("EPH_DATA", True)
+                        self.eph_status_reported = True
                 
                 # Step 3: Process RTCM message through handler
                 # Handler manages ephemeris caching and emits EpochObservation when all satellites for epoch are received
@@ -447,7 +462,7 @@ class LoggingThread(threading.Thread):
     Supported formats:
     - binary: raw RTCM stream
     - csv: sampled satellite observations
-    - rinex: simplified RINEX-like text output
+    - rinex: RINEX 3.04 observation files
     
     Features:
     - File rotation based on time intervals
@@ -488,6 +503,7 @@ class LoggingThread(threading.Thread):
         self.file_count = 0
         self.start_time = time.time()
         self.current_filename = ""
+        self.last_rinex_epoch_time = None
         
     def get_file_count(self):
         """Get the number of files created so far."""
@@ -500,6 +516,65 @@ class LoggingThread(threading.Thread):
     def get_current_filename(self):
         """Get the current filename being written to."""
         return self.current_filename
+
+    @staticmethod
+    def _normalize_utc_datetime(epoch_time: datetime) -> datetime:
+        """Convert aware datetimes to naive UTC for internal epoch alignment."""
+        if epoch_time.tzinfo is None:
+            return epoch_time
+        return epoch_time.astimezone(timezone.utc).replace(tzinfo=None)
+
+    @staticmethod
+    def _round_time_to_interval(epoch_time: datetime, sample_interval: int) -> datetime:
+        """Round a UTC datetime to the nearest sampling boundary."""
+        epoch_time = LoggingThread._normalize_utc_datetime(epoch_time)
+        interval = max(1, int(sample_interval))
+        anchor = datetime(1980, 1, 6)
+        total_seconds = (epoch_time - anchor).total_seconds()
+        rounded_seconds = round(total_seconds / interval) * interval
+        rounded_time = anchor + timedelta(seconds=rounded_seconds)
+        return rounded_time.replace(microsecond=0)
+
+    def _align_epoch_time(self, epoch_time: datetime, sample_interval: int) -> datetime | None:
+        """Return an aligned epoch time if the epoch is on a sample boundary."""
+        epoch_time = self._normalize_utc_datetime(epoch_time)
+        aligned_time = self._round_time_to_interval(epoch_time, sample_interval)
+        if abs((epoch_time - aligned_time).total_seconds()) > 1e-3:
+            return None
+        return aligned_time
+
+    def _get_latest_epoch_data(self):
+        """Fetch the latest epoch snapshot if the callback is available."""
+        if not self.get_latest_epoch:
+            return None
+        try:
+            return self.get_latest_epoch()
+        except Exception:
+            return None
+
+    def _get_initial_rinex_file_time(self, sample_interval: int) -> datetime:
+        """Choose a stable UTC start time for the RINEX long filename."""
+        if self.last_rinex_epoch_time is not None:
+            last_epoch_time = self._normalize_utc_datetime(self.last_rinex_epoch_time)
+            return last_epoch_time + timedelta(seconds=max(1, int(sample_interval)))
+
+        epoch_data = self._get_latest_epoch_data()
+        epoch_time = getattr(epoch_data, 'utc_datetime', None) if epoch_data else None
+        if epoch_time:
+            aligned_time = self._align_epoch_time(epoch_time, sample_interval)
+            if aligned_time:
+                return aligned_time
+
+        return self._round_time_to_interval(datetime.now(timezone.utc), sample_interval)
+
+    def _update_rinex_writer_position(self, rinex_writer: RINEX3Writer) -> None:
+        """Push the latest station ECEF coordinates into the RINEX header state."""
+        approx_pos = getattr(get_global_config(), 'approx_rec_pos', None)
+        try:
+            if approx_pos and any(abs(float(v)) > 0.0 for v in approx_pos[:3]):
+                rinex_writer.set_approx_position(approx_pos)
+        except (TypeError, ValueError):
+            return
     
     def run(self):
         """
@@ -559,9 +634,6 @@ class LoggingThread(threading.Thread):
                 fname = f"{safe_mount}_{name_time}.{ext}"
                 path = os.path.join(out_path, fname)
                 
-                # Store current filename for status reporting
-                self.current_filename = fname
-                
                 # Increment file counter
                 self.file_count += 1
                 
@@ -572,27 +644,48 @@ class LoggingThread(threading.Thread):
                     writer = None
                     rinex_writer = None
                 elif format_type == 'rinex':
-                    # RINEX3 format: use dedicated writer
-                    # Extract custom RINEX options from settings
+                    # RINEX3 format: use standard long filenames derived from the
+                    # actual logging cadence instead of the UI free-text fields.
+                    split_period = RINEX3Writer.format_period_code(
+                        split_secs,
+                        settings.get('rinex_options', {}).get('period', '01D'),
+                    )
+                    sample_code = RINEX3Writer.format_interval_code(sample_interval)
+                    file_time = self._get_initial_rinex_file_time(sample_interval)
                     rinex_opts = {
                         'station_code': settings.get('rinex_options', {}).get('station_code', 'RTGS'),
                         'receiver_number': settings.get('rinex_options', {}).get('receiver_number', '00'),
                         'country_code': settings.get('rinex_options', {}).get('country_code', 'CHN'),
-                        'period': settings.get('rinex_options', {}).get('period', '01D'),
-                        'interval': settings.get('rinex_options', {}).get('interval', '30S'),
+                        'period': split_period,
+                        'interval': sample_code,
                         'datatype': settings.get('rinex_options', {}).get('datatype', 'MO'),
+                        'file_time': file_time,
                     }
-                    
-                    rinex_writer = RINEX3Writer(path,
-                                                marker_name=safe_mount,
-                                                marker_number="0",
-                                                **rinex_opts)
+
+                    marker_name = rinex_opts['station_code'] or safe_mount
+                    rinex_writer = RINEX3Writer(
+                        out_path,
+                        marker_name=marker_name,
+                        marker_number="0",
+                        **rinex_opts,
+                    )
                     if not rinex_writer.open():
-                        raise Exception(f"Failed to open RINEX file: {path}")
-                    # Auto-detect observation types from current merged satellites
-                    sys_obs_types = self._detect_obs_types()
-                    if not rinex_writer.write_header(sys_obs_types=sys_obs_types, receiver_type="Generic", antenna_type=safe_mount):
+                        raise Exception(f"Failed to open RINEX file: {rinex_writer.filename}")
+
+                    self._update_rinex_writer_position(rinex_writer)
+                    latest_epoch = self._get_latest_epoch_data()
+                    latest_satellites = getattr(latest_epoch, 'satellites', None) if latest_epoch else None
+                    obs_source = self.merged_satellites if self.merged_satellites else latest_satellites
+                    sys_obs_types = self._detect_obs_types(obs_source)
+                    if not rinex_writer.write_header(
+                        sys_obs_types=sys_obs_types,
+                        receiver_type="Generic",
+                        antenna_type="UNKNOWN",
+                    ):
                         raise Exception("Failed to write RINEX header")
+
+                    fname = os.path.basename(rinex_writer.filename)
+                    self.current_filename = fname
                     current_file = None
                     writer = None
                 else:
@@ -600,22 +693,33 @@ class LoggingThread(threading.Thread):
                     current_file = open(path, 'a', newline='', encoding='utf-8', buffering=65536)
                     writer = csv.writer(current_file)
                     rinex_writer = None
+                    self.current_filename = fname
                     # CSV header row: field names
                     if writer:
                         writer.writerow(fields)
+
+                if format_type == 'binary':
+                    self.current_filename = fname
                 
                 file_start = time.time()
-                self.signals.log_signal.emit(f"[Logging] Opened: {fname} (format: {format_type}, File #{self.file_count})")
+                self.signals.log_signal.emit(
+                    f"[Logging] Opened: {self.current_filename} (format: {format_type}, File #{self.file_count})"
+                )
                 return current_file, writer, rinex_writer
                 
             except Exception as e:
                 self.signals.log_signal.emit(f"[Logging] Error opening file: {e}")
                 return None, None, None
         
-        # Step 1: Open first log file
-        current_file, writer, rinex_writer = open_new_file()
-        if (format_type != 'rinex' and current_file is None) or (format_type == 'rinex' and rinex_writer is None):
-            return
+        # Step 1: Open first log file. RINEX waits for the first real epoch so the
+        # long filename and header can use the actual observation start time.
+        if format_type == 'rinex':
+            current_file, writer, rinex_writer = None, None, None
+            file_start = time.time()
+        else:
+            current_file, writer, rinex_writer = open_new_file()
+            if current_file is None:
+                return
         
         # Add initial status signal with start time
         self.signals.log_signal.emit(f"[Logging] Started recording at {time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(self.start_time))}")
@@ -623,6 +727,27 @@ class LoggingThread(threading.Thread):
         # Step 2: Main logging loop
         while self.running and not self.stop_event.is_set():
             try:
+                if format_type == 'rinex' and rinex_writer is None:
+                    latest_epoch = self._get_latest_epoch_data()
+                    latest_satellites = getattr(latest_epoch, 'satellites', None) if latest_epoch else None
+                    latest_epoch_time = getattr(latest_epoch, 'utc_datetime', None) if latest_epoch else None
+                    aligned_latest_time = (
+                        self._align_epoch_time(latest_epoch_time, sample_interval)
+                        if latest_epoch_time else None
+                    )
+                    if (
+                        not latest_satellites
+                        or aligned_latest_time is None
+                        or aligned_latest_time == self.last_rinex_epoch_time
+                    ):
+                        time.sleep(0.1)
+                        continue
+
+                    current_file, writer, rinex_writer = open_new_file()
+                    if rinex_writer is None:
+                        break
+                    file_start = time.time()
+
                 # Step 2a: Check if file rotation is needed (split_minutes elapsed)
                 if time.time() - file_start >= split_secs:
                     try:
@@ -632,11 +757,15 @@ class LoggingThread(threading.Thread):
                             current_file.close()
                     except:
                         pass
-                    # Open new file with new timestamp
-                    current_file, writer, rinex_writer = open_new_file()
-                    if (format_type != 'rinex' and current_file is None) or (format_type == 'rinex' and rinex_writer is None):
-                        break
-                    last_sample_time = time.time()
+                    if format_type == 'rinex':
+                        current_file, writer, rinex_writer = None, None, None
+                        file_start = time.time()
+                    else:
+                        # Open new file with new timestamp
+                        current_file, writer, rinex_writer = open_new_file()
+                        if current_file is None:
+                            break
+                        last_sample_time = time.time()
                 
                 # Step 2b: Write data based on format type
                 current_time = time.time()
@@ -647,16 +776,19 @@ class LoggingThread(threading.Thread):
                     # Brief sleep to prevent CPU spinning while waiting for data
                     time.sleep(0.01)
                 else:
-                    # CSV/RINEX format: sample and write satellite data at specified interval
-                    # Only writes if sample_interval seconds have elapsed since last write
-                    if current_time - last_sample_time >= sample_interval:
-                        if format_type == 'rinex':
-                            self._save_rinex_obs(rinex_writer)
-                        else:
-                            self._save_csv_obs(current_file, writer, fields)
+                    if format_type == 'rinex':
+                        # RINEX output is driven by the epoch timestamp itself rather than
+                        # wall-clock polling so the header/body remain aligned to true epochs.
+                        self._save_rinex_obs(rinex_writer, sample_interval)
+                        time.sleep(0.1)
+                    elif current_time - last_sample_time >= sample_interval:
+                        # CSV format: sample and write satellite data at specified interval
+                        self._save_csv_obs(current_file, writer, fields)
                         last_sample_time = current_time
-                    # Longer sleep for text formats since sampling is lower frequency
-                    time.sleep(0.1)
+                        # Longer sleep for text formats since sampling is lower frequency
+                        time.sleep(0.1)
+                    else:
+                        time.sleep(0.1)
                     
             except Exception as e:
                 # Log any errors but keep thread running
@@ -718,11 +850,12 @@ class LoggingThread(threading.Thread):
         except Exception as e:
             self.signals.log_signal.emit(f"[Logging] Error saving binary RTCM: {e}")
     
-    def _detect_obs_types(self) -> dict:
+    def _detect_obs_types(self, satellites=None) -> dict:
         """
-        Auto-detect observation types from current merged satellites.
+        Auto-detect observation types from a satellite-state mapping.
         
-        Scans merged_satellites and extracts signal codes to build sys_obs_types dict.
+        Scans the provided satellite mapping and extracts signal codes to build
+        the ``sys_obs_types`` dictionary.
         Falls back to standard defaults if no signals are found.
         
         Returns:
@@ -732,9 +865,11 @@ class LoggingThread(threading.Thread):
         sys_obs_types: dict = {}
         obs_codes_per_sys: dict = {}
         
+        source_satellites = satellites if satellites is not None else self.merged_satellites
+
         # Scan all satellites to collect raw signal IDs
         try:
-            for sat_id, sat_state in self.merged_satellites.items():
+            for sat_id, sat_state in source_satellites.items():
                 if not sat_id or len(sat_id) < 2:
                     continue
 
@@ -769,11 +904,14 @@ class LoggingThread(threading.Thread):
                 'R': ['C4A', 'L4A', 'D4A', 'S4A'],  # GLONASS
                 'E': ['C1C', 'L1C', 'D1C', 'S1C'],  # Galileo E1
                 'C': ['C2D', 'L2D', 'D2D', 'S2D'],  # BeiDou B1I
+                'J': ['C1C', 'L1C', 'D1C', 'S1C'],  # QZSS L1
+                'S': ['C1C', 'L1C', 'D1C', 'S1C'],  # SBAS L1
+                'I': ['C5A', 'L5A', 'D5A', 'S5A'],  # IRNSS L5
             }
         
         return sys_obs_types
     
-    def _save_rinex_obs(self, rinex_writer):
+    def _save_rinex_obs(self, rinex_writer, sample_interval):
         """
         Save observation data in RINEX 3 format.
         
@@ -781,36 +919,38 @@ class LoggingThread(threading.Thread):
             rinex_writer: RINEX3Writer instance
         """
         try:
-            # Get snapshot of current satellite data
-            snapshot = dict(self.merged_satellites)
-            
-            if not snapshot:
-                # No satellites to record, skip silently (frequent)
+            epoch_data = self._get_latest_epoch_data()
+            if not epoch_data:
                 return
-            
-            # Get latest epoch data for UTC time
-            epoch_time = None
-            if self.get_latest_epoch:
-                try:
-                    epoch_data = self.get_latest_epoch()
-                    if epoch_data and hasattr(epoch_data, 'utc_datetime'):
-                        epoch_time = epoch_data.utc_datetime
-                except:
-                    pass
-            
-            # Use current time if epoch time not available
+
+            snapshot = dict(getattr(epoch_data, 'satellites', {}) or {})
+            if not snapshot:
+                return
+
+            epoch_time = getattr(epoch_data, 'utc_datetime', None)
             if not epoch_time:
-                epoch_time = datetime.utcnow()
-            
-            # Write observation epoch - ensure header was written first
+                return
+
+            aligned_epoch_time = self._align_epoch_time(epoch_time, sample_interval)
+            if aligned_epoch_time is None:
+                return
+
+            if self.last_rinex_epoch_time == aligned_epoch_time:
+                return
+
+            self._update_rinex_writer_position(rinex_writer)
+
             if not rinex_writer.header_written:
                 self.signals.log_signal.emit(f"[Logging] Warning: RINEX header not written before first observation")
                 return
-                
-            success = rinex_writer.write_observation(epoch_time, snapshot)
+
+            success = rinex_writer.write_observation(aligned_epoch_time, snapshot)
             if not success:
                 self.signals.log_signal.emit(f"[Logging] Warning: Failed to write RINEX observation epoch")
-            
+                return
+
+            self.last_rinex_epoch_time = aligned_epoch_time
+             
         except Exception as e:
             self.signals.log_signal.emit(f"[Logging] Error saving RINEX observation: {e}")
             import traceback

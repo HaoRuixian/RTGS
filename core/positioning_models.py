@@ -41,7 +41,7 @@ class PositioningConfig:
     troposphere_model: str = 'Sastamoinen'  # 'None', 'Sastamoinen', 'HMSL'
     
     # GNSS Systems to use
-    gnss_systems: List[str] = field(default_factory=lambda: ['G', 'R', 'E', 'C'])  # GPS, GLONASS, Galileo, BeiDou
+    gnss_systems: List[str] = field(default_factory=lambda: ['G', 'R', 'E', 'C', 'J', 'I'])  # GPS, GLONASS, Galileo, BeiDou, QZSS, IRNSS
     
     # Smoothing/filtering
     use_smoothing: bool = False

@@ -20,6 +20,8 @@ def brdc2pos(eph_data, sys_type, t_obs_gpst):
     try:
         if sys_type == 'GLO':
             result = SatPos_brdc_glo(t_obs_gpst, eph_data)
+        elif sys_type == 'SBS':
+            result = SatPos_brdc_sbas(t_obs_gpst, eph_data)
         else:
             result = SatPos_brdc(t_obs_gpst, eph_data)
         
@@ -178,6 +180,25 @@ def SatPos_brdc_glo(t_sow, eph):
         return runge_kutta_4(toe, pos, vel, acc, t_sow)
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def SatPos_brdc_sbas(t_sow, eph):
+    """
+    Compute SBAS GEO position from RTKLIB-style seph parameters.
+    """
+
+    try:
+        pos = np.array(eph['pos'], dtype=float)
+        vel = np.array(eph['vel'], dtype=float)
+        acc = np.array(eph['acc'], dtype=float)
+        t0 = float(eph.get('t0', eph.get('Toe', 0.0)))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    dt = check_t(t_sow - t0)
+    sat_p = pos + vel * dt + 0.5 * acc * dt * dt
+    sat_v = vel + acc * dt
+    return sat_p, sat_v
 
 def runge_kutta_4(toe, pos, vel, acc, t_target):
     """

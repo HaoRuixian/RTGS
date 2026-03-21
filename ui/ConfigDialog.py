@@ -5,16 +5,18 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QGroupBox, QFormLayout,
                              QSpinBox, QScrollArea, QWidget, QDoubleSpinBox, QSizePolicy)
 from PySide6.QtGui import QIcon
 from PySide6.QtCore import Qt
+from ui.responsive import adaptive_window_size
 
 class ConfigDialog(QDialog):
     def __init__(self, parent=None, initial_settings=None):
         super().__init__(parent)
         self.setWindowTitle("Data Source Settings")
-        self.resize(500, 800)  # Reduced default height
+        adaptive_window_size(self, target=(640, 840), minimum=(460, 520))
         self.settings = initial_settings or {}
         # Flag set when user clicked Connect (auto-connect requested)
         self.auto_connect = False
-        self.setMinimumSize(450, 500)  # Reduced minimum size
+        # Flag set when user requested a disconnect without clearing saved settings
+        self.disconnect_requested = False
         self.init_ui()
 
     def init_ui(self):
@@ -310,7 +312,7 @@ class ConfigDialog(QDialog):
         fl_general.addRow("Receiver Position (ECEF in m):", hlayout_pos)
         
         # GNSS System Filters
-        self.target_systems = QLineEdit(",".join(self.settings.get('TARGET_SYSTEMS', ['G', 'R', 'E', 'C'])))
+        self.target_systems = QLineEdit(",".join(self.settings.get('TARGET_SYSTEMS', ['G', 'R', 'E', 'C', 'J', 'S', 'I'])))
         self.target_systems.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         fl_general.addRow("Target Systems (comma-separated):", self.target_systems)
         
@@ -333,6 +335,13 @@ class ConfigDialog(QDialog):
             b_load.setIcon(open_icon)
         b_load.clicked.connect(self.load_file)
         
+        b_disconnect = QPushButton("Disconnect")
+        b_disconnect.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        disconnect_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserStop)
+        if not disconnect_icon.isNull():
+            b_disconnect.setIcon(disconnect_icon)
+        b_disconnect.clicked.connect(self.on_disconnect)
+
         b_save = QPushButton("Connect")
         b_save.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         save_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
@@ -342,6 +351,7 @@ class ConfigDialog(QDialog):
         b_save.clicked.connect(self.on_connect)
         btns.addWidget(b_load)
         btns.addStretch()
+        btns.addWidget(b_disconnect)
         btns.addWidget(b_save)
         layout.addLayout(btns)
         
@@ -426,6 +436,13 @@ class ConfigDialog(QDialog):
     def on_connect(self):
         """User pressed Connect: mark auto_connect and accept dialog."""
         self.auto_connect = True
+        self.disconnect_requested = False
+        self.accept()
+
+    def on_disconnect(self):
+        """User pressed Disconnect: keep settings but stop active streams."""
+        self.auto_connect = False
+        self.disconnect_requested = True
         self.accept()
 
     def load_file(self):
@@ -521,7 +538,7 @@ class ConfigDialog(QDialog):
         try:
             target_systems = [s.strip() for s in self.target_systems.text().split(',')]
         except:
-            target_systems = ['G', 'R', 'E', 'C']
+            target_systems = ['G', 'R', 'E', 'C', 'J', 'S', 'I']
             
         # Read coordinates from QLineEdit
         # build approximate position; if any of the three fields are blank or

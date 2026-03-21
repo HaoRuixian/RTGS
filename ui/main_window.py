@@ -59,9 +59,9 @@ class GNSSMonitorWindow(QMainWindow):
             if hasattr(config, 'TARGET_SYSTEMS') and config.TARGET_SYSTEMS:
                 self.active_systems = set(config.TARGET_SYSTEMS)
             else:
-                self.active_systems = {'G', 'R', 'E', 'C', 'J', 'S'}
+                self.active_systems = {'G', 'R', 'E', 'C', 'J', 'S', 'I'}
         except:
-            self.active_systems = {'G', 'R', 'E', 'C', 'J', 'S'} 
+            self.active_systems = {'G', 'R', 'E', 'C', 'J', 'S', 'I'} 
 
         # 信号连接
         self.signals = StreamSignals()
@@ -132,7 +132,7 @@ class GNSSMonitorWindow(QMainWindow):
 
         top_bar.addWidget(QLabel("Systems:"))
         self.chk_sys = {}
-        for sys_char, name in [('G','GPS'), ('R','GLONASS'), ('E','Galileo'), ('C','BeiDou'), ('J','QZSS'), ('S','SBAS')]:
+        for sys_char, name in [('G','GPS'), ('R','GLONASS'), ('E','Galileo'), ('C','BeiDou'), ('J','QZSS'), ('S','SBAS'), ('I','IRNSS')]:
             chk = QCheckBox(name)
             chk.setChecked(sys_char in self.active_systems)
             chk.stateChanged.connect(self.on_filter_changed)
@@ -180,11 +180,14 @@ class GNSSMonitorWindow(QMainWindow):
         # 定义我们需要哪些子表格
         # 键是 tab显示名，值是系统ID列表（'ALL'代表所有）
         self.table_groups = {
-            'ALL': ['G', 'R', 'E', 'C', 'J', 'S'],
+            'ALL': ['G', 'R', 'E', 'C', 'J', 'S', 'I'],
             'GPS': ['G'],
             'BeiDou': ['C'],
             'GLONASS': ['R'],
-            'Galileo': ['E']
+            'Galileo': ['E'],
+            'QZSS': ['J'],
+            'SBAS': ['S'],
+            'IRNSS': ['I']
         }
         self.tables = {} # 存储创建好的表格对象
 

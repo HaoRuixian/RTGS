@@ -25,6 +25,18 @@ class RTCMHandler:
         self.last_gps_week = None  # Track GPS week for continuity
         self.last_station_coords = None  # Store coordinates from 1005/1006 messages
 
+    @staticmethod
+    def _normalize_satellite_number(sys_id: str, prn: int) -> int:
+        """
+        Normalize constellation-specific RTCM PRN numbering to display keys.
+
+        QZSS MSM uses actual PRNs 193-202 in pyrtcm, while downstream code and
+        RINEX formatting expect J01-J10 style identifiers.
+        """
+        if sys_id == 'J' and prn >= 193:
+            return prn - 192
+        return prn
+
     # Time conversions delegated to core.gnss_time.GNSSTime
 
     def process_message(self, msg, epoch_data=None):
@@ -32,12 +44,12 @@ class RTCMHandler:
         Main entry point for RTCM message processing.
         Includes error handling for pyrtcm parsing issues.
         
-        Note: Unsupported message types (e.g., 1041/NavIC) may fail during parsing.
+        Note: Unsupported or partially defined message types may fail during parsing.
         These are silently skipped without error output and will not affect epoch processing.
         """
         try:
             # Suppress stderr during attribute access to avoid printing errors from 
-            # unsupported RTCM message types (e.g., 1041/NavIC with DF545)
+            # unsupported RTCM message types with incomplete third-party definitions
             with redirect_stderr(io.StringIO()):
                 msg_id = msg.identity
         except (ValueError, AttributeError, TypeError):
@@ -51,13 +63,19 @@ class RTCMHandler:
                 self._handle_gps_eph(msg)
             elif msg_id == "1020":
                 self._handle_glo_eph(msg)
+            elif msg_id == "1044":
+                self._handle_qzs_eph(msg)
             elif msg_id in ["1045", "1046"]:
                 self._handle_gal_eph(msg)
+            elif msg_id == "1041":
+                self._handle_irnss_eph(msg)
             elif msg_id in ["1042", "63"]:  # 1042 is standard BDS
                 self._handle_bds_eph(msg)
+            elif str(msg_id).startswith("SBAS_RAW"):
+                self._handle_sbas_raw(msg)
                 
             # --- MSM Observations ---
-            elif msg_id[:3] in ["107", "108", "109", "111", "112", "113"]:
+            elif msg_id[:3] in ["107", "108", "109", "110", "111", "112", "113"]:
                 return self._handle_msm_obs(msg, epoch_data)
                 
             # --- Station Coordinates ---
@@ -193,6 +211,24 @@ class RTCMHandler:
         if eph:
             self.broadcast_eph.cache_ephemeris(eph, time_key='toe')
 
+    def _handle_qzs_eph(self, msg):
+        """Parse RTCM 1044 - QZSS Broadcast Ephemeris."""
+        eph = self.broadcast_eph.extract_qzss_ephemeris(msg)
+        if eph:
+            self.broadcast_eph.cache_ephemeris(eph, time_key='toe')
+
+    def _handle_irnss_eph(self, msg):
+        """Parse RTCM 1041 - IRNSS/NavIC Broadcast Ephemeris."""
+        eph = self.broadcast_eph.extract_irnss_ephemeris(msg)
+        if eph:
+            self.broadcast_eph.cache_ephemeris(eph, time_key='toe')
+
+    def _handle_sbas_raw(self, msg):
+        """Parse SBAS raw navigation frames and cache GEO ephemeris (seph)."""
+        eph = self.broadcast_eph.extract_sbas_ephemeris(msg)
+        if eph:
+            self.broadcast_eph.cache_ephemeris(eph, time_key='t0')
+
     def _handle_msm_obs(self, msg, epoch_data=None):
             """
             Parse RTCM 3.2 MSM7 observation message.
@@ -209,8 +245,10 @@ class RTCMHandler:
                 "107": {"sys": "G", "time_df": "DF004", "type": "GPS"},
                 "108": {"sys": "R", "time_df": "DF034", "type": "GLO"},
                 "109": {"sys": "E", "time_df": "DF248", "type": "GAL"},
+                "110": {"sys": "S", "time_df": "DF004", "type": "SBS"},
                 "111": {"sys": "J", "time_df": "DF428", "type": "QZS"},
                 "112": {"sys": "C", "time_df": "DF427", "type": "BDS"},
+                "113": {"sys": "I", "time_df": "DF546", "type": "IRN"},
             }
 
             if sys_prefix not in sys_config:
@@ -236,7 +274,7 @@ class RTCMHandler:
             GPS_WEEK_SECONDS = 7 * 24 * 3600
             current_gps_week = GNSSTime.current_gps_week()
 
-            if sys_id == 'G':
+            if sys_id in ['G', 'J', 'S', 'I']:
                 # GPS TOW: directly seconds within GPS week
                 gps_seconds = epoch_time_s % GPS_WEEK_SECONDS
                 gps_week = current_gps_week
@@ -311,8 +349,9 @@ class RTCMHandler:
                 if i not in cell_prn_map: continue
 
                 idx = f"{i:02d}"
-                prn = cell_prn_map[i]
-                sat_idx = prn_to_sat_idx[prn]
+                raw_prn = cell_prn_map[i]
+                sat_idx = prn_to_sat_idx[raw_prn]
+                prn = self._normalize_satellite_number(sys_id, raw_prn)
                 sat_key = f"{sys_id}{prn:02d}"
 
                 # Create SatelliteState (but don't calculate position yet)
@@ -338,7 +377,7 @@ class RTCMHandler:
                 freq, _ = get_freq(sig_id, sat_key, fcn)
 
                 # --- Extract Observations (Range, Phase, Doppler, etc.) ---
-                if prn not in sat_data_cache:
+                if raw_prn not in sat_data_cache:
                     rng_int = getattr(msg, f"DF397_{sat_idx}", None)
                     rng_mod = getattr(msg, f"DF398_{sat_idx}", 0)
                     rate_rough = getattr(msg, f"DF399_{sat_idx}", None)
@@ -351,10 +390,10 @@ class RTCMHandler:
                     if rate_rough is not None and rate_rough != -8192:
                         rr_sat = rate_rough
 
-                    sat_data_cache[prn] = {"r": r_sat, "rr": rr_sat}
+                    sat_data_cache[raw_prn] = {"r": r_sat, "rr": rr_sat}
 
-                rough_range = sat_data_cache[prn]["r"]
-                rough_rate = sat_data_cache[prn]["rr"]
+                rough_range = sat_data_cache[raw_prn]["r"]
+                rough_rate = sat_data_cache[raw_prn]["rr"]
 
                 pr_fine = getattr(msg, f"DF405_{idx}", None)
                 pseudorange = 0.0
@@ -459,6 +498,17 @@ class RTCMHandler:
                             'tb': eph_data.get('tb'),    # Time of ephemeris (seconds within week)
                             'tau_n': eph_data.get('tau_n'),
                             'gamma_n': eph_data.get('gamma_n'),
+                        })
+                    elif sys_type == 'SBS':
+                        eph_for_calc.update({
+                            't0': eph_data.get('t0', eph_data.get('toe')),
+                            'pos': eph_data.get('pos'),
+                            'vel': eph_data.get('vel'),
+                            'acc': eph_data.get('acc'),
+                            'af0': eph_data.get('af0', 0.0),
+                            'af1': eph_data.get('af1', 0.0),
+                            'af2': eph_data.get('af2', 0.0),
+                            'Toc': eph_data.get('toc', eph_data.get('t0')),
                         })
                     else:
                         # GPS, Galileo, BeiDou use Keplerian parameters

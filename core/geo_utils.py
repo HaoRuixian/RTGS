@@ -32,6 +32,10 @@ def get_freq(sig_id: str, sat_key: str, fcn: int = 0):
     gal_freq = {"1": 1575.42e6, "5": 1176.45e6, "7": 1207.14e6, "8": 1191.795e6, "6": 1278.75e6}
     # BDS
     bds_freq = {"1": 1575.42e6, "2": 1561.098e6, "5": 1176.45e6, "7": 1207.140e6, "8": 1191.795e6, "6": 1268.52e6}
+    # SBAS
+    sbas_freq = {"1": 1575.42e6, "5": 1176.45e6}
+    # IRNSS / NavIC
+    irnss_freq = {"1": 1575.42e6, "5": 1176.45e6, "9": 2492.028e6}
     
     sys = sat_key[0]
     band = sig_id[0]
@@ -43,14 +47,21 @@ def get_freq(sig_id: str, sat_key: str, fcn: int = 0):
         freq = gal_freq.get(band)
     elif sys == "C":
         freq = bds_freq.get(band)
+    elif sys == "S":
+        freq = sbas_freq.get(band)
+    elif sys == "I":
+        freq = irnss_freq.get(band)
     elif sys == "R":
-        # GLONASS FDMA
-        # L1 = 1602 + 0.5625 * k
-        # L2 = 1246 + 0.4375 * k
+        # GLONASS FDMA/CDMA
+        # G1 = 1602 + 0.5625 * k
+        # G2 = 1246 + 0.4375 * k
+        # G3 = 1202.025 MHz (no FCN spacing)
         if band == "1":
             freq = 1602.0e6 + 0.5625e6 * fcn
         elif band == "2":
             freq = 1246.0e6 + 0.4375e6 * fcn
+        elif band == "3":
+            freq = 1202.025e6
 
     if freq is None:
         return 0.0, 0.0

@@ -45,7 +45,8 @@ from core.ring_buffer import RingBuffer
 from core.global_config import get_global_config
 from ui.monitoring.widgets import SkyplotWidget, MultiSignalBarWidget, PlotSNRWidget, SatelliteNumWidget
 from ui.ConfigDialog import ConfigDialog
-from ui.style import get_app_stylesheet
+from ui.style import get_app_stylesheet, ui_scale_for_width
+from ui.responsive import adaptive_window_size, window_ui_scale
 import csv
 
 
@@ -69,7 +70,7 @@ class MonitoringModule(QMainWindow):
         """
         super().__init__()
         self.setWindowTitle("GNSS RT Monitoring Module")
-        self.resize(1800, 1000)
+        adaptive_window_size(self, target=(1800, 1000), minimum=(1100, 700))
         
         # Step 1: Initialize satellite data containers
         # merged_satellites: {prn_str: SatelliteState} - current epoch data from all threads
@@ -91,13 +92,15 @@ class MonitoringModule(QMainWindow):
         self.last_table_data_hash = None  # Hash of table data to detect actual changes
         
         # Step 3: Load active GNSS systems from configuration
-        # DEFAULT: G(GPS), R(GLONASS), E(Galileo), C(BeiDou), J(QZSS), S(SBAS)
+        # DEFAULT: G(GPS), R(GLONASS), E(Galileo), C(BeiDou), J(QZSS), S(SBAS), I(IRNSS)
         config = get_global_config()
-        self.active_systems = set(config.target_systems) if config.target_systems else {'G', 'R', 'E', 'C', 'J', 'S'}
+        self.active_systems = set(config.target_systems) if config.target_systems else {'G', 'R', 'E', 'C', 'J', 'S', 'I'}
         
         # Step 4: Create Qt signal/slot connections for thread communication
         # Signals emitted by IOThread and DataProcessingThread in workers.py
         self.signals = StreamSignals()
+        self.stream_status = {'OBS': False, 'EPH': False}
+        self.eph_data_available = False
         self.signals.log_signal.connect(self.append_log)       # Thread → UI: log messages
         self.signals.epoch_signal.connect(self.process_gui_epoch)  # Thread → UI: new epoch data
         self.signals.status_signal.connect(self.update_status)  # Thread → UI: connection status
@@ -147,6 +150,7 @@ class MonitoringModule(QMainWindow):
         self.logging_active = False
         self.logging_thread = None
         self.latest_epoch_data = None  # Store latest EpochObservation for logging and positioning
+        self._compact_scale = None
         
         # Step 7: Build UI layout
         self.setup_ui()
@@ -193,10 +197,10 @@ class MonitoringModule(QMainWindow):
         top_bar = QHBoxLayout()
 
         # Back to launcher
-        btn_back = QPushButton("< Back to Launcher")
-        btn_back.setMaximumWidth(400)
-        btn_back.clicked.connect(self.on_back_to_launcher)
-        top_bar.addWidget(btn_back)
+        self.btn_back = QPushButton("< Back to Launcher")
+        self.btn_back.setMaximumWidth(400)
+        self.btn_back.clicked.connect(self.on_back_to_launcher)
+        top_bar.addWidget(self.btn_back)
 
         # Separator
         line = QFrame()
@@ -205,17 +209,17 @@ class MonitoringModule(QMainWindow):
         top_bar.addWidget(line)
 
         # Config button (with fallback icon)
-        btn_cfg = QPushButton("Config")
+        self.btn_cfg = QPushButton("Config")
         try:
             settings_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogInfoView)
             if settings_icon.isNull():
                 settings_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
             if not settings_icon.isNull():
-                btn_cfg.setIcon(settings_icon)
+                self.btn_cfg.setIcon(settings_icon)
         except Exception:
             pass
-        btn_cfg.clicked.connect(self.open_config_dialog)
-        top_bar.addWidget(btn_cfg)
+        self.btn_cfg.clicked.connect(self.open_config_dialog)
+        top_bar.addWidget(self.btn_cfg)
 
         # Logging settings
         self.btn_logging = QPushButton("Logging")
@@ -229,11 +233,21 @@ class MonitoringModule(QMainWindow):
         top_bar.addWidget(line)
 
         # GNSS system filters
-        top_bar.addWidget(QLabel("Systems:"))
+        self.lbl_systems = QLabel("Systems:")
+        top_bar.addWidget(self.lbl_systems)
         self.chk_sys = {}
+        self._system_names = {
+            "G": ("GPS", "GPS"),
+            "R": ("GLONASS", "GLO"),
+            "E": ("Galileo", "GAL"),
+            "C": ("BeiDou", "BDS"),
+            "J": ("QZSS", "QZS"),
+            "S": ("SBAS", "SBAS"),
+            "I": ("IRNSS", "IRN"),
+        }
         for sys_char, name in [
             ('G', 'GPS'), ('R', 'GLONASS'), ('E', 'Galileo'),
-            ('C', 'BeiDou'), ('J', 'QZSS'), ('S', 'SBAS')
+            ('C', 'BeiDou'), ('J', 'QZSS'), ('S', 'SBAS'), ('I', 'IRNSS')
         ]:
             chk = QCheckBox(name)
             chk.setChecked(sys_char in self.active_systems)
@@ -244,8 +258,6 @@ class MonitoringModule(QMainWindow):
             self.chk_sys[sys_char] = chk
             top_bar.addWidget(chk)
 
-        top_bar.addStretch()
-
         # Data stream status indicators
         self.lbl_status_obs = QLabel("OBS: OFF")
         self.lbl_status_eph = QLabel("EPH: OFF")
@@ -255,7 +267,9 @@ class MonitoringModule(QMainWindow):
                 "background-color: #ddd; padding: 4px 8px; border-radius: 4px;"
             )
             top_bar.addWidget(lbl)
+        self._render_status_indicators()
 
+        top_bar.addStretch()
         layout.addLayout(top_bar)
 
         # ======================================================================
@@ -309,11 +323,14 @@ class MonitoringModule(QMainWindow):
         self.sub_tabs = QTabWidget()
 
         self.table_groups = {
-            'ALL': ['G', 'R', 'E', 'C', 'J', 'S'],
+            'ALL': ['G', 'R', 'E', 'C', 'J', 'S', 'I'],
             'GPS': ['G'],
             'BeiDou': ['C'],
             'GLONASS': ['R'],
             'Galileo': ['E'],
+            'QZSS': ['J'],
+            'SBAS': ['S'],
+            'IRNSS': ['I'],
         }
         self.tables = {}
 
@@ -397,6 +414,32 @@ class MonitoringModule(QMainWindow):
         # Limit log growth for performance
         self.max_log_lines = 500
         layout.addWidget(self.log_area)
+        self._apply_compact_ui()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_compact_ui()
+
+    def _apply_compact_ui(self):
+        if not hasattr(self, "bar_chart") or not hasattr(self, "btn_back"):
+            return
+        scale = window_ui_scale(self)
+        if self._compact_scale == scale:
+            return
+
+        self._compact_scale = scale
+        self.setStyleSheet(get_app_stylesheet(scale))
+        self.bar_chart.setMinimumHeight(max(190, int(250 * scale)))
+        self.log_area.setMaximumHeight(max(70, int(80 * scale)))
+        self.btn_back.setText("< Back to Launcher")
+        self.btn_logging.setText("Logging")
+        self.lbl_systems.setText("Systems:")
+
+        for sys_char, checkbox in self.chk_sys.items():
+            full_text, _short_text = self._system_names[sys_char]
+            checkbox.setText(full_text)
+
+        self._render_status_indicators()
 
 
     def on_filter_changed(self):
@@ -1001,9 +1044,16 @@ class MonitoringModule(QMainWindow):
         dlg = ConfigDialog(self, self.settings)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.settings = dlg.get_settings()
-            self.restart_streams()
+            if getattr(dlg, 'disconnect_requested', False):
+                self.disconnect_streams()
+            elif getattr(dlg, 'auto_connect', False):
+                self.restart_streams()
 
-    def restart_streams(self):
+    def disconnect_streams(self):
+        """Stop all active streams without clearing the saved connection settings."""
+        self.restart_streams(start_streams=False)
+
+    def restart_streams(self, start_streams: bool = True):
         """
         Reinitialize data acquisition threads and buffers.
         
@@ -1023,7 +1073,9 @@ class MonitoringModule(QMainWindow):
         - Ring buffers decouple thread speeds (IOThread → DataProcessingThread)
         - Logging buffer is independent (high capacity, separate from processing)
         """
-        self.signals.log_signal.emit("=== Restarting streams ===")
+        self.signals.log_signal.emit(
+            "=== Restarting streams ===" if start_streams else "=== Disconnecting streams ==="
+        )
         
         # Step 1: Stop all existing threads
         # This gracefully halts reception and processing of RTCM data
@@ -1063,7 +1115,15 @@ class MonitoringModule(QMainWindow):
         self.merged_satellites.clear()
         self.sat_last_seen.clear()
         self.sat_history.clear()
+        self.current_sat_list = []
+        self.last_table_data_hash = None
+        self._reset_status_indicators()
+        self.refresh_all_widgets()
         self.signals.log_signal.emit("Cleared data cache")
+
+        if not start_streams:
+            self.signals.log_signal.emit("Streams disconnected")
+            return
         
         # Step 6: Use shared RTCMHandler instance
         # Handler manages ephemeris caching and message parsing
@@ -1182,23 +1242,52 @@ class MonitoringModule(QMainWindow):
     @Slot(str, bool)
     def update_status(self, name, connected):
         """
-        Update connection status indicator label.
+        Update OBS/EPH status indicators.
         
         Procedure:
-        1. Select label based on stream name (OBS or EPH)
-        2. Update label text with connection state (ON/OFF)
-        3. Apply color coding: green for connected, red for disconnected
-        4. Update stylesheet to display new status
+        1. Track raw OBS/EPH connection state from IO threads
+        2. Treat ``EPH_DATA`` as "ephemeris has been detected in a data stream"
+        3. Keep EPH ON if either the EPH stream is connected or ephemeris data has been seen
         """
-        # Step 1: Choose label to update
-        lbl = self.lbl_status_obs if name == "OBS" else self.lbl_status_eph
-        
-        # Step 2: Select color based on connection state
-        color = "#2A692D" if connected else "#6D2F2B"  # Green if ON, Red if OFF
-        
-        # Step 3: Update label text and styling
+        if name == "EPH_DATA":
+            self.eph_data_available = bool(connected)
+            self._render_status_indicator("EPH")
+            return
+
+        if name not in self.stream_status:
+            return
+
+        self.stream_status[name] = bool(connected)
+        self._render_status_indicator(name)
+
+    def _reset_status_indicators(self):
+        """Reset OBS/EPH badges to OFF."""
+        self.stream_status = {'OBS': False, 'EPH': False}
+        self.eph_data_available = False
+        self._render_status_indicators()
+
+    def _render_status_indicators(self):
+        """Refresh both status badges."""
+        if hasattr(self, 'lbl_status_obs'):
+            self._render_status_indicator("OBS")
+        if hasattr(self, 'lbl_status_eph'):
+            self._render_status_indicator("EPH")
+
+    def _render_status_indicator(self, name: str):
+        """Render one status badge from the tracked connection/data state."""
+        if name == "OBS":
+            lbl = self.lbl_status_obs
+            connected = self.stream_status.get("OBS", False)
+        else:
+            lbl = self.lbl_status_eph
+            connected = self.stream_status.get("EPH", False) or self.eph_data_available
+
+        color = "#2A692D" if connected else "#6D2F2B"
         lbl.setText(f"{name}: {'ON' if connected else 'OFF'}")
-        lbl.setStyleSheet(f"background-color: {color}; color: white; padding: 4px 8px; border-radius: 4px; font-weight: bold;")
+        lbl.setStyleSheet(
+            f"background-color: {color}; color: white; padding: 4px 8px; "
+            "border-radius: 4px; font-weight: bold;"
+        )
 
     def on_back_to_launcher(self):
         """

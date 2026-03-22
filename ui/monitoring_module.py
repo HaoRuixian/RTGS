@@ -223,6 +223,15 @@ class MonitoringModule(QMainWindow):
 
         # Logging settings
         self.btn_logging = QPushButton("Logging")
+        try:
+            # 尝试使用保存/记录相关的图标
+            log_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
+            if log_icon.isNull():
+                log_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogListView)
+            if not log_icon.isNull():
+                self.btn_logging.setIcon(log_icon)
+        except Exception:
+            pass
         self.btn_logging.clicked.connect(self.open_log_settings_dialog)
         top_bar.addWidget(self.btn_logging)
 

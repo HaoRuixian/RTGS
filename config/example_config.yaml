@@ -1,0 +1,52 @@
+# RTGS Configuration File (YAML Format)
+# This is an example configuration file showing all available settings
+
+# Observation stream settings
+obs_settings:
+  source_type: NTRIP Server          # "NTRIP Server" or "Serial Port"
+  # NTRIP settings
+  host: ntrip.example.com
+  port: '2101'
+  mountpoint: MOUNT_POINT
+  user: username
+  password: password
+  # Serial port settings
+  serial_port: COM1
+  baudrate: 115200
+  databits: 8
+  stopbits: 1.0
+  parity: None                        # None, Even, Odd, Mark, Space
+  flowctrl: None                      # None, RTS/CTS, XOn/XOff
+  enabled: true
+
+# Ephemeris stream settings (optional)
+eph_settings:
+  source_type: NTRIP Server
+  host: ntrip.example.com
+  port: '2101'
+  mountpoint: EPH_MOUNT
+  user: ephem_user
+  password: ephem_password
+  serial_port: COM2
+  baudrate: 115200
+  databits: 8
+  stopbits: 1.0
+  parity: None
+  flowctrl: None
+  enabled: false                      # Set to true to enable ephemeris stream
+
+# Receiver approximate position (ECEF coordinates in meters)
+# Set to null to omit approximate position
+approx_rec_pos: null
+# approx_rec_pos: [4000000.0, 4000000.0, 4000000.0]
+
+# GNSS systems to use
+# G=GPS, R=GLONASS, E=Galileo, C=BeiDou, J=QZSS, S=SBAS, I=IRNSS
+target_systems:
+  - G
+  - R
+  - E
+  - C
+  - J
+  - S
+  - I

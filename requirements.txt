@@ -13,7 +13,7 @@ scipy>=1.11.0
 PyYAML>=6.0
 
 # GNSS/RTCM Protocol Support
-pyrtcm>=1.5.0
+pyrtcm
 
 # Hardware Communication
 pyserial>=3.5

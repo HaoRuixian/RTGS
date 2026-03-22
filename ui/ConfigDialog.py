@@ -1,4 +1,5 @@
 import importlib.util
+import yaml
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QGroupBox, QFormLayout, 
                              QLineEdit, QCheckBox, QHBoxLayout, QPushButton, 
                              QFileDialog, QMessageBox, QStyle, QComboBox, QLabel,
@@ -11,7 +12,7 @@ class ConfigDialog(QDialog):
     def __init__(self, parent=None, initial_settings=None):
         super().__init__(parent)
         self.setWindowTitle("Data Source Settings")
-        adaptive_window_size(self, target=(640, 840), minimum=(460, 520))
+        adaptive_window_size(self, target=(460, 600), minimum=(460, 520))
         self.settings = initial_settings or {}
         # Flag set when user clicked Connect (auto-connect requested)
         self.auto_connect = False
@@ -335,6 +336,13 @@ class ConfigDialog(QDialog):
             b_load.setIcon(open_icon)
         b_load.clicked.connect(self.load_file)
         
+        b_save_config = QPushButton("Save Config")
+        b_save_config.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        save_config_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
+        if not save_config_icon.isNull():
+            b_save_config.setIcon(save_config_icon)
+        b_save_config.clicked.connect(self.save_config_to_file)
+        
         b_disconnect = QPushButton("Disconnect")
         b_disconnect.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         disconnect_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserStop)
@@ -342,17 +350,18 @@ class ConfigDialog(QDialog):
             b_disconnect.setIcon(disconnect_icon)
         b_disconnect.clicked.connect(self.on_disconnect)
 
-        b_save = QPushButton("Connect")
-        b_save.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-        save_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
-        if not save_icon.isNull():
-            b_save.setIcon(save_icon)
+        b_connect = QPushButton("Connect")
+        b_connect.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
+        connect_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DialogYesButton)
+        if not connect_icon.isNull():
+            b_connect.setIcon(connect_icon)
         # When Connect is clicked, mark auto_connect and accept dialog
-        b_save.clicked.connect(self.on_connect)
+        b_connect.clicked.connect(self.on_connect)
         btns.addWidget(b_load)
+        btns.addWidget(b_save_config)
         btns.addStretch()
         btns.addWidget(b_disconnect)
-        btns.addWidget(b_save)
+        btns.addWidget(b_connect)
         layout.addLayout(btns)
         
         # Initialize visibility
@@ -446,47 +455,134 @@ class ConfigDialog(QDialog):
         self.accept()
 
     def load_file(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Select Config", "", "Python (*.py)")
-        if f:
-            try:
-                spec = importlib.util.spec_from_file_location("cfg", f)
-                m = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(m)
+        """Load configuration from file (supports .yaml, .yml, and legacy .py formats)"""
+        f, _ = QFileDialog.getOpenFileName(
+            self, 
+            "Select Config File", 
+            "", 
+            "YAML Files (*.yaml *.yml);;Python Files (*.py);;All Files (*.*)"
+        )
+        if not f:
+            return
+            
+        try:
+            if f.lower().endswith(('.yaml', '.yml')):
+                # Load from YAML file
+                self._load_yaml_file(f)
+            else:
+                # Load from legacy Python file
+                self._load_python_file(f)
+            QMessageBox.information(self, "Success", f"Configuration loaded successfully from:\n{f}")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to load configuration:\n{str(e)}")
+
+    def _load_yaml_file(self, filepath):
+        """Load configuration from YAML file"""
+        import yaml
+        with open(filepath, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        
+        if not config:
+            raise ValueError("YAML file is empty or invalid")
+        
+        # Load OBS settings
+        if 'obs_settings' in config:
+            obs = config['obs_settings']
+            if obs.get('source_type') == 'NTRIP Server':
+                self.obs_source.setCurrentText('NTRIP Server')
+                self.obs_h.setText(str(obs.get('host', '')))
+                self.obs_p.setText(str(obs.get('port', '2101')))
+                self.obs_m.setText(str(obs.get('mountpoint', '')))
+                self.obs_u.setText(str(obs.get('user', '')))
+                self.obs_pw.setText(str(obs.get('password', '')))
+            else:
+                self.obs_source.setCurrentText('Serial Port')
+                self.obs_port.setCurrentText(str(obs.get('serial_port', 'COM1')))
+                self.obs_baudrate.setCurrentText(str(obs.get('baudrate', 115200)))
+                self.obs_databits.setCurrentText(str(obs.get('databits', 8)))
+                self.obs_stopbits.setCurrentText(str(obs.get('stopbits', 1)))
+                self.obs_parity.setCurrentText(str(obs.get('parity', 'None')))
+                self.obs_flowctrl.setCurrentText(str(obs.get('flowctrl', 'None')))
+        
+        # Load EPH settings
+        if 'eph_settings' in config:
+            eph = config['eph_settings']
+            eph_enabled = eph.get('enabled', False)
+            self.chk_eph.setChecked(eph_enabled)
+            if eph_enabled:
+                if eph.get('source_type') == 'NTRIP Server':
+                    self.eph_source.setCurrentText('NTRIP Server')
+                    self.eph_h.setText(str(eph.get('host', '')))
+                    self.eph_p.setText(str(eph.get('port', '2101')))
+                    self.eph_m.setText(str(eph.get('mountpoint', '')))
+                    self.eph_u.setText(str(eph.get('user', '')))
+                    self.eph_pw.setText(str(eph.get('password', '')))
+                else:
+                    self.eph_source.setCurrentText('Serial Port')
+                    self.eph_port.setCurrentText(str(eph.get('serial_port', 'COM2')))
+                    self.eph_baudrate.setCurrentText(str(eph.get('baudrate', 115200)))
+                    self.eph_databits.setCurrentText(str(eph.get('databits', 8)))
+                    self.eph_stopbits.setCurrentText(str(eph.get('stopbits', 1)))
+                    self.eph_parity.setCurrentText(str(eph.get('parity', 'None')))
+                    self.eph_flowctrl.setCurrentText(str(eph.get('flowctrl', 'None')))
+        
+        # Load general settings
+        if 'approx_rec_pos' in config and config['approx_rec_pos']:
+            pos = config['approx_rec_pos']
+            if len(pos) >= 3:
+                self.rec_pos_x.setText(str(pos[0]))
+                self.rec_pos_y.setText(str(pos[1]))
+                self.rec_pos_z.setText(str(pos[2]))
+        
+        if 'target_systems' in config:
+            systems = config['target_systems']
+            if isinstance(systems, list):
+                self.target_systems.setText(','.join(systems))
+            else:
+                self.target_systems.setText(str(systems))
+        
+        # Update visibility
+        self.on_obs_source_changed()
+        self.on_eph_enabled_changed()
+        self.on_eph_source_changed()
+
+    def _load_python_file(self, filepath):
+        """Load configuration from legacy Python file format"""
+        spec = importlib.util.spec_from_file_location("cfg", filepath)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        
+        # Load OBS settings
+        if hasattr(m, 'NTRIP_HOST'): self.obs_h.setText(str(m.NTRIP_HOST))
+        if hasattr(m, 'NTRIP_PORT'): self.obs_p.setText(str(m.NTRIP_PORT))
+        if hasattr(m, 'MOUNTPOINT'): self.obs_m.setText(str(m.MOUNTPOINT))
+        if hasattr(m, 'USER'): self.obs_u.setText(str(m.USER))
+        if hasattr(m, 'PASSWORD'): self.obs_pw.setText(str(m.PASSWORD))
+        
+        # Load EPH settings
+        if hasattr(m, 'EPH_HOST'): 
+            self.chk_eph.setChecked(True)
+            self.eph_h.setText(str(m.EPH_HOST))
+            self.eph_p.setText(str(m.EPH_PORT))
+            self.eph_m.setText(str(m.EPH_MOUNTPOINT))
+            self.eph_u.setText(str(m.EPH_USER))
+            self.eph_pw.setText(str(m.EPH_PASSWORD))
                 
-                # Load OBS settings
-                if hasattr(m, 'NTRIP_HOST'): self.obs_h.setText(str(m.NTRIP_HOST))
-                if hasattr(m, 'NTRIP_PORT'): self.obs_p.setText(str(m.NTRIP_PORT))
-                if hasattr(m, 'MOUNTPOINT'): self.obs_m.setText(str(m.MOUNTPOINT))
-                if hasattr(m, 'USER'): self.obs_u.setText(str(m.USER))
-                if hasattr(m, 'PASSWORD'): self.obs_pw.setText(str(m.PASSWORD))
-                
-                # Load EPH settings
-                if hasattr(m, 'EPH_HOST'): 
-                    self.chk_eph.setChecked(True)
-                    self.eph_h.setText(str(m.EPH_HOST))
-                    self.eph_p.setText(str(m.EPH_PORT))
-                    self.eph_m.setText(str(m.EPH_MOUNTPOINT))
-                    self.eph_u.setText(str(m.EPH_USER))
-                    self.eph_pw.setText(str(m.EPH_PASSWORD))
+        # Load general settings
+        if hasattr(m, 'APPROX_REC_POS'):
+            pos = m.APPROX_REC_POS
+            if len(pos) >= 3:
+                self.rec_pos_x.setText(str(pos[0]))
+                self.rec_pos_y.setText(str(pos[1]))
+                self.rec_pos_z.setText(str(pos[2]))
                     
-                # Load general settings
-                if hasattr(m, 'APPROX_REC_POS'):
-                    pos = m.APPROX_REC_POS
-                    if len(pos) >= 3:
-                        self.rec_pos_x.setText(str(pos[0]))
-                        self.rec_pos_y.setText(str(pos[1]))
-                        self.rec_pos_z.setText(str(pos[2]))
-                        
-                if hasattr(m, 'TARGET_SYSTEMS'):
-                    systems = m.TARGET_SYSTEMS
-                    if isinstance(systems, list):
-                        systems_str = ','.join(systems)
-                        self.target_systems.setText(systems_str)
-                    else:
-                        self.target_systems.setText(str(systems))
-                        
-            except Exception as e:
-                QMessageBox.warning(self, "Error", str(e))
+        if hasattr(m, 'TARGET_SYSTEMS'):
+            systems = m.TARGET_SYSTEMS
+            if isinstance(systems, list):
+                systems_str = ','.join(systems)
+                self.target_systems.setText(systems_str)
+            else:
+                self.target_systems.setText(str(systems))
 
     def get_settings(self):
         """Return settings dictionary with both NTRIP and serial port configuration"""
@@ -596,3 +692,39 @@ class ConfigDialog(QDialog):
             'APPROX_REC_POS': legacy_pos,
             'TARGET_SYSTEMS': target_systems
         }
+
+    def save_config_to_file(self):
+        """Save current configuration to a YAML file"""
+        filepath, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Configuration",
+            "",
+            "YAML Files (*.yaml);;YAML Files (*.yml)"
+        )
+        
+        if not filepath:
+            return
+        
+        # Ensure file has correct extension
+        if not filepath.lower().endswith(('.yaml', '.yml')):
+            filepath += '.yaml'
+        
+        try:
+            # First, update the global config with current UI settings
+            self.get_settings()
+            
+            # Then save the global config to file
+            from core.global_config import save_config_to_file as save_global_config
+            save_global_config(filepath)
+            
+            QMessageBox.information(
+                self, 
+                "Success", 
+                f"Configuration saved successfully to:\n{filepath}"
+            )
+        except Exception as e:
+            QMessageBox.warning(
+                self, 
+                "Error", 
+                f"Failed to save configuration:\n{str(e)}"
+            )

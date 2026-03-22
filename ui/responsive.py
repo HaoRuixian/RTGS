@@ -83,10 +83,10 @@ def adaptive_window_size(
 
     wanted_w = min(int(screen_w * max_fill_w), int(target[0]))
     wanted_h = min(int(screen_h * max_fill_h), int(target[1]))
-    wanted_w = max(860, wanted_w)
-    wanted_h = max(560, wanted_h)
+    wanted_w = max(490, wanted_w)
+    wanted_h = max(520, wanted_h)
 
-    min_w = min(int(minimum[0]), max(820, int(screen_w * 0.68)))
+    min_w = min(int(minimum[0]), max(490, int(screen_w * 0.68)))
     min_h = min(int(minimum[1]), max(520, int(screen_h * 0.68)))
 
     final_w = max(wanted_w, min_w)

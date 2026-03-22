@@ -1,4 +1,4 @@
-﻿"""GUI editor for reflectometry YAML configuration."""
+"""GUI editor for reflectometry YAML configuration."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ class ReflectometryConfigDialog(QDialog):
     def __init__(self, config_path: str | Path, parent=None, initial_yaml_text: str | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Reflectometry IR Config")
-        adaptive_window_size(self, target=(1100, 760), minimum=(760, 580))
+        adaptive_window_size(self, target=(960, 680), minimum=(700, 520))
         self.project_root = Path(__file__).resolve().parents[2]
         self.config_path = self._resolve_path(config_path)
         self.current_path = self.config_path
@@ -69,8 +69,8 @@ class ReflectometryConfigDialog(QDialog):
     def _setup_ui(self) -> None:
         self.setObjectName("reflectometryConfigDialog")
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
         self.tabs = QTabWidget()
         self.tabs.setObjectName("configTabs")
         self.tabs.setUsesScrollButtons(True)
@@ -123,8 +123,8 @@ class ReflectometryConfigDialog(QDialog):
     def _build_tab_page(self, *sections: QWidget) -> QWidget:
         container = QWidget()
         container_layout = QVBoxLayout(container)
-        container_layout.setContentsMargins(12, 12, 12, 12)
-        container_layout.setSpacing(14)
+        container_layout.setContentsMargins(8, 8, 8, 8)
+        container_layout.setSpacing(10)
         for section in sections:
             container_layout.addWidget(section)
         container_layout.addStretch()
@@ -139,8 +139,8 @@ class ReflectometryConfigDialog(QDialog):
         card = QFrame()
         card.setObjectName("configCard")
         layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(8)
 
         title_label = QLabel(title)
         title_label.setObjectName("cardTitle")
@@ -302,7 +302,7 @@ class ReflectometryConfigDialog(QDialog):
         self.zone_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.zone_table.setAlternatingRowColors(True)
         self.zone_table.setWordWrap(False)
-        self.zone_table.setMinimumHeight(180)
+        self.zone_table.setMinimumHeight(140)
         header = self.zone_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -916,12 +916,12 @@ class ReflectometryConfigDialog(QDialog):
                 background-color: {soft_bg};
                 color: {muted};
                 border: none;
-                border-radius: 9px;
-                padding: 9px 16px;
+                border-radius: 8px;
+                padding: 7px 14px;
                 margin-right: 6px;
                 margin-top: 0px;
                 margin-bottom: 6px;
-                min-width: 92px;
+                min-width: 80px;
             }}
             QDialog#reflectometryConfigDialog QTabBar::tab:selected {{
                 background-color: {pane_bg};
@@ -935,12 +935,12 @@ class ReflectometryConfigDialog(QDialog):
             QDialog#reflectometryConfigDialog QFrame#configCard {{
                 background-color: {pane_bg};
                 border: 1px solid {border};
-                border-radius: 14px;
+                border-radius: 10px;
             }}
             QDialog#reflectometryConfigDialog QFrame#configInsetCard {{
                 background-color: {soft_bg};
                 border: 1px solid {border};
-                border-radius: 12px;
+                border-radius: 8px;
             }}
             QDialog#reflectometryConfigDialog QLabel#cardTitle {{
                 color: {text};
@@ -964,9 +964,9 @@ class ReflectometryConfigDialog(QDialog):
                 background-color: {pane_bg};
                 color: {text};
                 border: 1px solid {border};
-                border-radius: 8px;
-                padding: 6px 8px;
-                min-height: 30px;
+                border-radius: 6px;
+                padding: 5px 8px;
+                min-height: 26px;
             }}
             QDialog#reflectometryConfigDialog QLineEdit:focus,
             QDialog#reflectometryConfigDialog QComboBox:focus,
@@ -989,9 +989,9 @@ class ReflectometryConfigDialog(QDialog):
                 background-color: {pane_bg};
                 color: {text};
                 border: 1px solid {border};
-                border-radius: 8px;
-                padding: 7px 12px;
-                min-height: 30px;
+                border-radius: 6px;
+                padding: 5px 12px;
+                min-height: 26px;
             }}
             QDialog#reflectometryConfigDialog QPushButton:hover {{
                 border-color: {accent};
@@ -1032,9 +1032,9 @@ def _float_spin(minimum: float, maximum: float, decimals: int) -> QDoubleSpinBox
 
 
 def _configure_form_layout(form: QFormLayout) -> None:
-    form.setContentsMargins(10, 14, 10, 8)
-    form.setHorizontalSpacing(18)
-    form.setVerticalSpacing(12)
+    form.setContentsMargins(8, 10, 8, 8)
+    form.setHorizontalSpacing(14)
+    form.setVerticalSpacing(8)
     form.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
     form.setFormAlignment(Qt.AlignTop)
     form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)

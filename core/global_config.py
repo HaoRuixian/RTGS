@@ -3,10 +3,14 @@ Global Configuration Module
 
 This module provides a centralized configuration storage for NTRIP and serial connection settings
 that can be accessed by all functions throughout the application.
+
+It supports saving and loading configuration in YAML format.
 """
 
 from typing import Dict, Any, Optional, List
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
+import yaml
+from pathlib import Path
 
 
 @dataclass
@@ -152,6 +156,105 @@ class GlobalConfig:
         for key, value in settings.items():
             self.positioning_settings[key] = value
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert GlobalConfig to a dictionary suitable for YAML serialization."""
+        return {
+            'obs_settings': {
+                'source_type': self.obs_settings.source_type,
+                'host': self.obs_settings.host,
+                'port': self.obs_settings.port,
+                'mountpoint': self.obs_settings.mountpoint,
+                'user': self.obs_settings.user,
+                'password': self.obs_settings.password,
+                'serial_port': self.obs_settings.serial_port,
+                'baudrate': self.obs_settings.baudrate,
+                'databits': self.obs_settings.databits,
+                'stopbits': self.obs_settings.stopbits,
+                'parity': self.obs_settings.parity,
+                'flowctrl': self.obs_settings.flowctrl,
+                'enabled': self.obs_settings.enabled,
+            },
+            'eph_settings': {
+                'source_type': self.eph_settings.source_type,
+                'host': self.eph_settings.host,
+                'port': self.eph_settings.port,
+                'mountpoint': self.eph_settings.mountpoint,
+                'user': self.eph_settings.user,
+                'password': self.eph_settings.password,
+                'serial_port': self.eph_settings.serial_port,
+                'baudrate': self.eph_settings.baudrate,
+                'databits': self.eph_settings.databits,
+                'stopbits': self.eph_settings.stopbits,
+                'parity': self.eph_settings.parity,
+                'flowctrl': self.eph_settings.flowctrl,
+                'enabled': self.eph_settings.enabled,
+            },
+            'approx_rec_pos': self.approx_rec_pos,
+            'target_systems': self.target_systems,
+            'positioning_settings': self.positioning_settings,
+        }
+
+    def from_dict(self, config_dict: Dict[str, Any]) -> None:
+        """Load configuration from a dictionary (typically from YAML)."""
+        # Load OBS settings
+        if 'obs_settings' in config_dict:
+            obs_dict = config_dict['obs_settings']
+            for key, value in obs_dict.items():
+                if hasattr(self.obs_settings, key):
+                    setattr(self.obs_settings, key, value)
+        
+        # Load EPH settings
+        if 'eph_settings' in config_dict:
+            eph_dict = config_dict['eph_settings']
+            for key, value in eph_dict.items():
+                if hasattr(self.eph_settings, key):
+                    setattr(self.eph_settings, key, value)
+        
+        # Load general settings
+        if 'approx_rec_pos' in config_dict:
+            self.approx_rec_pos = config_dict['approx_rec_pos']
+        
+        if 'target_systems' in config_dict:
+            self.target_systems = config_dict['target_systems']
+        
+        # Load positioning settings
+        if 'positioning_settings' in config_dict:
+            self.positioning_settings.update(config_dict['positioning_settings'])
+
+    def save_to_file(self, filepath: str) -> None:
+        """Save the current configuration to a YAML file.
+        
+        Args:
+            filepath: Path to save the configuration file
+            
+        Raises:
+            IOError: If file cannot be written
+        """
+        try:
+            config_dict = self.to_dict()
+            Path(filepath).parent.mkdir(parents=True, exist_ok=True)
+            with open(filepath, 'w', encoding='utf-8') as f:
+                yaml.dump(config_dict, f, default_flow_style=False, allow_unicode=True)
+        except Exception as e:
+            raise IOError(f"Failed to save configuration to {filepath}: {str(e)}")
+
+    def load_from_file(self, filepath: str) -> None:
+        """Load configuration from a YAML file.
+        
+        Args:
+            filepath: Path to the configuration file
+            
+        Raises:
+            IOError: If file cannot be read or is invalid
+        """
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                config_dict = yaml.safe_load(f)
+            if config_dict:
+                self.from_dict(config_dict)
+        except Exception as e:
+            raise IOError(f"Failed to load configuration from {filepath}: {str(e)}")
+
 
 # Create a singleton instance of GlobalConfig that can be imported and used globally
 global_config = GlobalConfig()
@@ -209,3 +312,27 @@ def get_positioning_settings() -> Dict[str, Any]:
 def update_positioning_settings(settings: Dict[str, Any]) -> None:
     """Convenience function to update positioning settings."""
     global_config.update_positioning_settings(settings)
+
+
+def save_config_to_file(filepath: str) -> None:
+    """Convenience function to save the current configuration to a YAML file.
+    
+    Args:
+        filepath: Path to save the configuration file
+        
+    Raises:
+        IOError: If file cannot be written
+    """
+    global_config.save_to_file(filepath)
+
+
+def load_config_from_file(filepath: str) -> None:
+    """Convenience function to load configuration from a YAML file.
+    
+    Args:
+        filepath: Path to the configuration file
+        
+    Raises:
+        IOError: If file cannot be read or is invalid
+    """
+    global_config.load_from_file(filepath)

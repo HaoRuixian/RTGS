@@ -1,9 +1,12 @@
 station:
-  station_id: DEMO
+  station_id: BUAA01
   receiver_position:
-    latitude_deg: 31.2304
-    longitude_deg: 121.4737
-    height_m: 12.5
+    latitude_deg: 39.984434
+    longitude_deg: 116.342477
+    height_m: 123.949
+    x_m: -2171604.0201000003
+    y_m: 4385718.2204
+    z_m: 4076741.0261000004
   antenna_height: 2.35
   monument_height: 0.8
   environment_type: coastal
@@ -60,6 +63,8 @@ ir:
     min_width_bins: 1.0
     prefer_high_power: true
   harmonic_check: true
+  use_rising_arcs: true
+  use_setting_arcs: true
 geometry:
   use_external_az_el: true
   compute_az_el_if_missing: false

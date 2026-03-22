@@ -1,4 +1,4 @@
-﻿"""Reflectometry module integrated with the application's core reflectometry pipeline."""
+"""Reflectometry module integrated with the application's core reflectometry pipeline."""
 
 from __future__ import annotations
 
@@ -220,7 +220,7 @@ class ReflectometryModule(QMainWindow):
         self.btn_ir_config.clicked.connect(self.open_ir_config_dialog)
         top_bar.addWidget(self.btn_ir_config)
 
-        self.btn_run = QPushButton("Start Auto Analysis")
+        self.btn_run = QPushButton("Start Analysis")
         self.btn_run.clicked.connect(self.toggle_analysis)
         top_bar.addWidget(self.btn_run)
 
@@ -307,53 +307,53 @@ class ReflectometryModule(QMainWindow):
         self.left_panel = QWidget()
         left_layout = QVBoxLayout(self.left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(8)
-        self.left_panel.setMinimumWidth(560)
+        left_layout.setSpacing(10)
+        self.left_panel.setMinimumWidth(360)
+        self.left_panel.setMaximumWidth(420)
 
         summary_frame = QFrame()
         summary_frame.setObjectName("Panel")
         grid = QGridLayout(summary_frame)
-        grid.setContentsMargins(14, 14, 14, 14)
-        grid.setHorizontalSpacing(18)
+        grid.setContentsMargins(16, 16, 16, 16)
+        grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(8)
-
-        self.mountpoint_caption = QLabel("Current Mountpoint")
-        self.mountpoint_caption.setStyleSheet("font-size: 12px; font-weight: 600; color: #64748B;")
-        left_layout.addWidget(self.mountpoint_caption)
 
         self.mountpoint_label = QLabel("--")
         self.mountpoint_label.setWordWrap(True)
-        self.mountpoint_label.setStyleSheet("font-size: 24px; font-weight: 800; color: #0F172A;")
+        self.mountpoint_label.setStyleSheet("font-size: 22px; font-weight: 800; color: #0F172A; margin-bottom: 6px;")
         left_layout.addWidget(self.mountpoint_label)
 
         self.summary_labels: dict[str, QLabel] = {}
         summary_rows = [
             ("IR Config", "ir_config"),
             ("Analysis Mode", "analysis_mode"),
-            ("Tracked Satellites", "tracked_satellites"),
-            ("Buffered Samples", "buffered_samples"),
+            ("Tracked Sats", "tracked_satellites"),
+            ("Buffered", "buffered_samples"),
             ("Last Run", "last_run"),
             ("Arc Count", "arc_solutions"),
-            ("Successful Arcs", "successful_arcs"),
-            ("Latest Height", "latest_height"),
-            ("Latest Sea Level", "latest_sea_level"),
-            ("Latest Snow Depth", "latest_snow_depth"),
+            ("Successful", "successful_arcs"),
+            ("Height", "latest_height"),
+            ("Sea Level", "latest_sea_level"),
+            ("Snow Depth", "latest_snow_depth"),
         ]
         for row_index, (title, key) in enumerate(summary_rows):
             title_label = QLabel(title)
+            title_label.setStyleSheet("color: #64748B; font-size: 12px;")
             value_label = QLabel("--")
-            value_label.setStyleSheet("font-weight: bold;")
+            value_label.setStyleSheet("font-weight: 700; color: #1E293B; font-size: 13px;")
             value_label.setWordWrap(True)
             self.summary_labels[key] = value_label
-            grid.addWidget(title_label, row_index, 0)
-            grid.addWidget(value_label, row_index, 1)
+            r = row_index // 2
+            c = (row_index % 2) * 2
+            grid.addWidget(title_label, r, c)
+            grid.addWidget(value_label, r, c + 1)
 
         left_layout.addWidget(summary_frame)
 
         live_header_row = QHBoxLayout()
-        live_header_row.setContentsMargins(0, 0, 0, 0)
+        live_header_row.setContentsMargins(4, 8, 4, 4)
         live_header_row.setSpacing(8)
-        live_header_row.addWidget(QLabel("<b>Live Observation Snapshot</b>"))
+        live_header_row.addWidget(QLabel("<b>Tracking</b>"))
         live_header_row.addStretch()
         self.btn_show_skyplot = QPushButton("Skyplot")
         skyplot_icon = self._standard_icon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
@@ -365,7 +365,7 @@ class ReflectometryModule(QMainWindow):
         left_layout.addLayout(live_header_row)
         self.live_table = QTableWidget()
         self.live_table.setColumnCount(4)
-        self.live_table.setHorizontalHeaderLabels(["Satellite", "Elevation", "Azimuth", "Tracked Signals"])
+        self.live_table.setHorizontalHeaderLabels(["Satellite", "Elevation", "Azimuth", "Signals"])
         self.live_table.setAlternatingRowColors(True)
         self.live_table.setShowGrid(False)
         self.live_table.setWordWrap(True)
@@ -373,7 +373,7 @@ class ReflectometryModule(QMainWindow):
         self.live_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.live_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.live_table.verticalHeader().setVisible(False)
-        self.live_table.verticalHeader().setDefaultSectionSize(42)
+        self.live_table.verticalHeader().setDefaultSectionSize(32)
         live_header = self.live_table.horizontalHeader()
         live_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         live_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
@@ -414,14 +414,14 @@ class ReflectometryModule(QMainWindow):
         self.main_tabs.addTab(self._build_config_tab(), "IR Config")
         splitter.addWidget(self.main_tabs)
 
-        splitter.setStretchFactor(0, 4)
-        splitter.setStretchFactor(1, 6)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 7)
         splitter.setCollapsible(0, False)
         layout.addWidget(splitter, stretch=1)
 
         self.log_area = QTextEdit()
         self.log_area.setReadOnly(True)
-        self.log_area.setMaximumHeight(100)
+        self.log_area.setMaximumHeight(80)
         self.max_log_lines = 500
         layout.addWidget(self.log_area)
         self._set_run_button_state("idle")
@@ -440,11 +440,12 @@ class ReflectometryModule(QMainWindow):
 
         self._compact_scale = scale
         self.setStyleSheet(get_app_stylesheet(scale))
-        self.left_panel.setMinimumWidth(max(460, int(560 * scale)))
+        self.left_panel.setMinimumWidth(max(300, int(360 * scale)))
+        self.left_panel.setMaximumWidth(max(360, int(420 * scale)))
         self.product_selector.setMinimumWidth(max(180, int(220 * scale)))
-        self.log_area.setMaximumHeight(max(80, int(100 * scale)))
+        self.log_area.setMaximumHeight(max(60, int(80 * scale)))
         self.mountpoint_label.setStyleSheet(
-            f"font-size: {max(20, int(24 * scale))}px; font-weight: 800; color: #0F172A;"
+            f"font-size: {max(16, int(20 * scale))}px; font-weight: 800; color: #0F172A;"
         )
         self.btn_back.setText("< Back to Launcher")
         self.btn_ir_config.setText("IR Config")
@@ -473,10 +474,10 @@ class ReflectometryModule(QMainWindow):
                 "Signal",
                 "Direction",
                 "Time",
-                "Elevation",
+                "Elevation (deg)",
                 "Mean Az (deg)",
                 "Reflector Height (m)",
-                "Peak P/N",
+                "P/N",
                 "Status",
                 "QC / Reason",
             ]
@@ -532,7 +533,7 @@ class ReflectometryModule(QMainWindow):
         selector_frame = QFrame()
         selector_frame.setObjectName("Panel")
         selector_layout = QHBoxLayout(selector_frame)
-        selector_layout.setContentsMargins(14, 12, 14, 12)
+        selector_layout.setContentsMargins(12, 10, 12, 10)
         selector_layout.setSpacing(10)
 
         selector_layout.addWidget(QLabel("Arc Segment"))
@@ -553,8 +554,8 @@ class ReflectometryModule(QMainWindow):
         detail_frame = QFrame()
         detail_frame.setObjectName("Panel")
         detail_grid = QGridLayout(detail_frame)
-        detail_grid.setContentsMargins(14, 12, 14, 12)
-        detail_grid.setHorizontalSpacing(18)
+        detail_grid.setContentsMargins(16, 16, 16, 16)
+        detail_grid.setHorizontalSpacing(16)
         detail_grid.setVerticalSpacing(8)
 
         self.arc_detail_labels: dict[str, QLabel] = {}
@@ -573,9 +574,10 @@ class ReflectometryModule(QMainWindow):
         ]
         for row_index, (title, key) in enumerate(detail_rows):
             title_label = QLabel(title)
+            title_label.setStyleSheet("color: #64748B; font-size: 12px;")
             value_label = QLabel("--")
             value_label.setWordWrap(True)
-            value_label.setStyleSheet("font-weight: 600;")
+            value_label.setStyleSheet("font-weight: 700; color: #1E293B; font-size: 13px;")
             self.arc_detail_labels[key] = value_label
             detail_grid.addWidget(title_label, row_index // 2, (row_index % 2) * 2)
             detail_grid.addWidget(value_label, row_index // 2, (row_index % 2) * 2 + 1)
@@ -591,6 +593,7 @@ class ReflectometryModule(QMainWindow):
         series_layout.setSpacing(8)
         self.series_header = QLabel("Choose an arc segment to inspect raw SNR and detrended residuals.")
         self.series_header.setWordWrap(True)
+        self.series_header.setStyleSheet("color: #64748B; font-size: 12px; margin-bottom: 4px;")
         series_layout.addWidget(self.series_header)
         self.series_panel = ToolbarCanvasPanel(figsize=(8.5, 5.8))
         self.series_ax_raw = self.series_panel.figure.add_subplot(211)
@@ -606,6 +609,7 @@ class ReflectometryModule(QMainWindow):
         spectrum_layout.setSpacing(8)
         self.spectrum_header = QLabel("Spectrum and the primary peak for the selected arc will appear here.")
         self.spectrum_header.setWordWrap(True)
+        self.spectrum_header.setStyleSheet("color: #64748B; font-size: 12px; margin-bottom: 4px;")
         spectrum_layout.addWidget(self.spectrum_header)
         self.spectrum_panel = ToolbarCanvasPanel(figsize=(6.2, 4.2))
         self.spectrum_ax = self.spectrum_panel.figure.add_subplot(111)
@@ -614,7 +618,7 @@ class ReflectometryModule(QMainWindow):
         self.primary_peak_label = QLabel("Primary peak metrics will appear here.")
         self.primary_peak_label.setWordWrap(True)
         self.primary_peak_label.setObjectName("HintLabel")
-        self.primary_peak_label.setStyleSheet("font-weight: 600;")
+        self.primary_peak_label.setStyleSheet("font-weight: 700; color: #1E293B; font-size: 13px; margin-top: 8px;")
         spectrum_layout.addWidget(self.primary_peak_label)
         content_splitter.addWidget(spectrum_container)
 

@@ -137,7 +137,18 @@ class MultiSignalBarWidget(FigureCanvas):
         self.fig.subplots_adjust(bottom=0.25, top=0.92, left=0.07, right=0.97)
         
         self.bar_artists = []
+        # 存储bar数据的字典：{bar对象: (卫星号, 信号标识, SNR值)}
+        self.bar_data_map = {}
+        # 当前hover的annotation对象
+        self.tooltip_annotation = None
+        # 保存最后的鼠标坐标，用于图表更新后恢复tooltip
+        self.last_mouse_x = None
+        self.last_mouse_y = None
+        
         self.init_plot()
+        
+        # 连接鼠标移动事件用于显示tooltip
+        self.mpl_connect('motion_notify_event', self._on_mouse_move)
 
     def init_plot(self):
         ax = self.ax
@@ -164,6 +175,7 @@ class MultiSignalBarWidget(FigureCanvas):
         self.ax.clear()
         self.init_plot() # 重新初始化背景和设置
         self.bar_artists.clear()
+        self.bar_data_map.clear()  # 清空bar数据映射
         
         satellites_snapshot = dict(satellites)
         valid_sats = {k: v for k, v in satellites_snapshot.items() if k[0] in active_systems}
@@ -174,6 +186,8 @@ class MultiSignalBarWidget(FigureCanvas):
                          ha='center', va='center', transform=self.ax.transAxes,
                          color=self.theme['muted'], fontsize=12)
             self.draw_idle()
+            # 图表更新完成，尝试恢复tooltip
+            self._restore_tooltip_if_needed()
             return
 
         # 假设每个卫星占据 0.8 的单位宽度，根据信号数量平分
@@ -210,7 +224,7 @@ class MultiSignalBarWidget(FigureCanvas):
             
             for j, code in enumerate(sorted_codes):
                 offset = start_offset + j * bar_width
-                sig_plot_data[code].append((i + offset, sigs[code]))
+                sig_plot_data[code].append((i + offset, sigs[code], k))  # 添加卫星编号k
                 all_signals.add(code)
 
         # 3. 绘制
@@ -221,6 +235,7 @@ class MultiSignalBarWidget(FigureCanvas):
             points = sig_plot_data[code]
             x_vals = [p[0] for p in points]
             y_vals = [p[1] for p in points]
+            sat_keys = [p[2] for p in points]  # 获取对应的卫星编号
             
             color = get_signal_color(code)
             
@@ -229,10 +244,22 @@ class MultiSignalBarWidget(FigureCanvas):
                              alpha=0.85, edgecolor=self.theme['bg'], linewidth=0.3,
                              label=code)
             legend_handles.append(bars)
+            
+            # 保存每个bar块对应的数据（卫星号、信号、SNR值）
+            for bar, snr_value, sat_key in zip(bars, y_vals, sat_keys):
+                self.bar_data_map[bar] = {
+                    'satellite': sat_key,
+                    'signal': code,
+                    'snr': snr_value
+                }
 
         # 4. 更新坐标轴标签
         self.ax.set_xticks(x_indices)
         self.ax.set_xticklabels(sorted_keys, rotation=90, color=self.theme['fg'], fontsize=8)
+        
+        # 自动调整x轴范围以填满整个坐标轴，无论有多少卫星
+        if num_sats > 0:
+            self.ax.set_xlim(-0.5, num_sats - 0.5)
         
         # 5. 改进图例布局：放置在 Axes 之外的底部
         if legend_handles:
@@ -250,6 +277,149 @@ class MultiSignalBarWidget(FigureCanvas):
             )
 
         self.draw_idle()
+        
+        # 图表更新完成，尝试恢复tooltip
+        self._restore_tooltip_if_needed()
+
+    def _on_mouse_move(self, event):
+        """
+        处理鼠标移动事件，显示或隐藏tooltip
+        """
+        if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
+            # 鼠标离开坐标轴区域或无效坐标，隐藏tooltip
+            self._hide_tooltip()
+            self.last_mouse_x = None
+            self.last_mouse_y = None
+            return
+        
+        # 保存最后的鼠标坐标，用于图表更新后恢复tooltip
+        self.last_mouse_x = event.xdata
+        self.last_mouse_y = event.ydata
+        
+        # 检查鼠标是否在某个bar上
+        found_bar = None
+        mouse_x = event.xdata
+        mouse_y = event.ydata
+        
+        for bar, bar_info in self.bar_data_map.items():
+            # 获取bar的x位置和宽度
+            # bar是一个Rectangle对象
+            x = bar.get_x()
+            width = bar.get_width()
+            height = bar.get_height()
+            
+            # 检查鼠标是否在bar的边界框内
+            if x <= mouse_x <= x + width and 0 <= mouse_y <= height:
+                found_bar = bar_info
+                break
+        
+        if found_bar:
+            self._show_tooltip(event, found_bar)
+        else:
+            self._hide_tooltip()
+
+    def _show_tooltip(self, event, bar_info):
+        """
+        显示tooltip，显示卫星号、信号、SNR值
+        """
+        # 构造提示文本
+        satellite = bar_info['satellite']
+        signal = bar_info['signal']
+        snr = bar_info['snr']
+        
+        tooltip_text = f"Satellite: {satellite}\nSignal: {signal}\nSNR: {snr:.1f} dB-Hz"
+        
+        # 如果已有annotation，先移除
+        if self.tooltip_annotation is not None:
+            try:
+                self.tooltip_annotation.remove()
+            except:
+                pass
+        
+        # 创建新的annotation（tooltip）
+        self.tooltip_annotation = self.ax.annotate(
+            tooltip_text,
+            xy=(event.xdata, event.ydata),
+            xytext=(10, 10),  # 偏离鼠标10像素
+            textcoords='offset points',
+            fontsize=9,
+            bbox=dict(
+                boxstyle='round,pad=0.5',
+                facecolor='#FFE680' if self.theme['bg'] == "#161A23" else '#FFFACD',
+                edgecolor=self.theme['fg'],
+                alpha=0.9
+            ),
+            color=self.theme['muted'],
+            zorder=10
+        )
+        
+        self.draw_idle()
+
+    def _hide_tooltip(self):
+        """
+        隐藏tooltip
+        """
+        if self.tooltip_annotation is not None:
+            try:
+                self.tooltip_annotation.remove()
+            except:
+                pass
+            self.tooltip_annotation = None
+            self.draw_idle()
+
+    def _restore_tooltip_if_needed(self):
+        """
+        在图表更新后，如果鼠标仍在有效位置，恢复显示tooltip
+        这样可以避免用户悬停时图表刷新导致的闪烁卡顿
+        """
+        # 如果没有保存的鼠标坐标或坐标无效，直接返回
+        if self.last_mouse_x is None or self.last_mouse_y is None:
+            return
+        
+        mouse_x = self.last_mouse_x
+        mouse_y = self.last_mouse_y
+        
+        # 检查鼠标坐标是否在最新的bar上
+        for bar, bar_info in self.bar_data_map.items():
+            x = bar.get_x()
+            width = bar.get_width()
+            height = bar.get_height()
+            
+            # 检查鼠标是否在bar的边界框内
+            if x <= mouse_x <= x + width and 0 <= mouse_y <= height:
+                # 找到了对应的bar，直接显示tooltip（无需鼠标事件对象）
+                satellite = bar_info['satellite']
+                signal = bar_info['signal']
+                snr = bar_info['snr']
+                
+                tooltip_text = f"Satellite: {satellite}\nSignal: {signal}\nSNR: {snr:.1f} dB-Hz"
+                
+                # 移除旧的tooltip
+                if self.tooltip_annotation is not None:
+                    try:
+                        self.tooltip_annotation.remove()
+                    except:
+                        pass
+                
+                # 创建新的tooltip，使用保存的坐标
+                self.tooltip_annotation = self.ax.annotate(
+                    tooltip_text,
+                    xy=(mouse_x, mouse_y),
+                    xytext=(10, 10),
+                    textcoords='offset points',
+                    fontsize=9,
+                    bbox=dict(
+                        boxstyle='round,pad=0.5',
+                        facecolor='#FFE680' if self.theme['bg'] == "#161A23" else '#FFFACD',
+                        edgecolor=self.theme['fg'],
+                        alpha=0.9
+                    ),
+                    color=self.theme['muted'],
+                    zorder=10
+                )
+                
+                self.draw_idle()
+                return
 
 
 class PlotSNRWidget(QWidget):

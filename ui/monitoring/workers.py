@@ -84,6 +84,21 @@ class IOThread(threading.Thread):
         self.last_log_time = time.time()
         self.source_type = settings.get('source', 'NTRIP Server')  # 'NTRIP Server' or 'Serial Port'
     
+    def _safe_emit(self, signal_type: str, *args):
+        """安全发送信号，处理信号源已删除的情况"""
+        try:
+            if not self.signals:
+                return
+            if signal_type == 'log':
+                self.signals.log_signal.emit(args[0] if args else '')
+            elif signal_type == 'status':
+                self.signals.status_signal.emit(self.name, args[0] if args else False)
+            elif signal_type == 'epoch':
+                self.signals.epoch_signal.emit(args[0] if args else None)
+        except RuntimeError:
+            # Signal source has been deleted, silently ignore
+            pass
+    
     def run(self):
         """
         Main thread execution loop.
@@ -203,8 +218,12 @@ class IOThread(threading.Thread):
                 # Finally block ensures proper cleanup even after exceptions
                 if self.client: 
                     self.client.close()
+                try:
                     self.signals.log_signal.emit(f"[{self.name}] NTRIP Connection closed")
-                self.signals.status_signal.emit(self.name, False)
+                    self.signals.status_signal.emit(self.name, False)
+                except RuntimeError:
+                    # Signal source has been deleted during shutdown
+                    pass
                 # Wait 2 seconds before retry to avoid rapid reconnection attempts
                 time.sleep(2)
 
@@ -283,8 +302,12 @@ class IOThread(threading.Thread):
                 # Step 3: Clean disconnection and retry delay
                 if self.client: 
                     self.client.close()
+                try:
                     self.signals.log_signal.emit(f"[{self.name}] Serial Connection closed")
-                self.signals.status_signal.emit(self.name, False)
+                    self.signals.status_signal.emit(self.name, False)
+                except RuntimeError:
+                    # Signal source has been deleted during shutdown
+                    pass
                 # Wait 2 seconds before retry to avoid rapid reconnection attempts
                 time.sleep(2)
 

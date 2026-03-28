@@ -1,39 +1,27 @@
 station:
-  station_id: BUAA01
+  station_id: BRST00FRA0
   receiver_position:
-    latitude_deg: 39.984434
-    longitude_deg: 116.342477
-    height_m: 123.949
+    latitude_deg: 48.380491
+    longitude_deg: -4.496598
+    height_m: 67.837
     x_m: -2171604.0201000003
     y_m: 4385718.2204
     z_m: 4076741.0261000004
-  antenna_height: 2.35
+  antenna_height: 21.0
   monument_height: 0.8
   environment_type: coastal
   reflector_surface_type: sea
 input:
-  source_type: mock
-  source_path: null
-  cache_endpoint: null
   constellations: []
   signals: []
   exclude_constellations: []
   exclude_signals: []
-  time_window:
-    start: '2026-03-19T00:00:00'
-    end: '2026-03-19T04:00:00'
   sampling_interval: 30.0
-  source_options:
-    arc_count: 6
-    samples_per_arc: 60
-    reflector_height_m: 4.2
-    noise_std_db: 0.45
-    amplitude_db: 2.6
 processing:
   min_elevation_deg: 5.0
-  max_elevation_deg: 28.0
-  live_arc_window_minutes: 20
-  live_analysis_interval_seconds: 20
+  max_elevation_deg: 25.0
+  live_arc_window_minutes: 5
+  live_analysis_interval_seconds: 5
   elevation_rate_mode: monotonic
   min_arc_length: 300.0
   max_time_gap_seconds: 90.0
@@ -47,8 +35,8 @@ ir:
   wavelength_source: built_in
   wavelength_overrides_m: {}
   frequency_search_mode: reflector_height
-  min_reflector_height: 0.5
-  max_reflector_height: 8.0
+  min_reflector_height: 12.0
+  max_reflector_height: 22.0
   explicit_frequency_min: null
   explicit_frequency_max: null
   frequency_grid_size: 2048
@@ -70,15 +58,21 @@ geometry:
   compute_az_el_if_missing: false
   reflection_zones:
   - name: primary_reflector
-    min_elevation_deg: 5.0
-    max_elevation_deg: 28.0
+    min_elevation_deg: 11.98
+    max_elevation_deg: 25.0
     azimuth_windows:
-    - - 150.0
+    - - 165.0
       - 330.0
+  - name: zone_2
+    min_elevation_deg: 5.0
+    max_elevation_deg: 20.0
+    azimuth_windows:
+    - - 130.0
+      - 165.0
 qc:
   min_peak_to_noise_ratio: 3.0
   min_primary_peak_ratio: 1.25
-  min_arc_duration: 300.0
+  min_arc_duration: 120.0
   min_snr_amplitude: 1.0
   max_gap_ratio: 0.2
   reject_cycle_slip_suspects: false

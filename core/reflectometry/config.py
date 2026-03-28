@@ -23,22 +23,11 @@ station:
   reflector_surface_type: "sea"
 
 input:
-  source_type: "mock"
-  source_path:
-  cache_endpoint:
   constellations: []
   signals: []
   exclude_constellations: []
   exclude_signals: []
-  time_window:
-    start: "2026-03-19T00:00:00"
-    end: "2026-03-19T04:00:00"
   sampling_interval: 30.0
-  source_options:
-    arc_count: 6
-    reflector_height_m: 4.2
-    noise_std_db: 0.45
-    amplitude_db: 2.6
 
 processing:
   min_elevation_deg: 5.0
@@ -122,12 +111,6 @@ logging:
 
 
 @dataclass(slots=True)
-class TimeWindowConfig:
-    start: str | None = None
-    end: str | None = None
-
-
-@dataclass(slots=True)
 class StationConfig:
     station_id: str
     receiver_position: ReceiverPosition
@@ -143,25 +126,11 @@ class StationConfig:
 
 @dataclass(slots=True)
 class InputConfig:
-    source_type: str
-    source_path: str | None = None
-    cache_endpoint: str | None = None
     constellations: list[str] = field(default_factory=list)
     signals: list[str] = field(default_factory=list)
     exclude_constellations: list[str] = field(default_factory=list)
     exclude_signals: list[str] = field(default_factory=list)
-    time_window: TimeWindowConfig = field(default_factory=TimeWindowConfig)
     sampling_interval: float = 30.0
-    source_options: dict[str, object] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        supported = {"cache", "csv", "json", "parquet", "mock"}
-        if self.source_type not in supported:
-            raise ValueError(f"input.source_type must be one of {sorted(supported)}")
-        if self.source_type in {"csv", "json", "parquet"} and not self.source_path:
-            raise ValueError("input.source_path is required for file-based providers")
-        if self.source_type == "cache" and not self.cache_endpoint and not self.source_options:
-            raise ValueError("input.cache_endpoint or input.source_options is required for cache source")
 
 
 @dataclass(slots=True)
@@ -434,19 +403,11 @@ def load_config(path: str | Path) -> ReflectorConfig:
             reflector_surface_type=station_raw.get("reflector_surface_type", "unknown"),
         ),
         input=InputConfig(
-            source_type=input_raw.get("source_type", "mock"),
-            source_path=input_raw.get("source_path"),
-            cache_endpoint=input_raw.get("cache_endpoint"),
             constellations=[str(item) for item in _as_list(input_raw.get("constellations", []))],
             signals=[str(item) for item in _as_list(input_raw.get("signals", []))],
             exclude_constellations=[str(item) for item in _as_list(input_raw.get("exclude_constellations", []))],
             exclude_signals=[str(item) for item in _as_list(input_raw.get("exclude_signals", []))],
-            time_window=TimeWindowConfig(
-                start=(input_raw.get("time_window") or {}).get("start"),
-                end=(input_raw.get("time_window") or {}).get("end"),
-            ),
             sampling_interval=float(input_raw.get("sampling_interval", 30.0) or 30.0),
-            source_options=input_raw.get("source_options", {}) or {},
         ),
         processing=ProcessingConfig(
             min_elevation_deg=effective_min_elevation,
@@ -546,7 +507,6 @@ __all__ = [
     "ReflectionZoneConfig",
     "ReflectorConfig",
     "StationConfig",
-    "TimeWindowConfig",
     "config_to_dict",
     "dump_example_config",
     "load_config",

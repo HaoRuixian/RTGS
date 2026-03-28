@@ -282,6 +282,13 @@ class PositionInfoWidget(QWidget):
                 
                 self.table.setItem(row, 1, item)
 
+    def clear(self):
+        """Reset the table to placeholder values."""
+        for row in range(self.table.rowCount()):
+            value_item = QTableWidgetItem("--")
+            value_item.setFont(QFont("Courier", 10))
+            self.table.setItem(row, 1, value_item)
+
 
 class AccuracyWidget(QWidget):
     """

@@ -1,4 +1,4 @@
-﻿"""Helpers for reflectometry live-arc tracking and Arc Status presentation."""
+"""Helpers for reflectometry realtime-arc tracking and Arc Status presentation."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from core.reflectometry.models import ArcSolution, ObservationRecord, SnrSeries
 
 @dataclass(slots=True)
 class TrackingArcContext:
-    """UI-facing state for one currently tracked live arc."""
+    """UI-facing state for one currently tracked realtime arc."""
 
     arc_id: str
     satellite: str
@@ -128,7 +128,7 @@ def buffer_direction_text(buffer: list[ObservationRecord]) -> str:
 
 
 def tracking_arc_id(buffer: list[ObservationRecord]) -> str:
-    """Return the stable live-arc identifier used in the UI."""
+    """Return the stable realtime-arc identifier used in the UI."""
     first = buffer[0]
     direction = buffer_direction_text(buffer)
     return f"{first.station_id}-{first.satellite}-{first.signal}-{direction}"
@@ -210,7 +210,7 @@ def match_live_arc_id_for_solution(
     solution: ArcSolution,
     contexts: dict[str, TrackingArcContext],
 ) -> str | None:
-    """Match a solved live arc back onto the active tracking key shown in the UI."""
+    """Match a solved realtime arc back onto the active tracking key shown in the UI."""
     for arc_id, context in contexts.items():
         if context.satellite != solution.satellite:
             continue
@@ -352,4 +352,3 @@ __all__ = [
     "match_live_arc_id_for_solution",
     "tracking_arc_id",
 ]
-

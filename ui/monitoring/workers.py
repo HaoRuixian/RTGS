@@ -31,6 +31,7 @@ from core.ntrip_client import NtripClient
 from core.serial_client import SerialClient
 from core.ring_buffer import RingBuffer
 from core.rinex3_writer import RINEX3Writer
+from core.rinex_loader import FileEphemerisProvider, RinexObservationReader, read_rinex_observation_header
 from core.mixed_gnss_reader import MixedGNSSReader
 
 
@@ -319,6 +320,189 @@ class IOThread(threading.Thread):
         or when waiting for reconnection (within 3 seconds max).
         """
         self.running = False
+
+
+class RinexReplayThread(threading.Thread):
+    """Replay RINEX observation files as pseudo real-time epochs."""
+
+    def __init__(
+        self,
+        name: str,
+        settings: dict,
+        signals: StreamSignals,
+        handler=None,
+        eph_settings: dict | None = None,
+        target_systems: list[str] | None = None,
+    ):
+        super().__init__()
+        self.name = name
+        self.settings = settings
+        self.signals = signals
+        self.handler = handler
+        self.eph_settings = eph_settings or {}
+        self.target_systems = target_systems
+        self.daemon = True
+        self.running = True
+        self.stop_event = threading.Event()
+        self._ephemeris_ready = False
+
+    def _emit_log(self, message: str) -> None:
+        try:
+            self.signals.log_signal.emit(message)
+        except RuntimeError:
+            pass
+
+    def _emit_status(self, name: str, value: bool) -> None:
+        try:
+            self.signals.status_signal.emit(name, value)
+        except RuntimeError:
+            pass
+
+    def _emit_epoch(self, epoch) -> None:
+        try:
+            self.signals.epoch_signal.emit(epoch)
+        except RuntimeError:
+            pass
+
+    def _resolve_receiver_position(self, metadata):
+        config = get_global_config()
+        approx = getattr(config, "approx_rec_pos", None)
+        if approx and len(approx) >= 3 and any(abs(float(item)) > 1e-6 for item in approx[:3]):
+            return [float(approx[0]), float(approx[1]), float(approx[2])]
+
+        if metadata.has_nonzero_approx_position:
+            coords = list(metadata.approx_position_ecef)
+            try:
+                config.update_general_settings({"approx_rec_pos": coords})
+            except Exception:
+                pass
+            self._emit_log(f"[{self.name}] Receiver position loaded from RINEX header")
+            return coords
+
+        raise ValueError(
+            "RINEX header APPROX POSITION XYZ is zero. Please set receiver ECEF coordinates manually in the config."
+        )
+
+    def _load_ephemeris_provider(self):
+        file_path = str(self.eph_settings.get("file_path", "")).strip()
+        if not file_path:
+            return None
+
+        file_type = str(self.eph_settings.get("file_type", "Auto Detect"))
+        provider = FileEphemerisProvider.from_file(
+            file_path,
+            file_type=file_type,
+            broadcast_ephemeris=getattr(self.handler, "broadcast_eph", None),
+        )
+        self._ephemeris_ready = True
+        self._emit_status("EPH_DATA", True)
+        self._emit_log(
+            f"[{self.name}] Loaded {'precise SP3' if provider.kind == 'precise' else 'broadcast RINEX'} ephemeris: {file_path}"
+        )
+        return provider
+
+    @staticmethod
+    def _normalize_replay_speed(value) -> float:
+        try:
+            replay_speed = float(value or 1.0)
+        except (TypeError, ValueError):
+            replay_speed = 1.0
+        return replay_speed if replay_speed > 0.0 else 1.0
+
+    @staticmethod
+    def _epoch_source_delta_seconds(previous_epoch_time, current_epoch_time, interval_hint: float) -> float:
+        safe_interval = max(1e-3, float(interval_hint or 1.0))
+        if previous_epoch_time is None:
+            return 0.0
+        if current_epoch_time is None:
+            return safe_interval
+
+        delta_seconds = (current_epoch_time - previous_epoch_time).total_seconds()
+        if delta_seconds <= 0.0:
+            return safe_interval
+        return float(delta_seconds)
+
+    @staticmethod
+    def _target_replay_deadline(
+        replay_start_monotonic: float,
+        accumulated_source_seconds: float,
+        replay_speed: float,
+    ) -> float:
+        safe_speed = replay_speed if replay_speed > 0.0 else 1.0
+        return replay_start_monotonic + (max(0.0, accumulated_source_seconds) / safe_speed)
+
+    def run(self):
+        obs_path = str(self.settings.get("file_path", "")).strip()
+        if not obs_path:
+            self._emit_log(f"[{self.name}] RINEX Config Error: observation file is not set")
+            return
+
+        try:
+            metadata = read_rinex_observation_header(obs_path)
+            receiver_position = self._resolve_receiver_position(metadata)
+            ephemeris_provider = self._load_ephemeris_provider()
+
+            replay_speed = self._normalize_replay_speed(self.settings.get("replay_speed", 1.0))
+
+            reader = RinexObservationReader(obs_path)
+            self._emit_log(
+                f"[{self.name}] Replaying RINEX file at {replay_speed:.1f}x"
+                + (f" (header interval {metadata.interval_seconds:g}s)" if metadata.interval_seconds else "")
+            )
+            self._emit_status(self.name, True)
+
+            previous_epoch_time = None
+            interval_hint = max(1e-3, float(metadata.interval_seconds or 1.0))
+            epoch_count = 0
+            replay_start_monotonic = time.perf_counter()
+            accumulated_source_seconds = 0.0
+
+            for epoch in reader.iter_epochs(
+                ephemeris_provider=ephemeris_provider,
+                receiver_position_ecef=receiver_position,
+                target_systems=self.target_systems,
+            ):
+                if not self.running:
+                    break
+
+                accumulated_source_seconds += self._epoch_source_delta_seconds(
+                    previous_epoch_time,
+                    epoch.utc_datetime,
+                    interval_hint,
+                )
+                target_deadline = self._target_replay_deadline(
+                    replay_start_monotonic,
+                    accumulated_source_seconds,
+                    replay_speed,
+                )
+                wait_seconds = target_deadline - time.perf_counter()
+                if wait_seconds > 0.0 and self.stop_event.wait(wait_seconds):
+                        break
+
+                previous_epoch_time = epoch.utc_datetime
+                epoch_count += 1
+                self._emit_epoch(epoch)
+
+                if epoch_count == 1:
+                    self._emit_log(f"[{self.name}] First replay epoch emitted: {len(epoch.satellites)} satellites")
+                elif epoch_count % 100 == 0:
+                    self._emit_log(f"[{self.name}] Replay progress: {epoch_count} epochs")
+
+            if self.running:
+                self._emit_log(f"[{self.name}] RINEX replay completed")
+
+        except Exception as exc:
+            self._emit_log(f"[{self.name}] RINEX Replay Error: {exc}")
+            import traceback
+            self._emit_log(f"[{self.name}] Traceback: {traceback.format_exc()}")
+        finally:
+            self._emit_status(self.name, False)
+            if self._ephemeris_ready:
+                self._emit_status("EPH_DATA", False)
+
+    def stop(self):
+        self.running = False
+        self.stop_event.set()
 
 
 class DataProcessingThread(threading.Thread):

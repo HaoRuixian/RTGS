@@ -1,305 +1,290 @@
-﻿"""
-Single Point Positioning (SPP) using pseudorange measurements.
+"""RTKLIB-style single point positioning (SPP) with pseudorange observations."""
 
-Theory:
-  SPP solves for 4 unknowns (X, Y, Z, clock_bias) using pseudorange observations.
-  The observation equation is:
-    P = 蟻 + dT路c + 蔚
-  where:
-    P: measured pseudorange (meters)
-    蟻: geometric range from satellite to receiver (meters)
-    dT: receiver clock bias (seconds)
-    c: speed of light
-    蔚: measurement noise
-
-  For each satellite i:
-    P_i = sqrt((X_sat_i - X_rec)^2 + (Y_sat_i - Y_rec)^2 + (Z_sat_i - Z_rec)^2) + c路dT + 蔚_i
-
-  We linearize and solve using Least Squares:
-    x = (A^T路W路A)^(-1)路A^T路W路l
-  where:
-    A: design matrix (partial derivatives)
-    W: weight matrix (optional: based on elevation angle)
-    l: observation vector (pseudorange - computed ranges)
-
-References:
-  - GNSS Data Processing Vol. I & II by Teunissen & Montenbruck
-  - Leick, A. GPS Satellite Surveying (3rd ed.), Wiley, 2004
-"""
-
-import math
-import numpy as np
-from typing import Dict, Optional, Tuple, List
-
+from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
+import math
+from typing import Dict, List, Optional, Tuple
 
-from core.geo_utils import ecef2lla, tropsphere_model, ionospheric_model, calculate_az_el, get_freq
+import numpy as np
+
 from core.BE2pos import brdc2pos
-
 from core.broadcast_ephemeris import get_var_ura
+from core.geo_utils import calculate_az_el, ecef2lla, get_freq, ionospheric_model, tropsphere_model
+
+
 logger = logging.getLogger(__name__)
-SYS_OFFSET_INDICES = {'R': 4, 'E': 5, 'C': 6, 'I': 7, 'J': 8}  # GPS, GLONASS, Galileo, BeiDou system clock bias indices in state vector
+
+SYS_OFFSET_INDICES = {"R": 4, "E": 5, "C": 6, "I": 7, "J": 8}
+EARTH_ROTATION_RATE = 7.2921151467e-5
+WGS84_SEMI_MAJOR_AXIS_M = 6378137.0
+GPS_L1_FREQUENCY_HZ = 1575.42e6
+MIN_ERROR_ELEVATION_RAD = math.radians(5.0)
+DEFAULT_CLOCK_CONSTRAINT_VARIANCE = 0.01
+MAX_GDOP = 30.0
+
 
 @dataclass
 class PositioningResult:
     """SPP solution result."""
-    timestamp: float  # GPS time of week (seconds)
-    epoch_time: datetime  # Epoch datetime
-    
-    # Solution
-    position_ecef: List[float]  # [X, Y, Z] in meters (ECEF)
-    clock_bias: float  # Clock bias in meters (dt * c)
-    clock_bias_seconds: float  # Clock bias in seconds
-    
-    # Accuracy metrics
-    num_satellites: int  # Number of satellites used
-    residuals: List[float]  # Observation residuals
-    variance: float  # Variance of unit weight
-    std_dev_north: float  # Standard deviation in North
-    std_dev_east: float  # Standard deviation in East
-    std_dev_up: float  # Standard deviation in Up
-    std_dev_clock: float  # Standard deviation of clock bias
-    
-    # DOP values
-    gdop: float  # Geometric DOP
-    pdop: float  # Position DOP
-    hdop: float  # Horizontal DOP
-    vdop: float  # Vertical DOP
-    tdop: float  # Time DOP
-    
-    # Receiver position in LLA
-    latitude: float  # Degrees
-    longitude: float  # Degrees
-    height: float  # Meters
-    
-    # Quality indicators
-    convergence: bool  # Whether solution converged
-    solution_status: str  # 'Fixed', 'Uncertain', or 'No Fix'
-    # time offsets for other GNSS systems (seconds relative to GPS)
+
+    timestamp: float
+    epoch_time: datetime
+
+    position_ecef: List[float]
+    clock_bias: float
+    clock_bias_seconds: float
+
+    num_satellites: int
+    residuals: List[float]
+    variance: float
+    std_dev_north: float
+    std_dev_east: float
+    std_dev_up: float
+    std_dev_clock: float
+
+    gdop: float
+    pdop: float
+    hdop: float
+    vdop: float
+    tdop: float
+
+    latitude: float
+    longitude: float
+    height: float
+
+    convergence: bool
+    solution_status: str
     time_offsets: Dict[str, float] = field(default_factory=dict)
 
+
 class SPPPositioner:
-    """Single Point Positioning engine."""
-    
-    # Constants
-    CLIGHT = 299792458.0  # Speed of light (m/s)
-    
-    # Default parameters (can be overridden by config)
-    DEFAULT_WEIGHT_MODE = 'elevation'  # Options: 'equal', 'elevation', 'snr'
-    DEFAULT_MIN_ELEVATION = 10.0  # Degrees
+    """Single point positioning engine."""
+
+    CLIGHT = 299792458.0
+
+    DEFAULT_WEIGHT_MODE = "elevation"
+    DEFAULT_MIN_ELEVATION = 10.0
     DEFAULT_MIN_SATELLITES = 4
-    DEFAULT_IONOSPHERE_OPT = 'IFLC'  # 'IFLC' or 'SINGLE'
-    DEFAULT_TROPOSPHERE_MODEL = 'Sastamoinen'  # 'None', 'Sastamoinen', 'HMSL'
-    
+    DEFAULT_IONOSPHERE_OPT = "IFLC"
+    DEFAULT_TROPOSPHERE_MODEL = "Sastamoinen"
+    DEFAULT_MAX_PDOP = 10.0
+
     MAX_ITERATIONS = 10
-    CONVERGENCE_THRESHOLD = 1e-4  # meters
-    
+    CONVERGENCE_THRESHOLD = 1e-4
+
     def __init__(self, ephemeris_handler=None, config: Optional[Dict] = None):
-        """
-        Initialize SPP positioner.
-        
-        Args:
-            ephemeris_handler: RTCMHandler instance for accessing ephemeris cache
-            config: Dictionary with positioning configuration:
-                - ionosphere_option: 'IFLC' or 'SINGLE'
-                - troposphere_model: 'None', 'Sastamoinen', 'HMSL'
-                - min_satellites: Minimum number of satellites (default: 4)
-                - min_elevation: Minimum elevation angle in degrees (default: 10)
-                - weight_mode: 'equal', 'elevation', or 'snr' (default: 'elevation')
-        - gnss_systems: List of systems to use, e.g. ['G', 'R', 'E', 'C', 'J', 'I']
-                - uncertain_std_pos: Standard deviation threshold for "uncertain" status (m)
-                - fixed_std_pos: Standard deviation threshold for "fixed" status (m)
-        """
         self.handler = ephemeris_handler
-        self.last_solution = None
+        self.last_solution: Optional[PositioningResult] = None
         self.logger = logging.getLogger(__name__)
-        
-        # Parse configuration
+
         if config is None:
             config = {}
-        
-        self.ionosphere_option = config.get('ionosphere_option', self.DEFAULT_IONOSPHERE_OPT)
-        self.troposphere_model = config.get('troposphere_model', self.DEFAULT_TROPOSPHERE_MODEL)
-        self.MIN_SATELLITES = config.get('min_satellites', self.DEFAULT_MIN_SATELLITES)
-        self.MIN_ELEVATION = config.get('min_elevation', self.DEFAULT_MIN_ELEVATION)
-        self.WEIGHT_MODE = config.get('weight_mode', self.DEFAULT_WEIGHT_MODE)
-        self.gnss_systems = config.get('gnss_systems', ['G', 'R', 'E', 'C', 'J', 'I'])
-        self.uncertain_std_pos = config.get('uncertain_std_pos', 5.0)
-        self.fixed_std_pos = config.get('fixed_std_pos', 2.5)
-        
-        self.logger.info(f"SPP Positioner initialized with config:")
-        self.logger.info(f"  Ionosphere: {self.ionosphere_option}")
-        self.logger.info(f"  Troposphere: {self.troposphere_model}")
-        self.logger.info(f"  Min elevation: {self.MIN_ELEVATION}掳")
-        self.logger.info(f"  Min satellites: {self.MIN_SATELLITES}")
-        self.logger.info(f"  Weight mode: {self.WEIGHT_MODE}")
-        self.logger.info(f"  GNSS systems: {self.gnss_systems}")
 
-    def get_tgd_for_sys(self, sys, sat_key, sig_id):
-        """
-        鑾峰彇涓嶅悓绯荤粺鐨?TGD/BGD 淇 (鍗曚綅: 绫?
-        """
+        self.ionosphere_option = config.get("ionosphere_option", self.DEFAULT_IONOSPHERE_OPT)
+        self.troposphere_model = config.get("troposphere_model", self.DEFAULT_TROPOSPHERE_MODEL)
+        self.MIN_SATELLITES = int(config.get("min_satellites", self.DEFAULT_MIN_SATELLITES))
+        self.MIN_ELEVATION = float(
+            config.get(
+                "min_elevation",
+                config.get("cutoff_elevation_deg", self.DEFAULT_MIN_ELEVATION),
+            )
+        )
+        self.WEIGHT_MODE = config.get("weight_mode", self.DEFAULT_WEIGHT_MODE)
+        self.gnss_systems = config.get("gnss_systems", ["G", "R", "E", "C", "J", "I"])
+        self.uncertain_std_pos = float(config.get("uncertain_std_pos", 5.0))
+        self.fixed_std_pos = float(config.get("fixed_std_pos", 2.5))
+        self.max_pdop = float(config.get("max_pdop", self.DEFAULT_MAX_PDOP))
+
+    def _find_signal(self, pr_list: List[Tuple[str, float]], bands: List[str]) -> Tuple[Optional[str], float]:
+        for band in bands:
+            for sig_id, value in pr_list:
+                if sig_id.startswith(band):
+                    return sig_id, float(value)
+        return None, 0.0
+
+    def _select_primary_signal(self, sat_key: str, pr_list: List[Tuple[str, float]]) -> Tuple[Optional[str], float]:
+        system = sat_key[0]
+        primary_bands = {
+            "G": ["1"],
+            "R": ["1"],
+            "E": ["1"],
+            "C": ["2", "1"],
+            "J": ["1"],
+            "I": ["5", "1"],
+            "S": ["1"],
+        }
+        return self._find_signal(pr_list, primary_bands.get(system, ["1"]))
+
+    def get_tgd_for_sys(self, sys: str, sat_key: str, sig_id: str) -> float:
+        """Return the broadcast group delay correction in meters."""
         eph = self._fetch_ephemeris(sat_key)
         if not eph:
             return 0.0
 
-        CLIGHT = 299792458.0
-        
         try:
-            # GPS (G) / QZSS (J)
-            if sys in ['G', 'J']:
-                # GPS 閽熷樊鍙傝€冪殑鏄?L1/L2 鏃犵數绂诲眰缁勫悎
-                # 鍗曢 L1 鐢ㄦ埛闇€瑕佸噺鍘?TGD
-                return float(eph.get('TGD', 0.0)) * CLIGHT
-            
-            # Galileo (E)
-            elif sys == 'E':
-                # Galileo 姣旇緝鐗规畩锛屽彇鍐充簬浣犵敤鐨勪俊鍙峰拰鏄熷巻绫诲瀷
-                # 榛樿锛氬鏋滀綘鐢?E1 淇″彿锛岄€氬父鍙傝€?I/NAV 鐨?BGD_E1E5b
-                # 濡傛灉浣犵敤 E5a 淇″彿锛岄€氬父鍙傝€?F/NAV 鐨?BGD_E1E5a 
-                if sig_id.startswith('1'): # E1
-                    # 浼樺厛鑾峰彇 E1-E5b 鐨勪慨姝?
-                    bgd = eph.get('BGD_E1E5b') or eph.get('BGD_E5bE1') or 0.0
-                    return float(bgd) * CLIGHT
-                elif sig_id.startswith('5'): # E5a
-                    bgd = eph.get('BGD_E1E5a') or eph.get('BGD_E5aE1') or 0.0
-                    return float(bgd) * CLIGHT
-                    
-            # Beidou (C)
-            elif sys == 'C':
-                # 鍖楁枟閽熷樊鍙傝€冪殑鏄?B3 棰戠偣 (Band 6)
-                # B1I (Band 2) 浣跨敤 TGD1
-                # B2I (Band 7) 浣跨敤 TGD2
-                # B1C (Band 1) 浣跨敤 TGD1 鎴栫壒瀹氱殑 ISC
-                if sig_id.startswith('2'): # B1I (Band 2)
-                    return float(eph.get('TGD1', 0.0)) * CLIGHT
-                elif sig_id.startswith('7'): # B2I (Band 7)
-                    return float(eph.get('TGD2', 0.0)) * CLIGHT
-                elif sig_id.startswith('1'): # B1C (Band 1)
-                    # 鍖楁枟涓夊彿 B1C 淇姣旇緝澶嶆潅锛孯TKLIB 閽堝涓嶅悓鐗堟湰鏈変笉鍚屽鐞?
-                    # 杩欓噷鏆傚彇 TGD1 (BDS-3 鏌愪簺鏄熷巻 B1C 鏄犲皠鍒?TGD1)
-                    return float(eph.get('TGD1', 0.0)) * CLIGHT
-            
-            # IRNSS / NavIC (I)
-            elif sys == 'I':
-                return float(eph.get('TGD', 0.0)) * CLIGHT
-                    
-        except (ValueError, TypeError):
+            if sys in {"G", "J"}:
+                return float(eph.get("TGD", 0.0) or 0.0) * self.CLIGHT
+
+            if sys == "R":
+                return -float(eph.get("tau_n", 0.0) or 0.0) * self.CLIGHT
+
+            if sys == "E":
+                band = sig_id[:1]
+                if band == "5":
+                    return float(eph.get("BGD_E5aE1", 0.0) or 0.0) * self.CLIGHT
+                bgd = eph.get("BGD_E5bE1")
+                if bgd is None:
+                    bgd = eph.get("BGD_E5aE1")
+                return float(bgd or 0.0) * self.CLIGHT
+
+            if sys == "C":
+                band = sig_id[:1]
+                if band == "7":
+                    return float(eph.get("TGD2", 0.0) or 0.0) * self.CLIGHT
+                return float(eph.get("TGD1", 0.0) or 0.0) * self.CLIGHT
+
+            if sys == "I":
+                return float(eph.get("TGD", 0.0) or 0.0) * self.CLIGHT
+        except (TypeError, ValueError):
             return 0.0
-            
+
         return 0.0
 
-    def _calculate_ionospheric_delay(self, pos, azel, t, ion):
-        iono_opt = self.ionosphere_option
-        if iono_opt == "IFLC":
+    def _calculate_ionospheric_delay(
+        self,
+        rec_lla_rad: Tuple[float, float, float],
+        azel_rad: Tuple[float, float],
+        gps_time_sow: float,
+        freq_hz: float = GPS_L1_FREQUENCY_HZ,
+    ) -> Tuple[float, float]:
+        if self.ionosphere_option == "IFLC":
             return 0.0, 0.0
-        elif iono_opt == "SINGLE":
-            iono_delay_m, iono_var = ionospheric_model(pos, azel, t, ion)
-            return iono_delay_m, iono_var
-        else:
-            # Default: no ionospheric correction
-            return 0.0
 
-    def calculate_prange(self, sat_key, pr_list, fcn=0):
-        iono_opt = self.ionosphere_option
-        sys = sat_key[0]
-        
-        # --- 1. 瀵绘壘 P1 鍜?P2 ---
-        P1, P2 = 0.0, 0.0
-        sig1_id, sig2_id = None, None
-        
-        # 閫昏緫绠€鍖栵細瀵绘壘涓婚鍜屾棰?
-        for sid, val in pr_list:
-            if sid.startswith('1'): # L1/E1/B1
-                sig1_id, P1 = sid, val
-                break
-        if sys == 'C' and not sig1_id: # 鍖楁枟 B1I 鍙兘鏄?Band 2
-            for sid, val in pr_list:
-                if sid.startswith('2'):
-                    sig1_id, P1 = sid, val
-                    break
+        if self.ionosphere_option != "SINGLE":
+            return 0.0, 0.0
 
-        if not sig1_id: return 0.0, 0.0
+        try:
+            ion_model = [0.0] * 8
+            delay = ionospheric_model(rec_lla_rad, azel_rad, gps_time_sow, ion_model)
+            if isinstance(delay, tuple):
+                ion_delay, ion_var = float(delay[0]), float(delay[1])
+            else:
+                ion_delay = float(delay or 0.0)
+                ion_var = (ion_delay * 0.5) ** 2
 
-        # --- 2. 鍩虹鍋忓樊淇 (DCB/Code Bias) ---
-        # 杩欓噷搴旇璋冪敤涓€涓?apply_code_bias 鐨勫嚱鏁帮紝鏆傛椂鐣ヨ繃浣嗛渶娉ㄦ剰
-        # P1 += self.get_cbias(sat_key, sig1_id)
+            if freq_hz > 0.0:
+                scale = (GPS_L1_FREQUENCY_HZ / float(freq_hz)) ** 2
+                ion_delay *= scale
+                ion_var *= scale ** 2
+            return ion_delay, ion_var
+        except Exception as exc:
+            self.logger.debug("Ionospheric correction failed: %s", exc)
+            return 0.0, 0.0
 
-        # --- 3. 鍗曢妯″紡 ---
-        if iono_opt != "IFLC":
-            tgd = self.get_tgd_for_sys(sys, sat_key, sig1_id)
-            # GLONASS 鐗规畩澶勭悊
-            if sys == 'R':
+    def calculate_prange(self, sat_key: str, pr_list: List[Tuple[str, float]], fcn: int = 0) -> Tuple[float, float]:
+        """Return corrected pseudorange and measurement variance."""
+        system = sat_key[0]
+
+        primary_bands = {
+            "G": ["1"],
+            "R": ["1"],
+            "E": ["1"],
+            "C": ["2", "1"],
+            "J": ["1"],
+            "I": ["5", "1"],
+            "S": ["1"],
+        }
+        secondary_bands = {
+            "G": ["2", "5"],
+            "R": ["2", "3"],
+            "E": ["7", "5"],
+            "C": ["7", "6", "5"],
+            "J": ["2", "5"],
+            "I": ["9", "1"],
+            "S": ["5"],
+        }
+
+        sig1_id, p1 = self._find_signal(pr_list, primary_bands.get(system, ["1"]))
+        if sig1_id is None or p1 <= 0.0:
+            return 0.0, 0.0
+
+        if self.ionosphere_option != "IFLC":
+            tgd = self.get_tgd_for_sys(system, sat_key, sig1_id)
+            if system == "R":
                 f1, _ = get_freq(sig1_id, sat_key, fcn)
-                f2_tmp, _ = get_freq("2C", sat_key, fcn) # 鍋囪鍙傝€?G2
-                gamma = (f1 / f2_tmp)**2
-                return P1 - tgd / (gamma - 1.0), 0.3**2
-            
-            # GPS/BDS/GAL 涓€鑸洿鎺ュ噺 TGD
-            return P1 - tgd, 0.3**2
+                f2, _ = get_freq("2C", sat_key, fcn)
+                if f1 > 0.0 and f2 > 0.0 and abs(f1 - f2) > 0.0:
+                    gamma = (f1 / f2) ** 2
+                    return p1 - tgd / (gamma - 1.0), 0.3 ** 2
+            return p1 - tgd, 0.3 ** 2
 
-        # --- 4. 鍙岄娑堢數绂诲眰妯″紡 (IFLC) ---
-        for band in ['2', '5', '7', '6', '9']:
-            for sid, val in pr_list:
-                if sid.startswith(band) and sid != sig1_id:
-                    sig2_id, P2 = sid, val
-                    break
-            if sig2_id: break
-
-        if not sig2_id:
-            tgd = self.get_tgd_for_sys(sys, sat_key, sig1_id)
-            return P1 - tgd, 0.3**2
+        sig2_id, p2 = self._find_signal(pr_list, secondary_bands.get(system, ["2"]))
+        if sig2_id is None or p2 <= 0.0:
+            tgd = self.get_tgd_for_sys(system, sat_key, sig1_id)
+            if system == "R":
+                f1, _ = get_freq(sig1_id, sat_key, fcn)
+                f2, _ = get_freq("2C", sat_key, fcn)
+                if f1 > 0.0 and f2 > 0.0 and abs(f1 - f2) > 0.0:
+                    gamma = (f1 / f2) ** 2
+                    return p1 - tgd / (gamma - 1.0), 0.3 ** 2
+            return p1 - tgd, 0.3 ** 2
 
         f1, _ = get_freq(sig1_id, sat_key, fcn)
         f2, _ = get_freq(sig2_id, sat_key, fcn)
-        gamma = (f1 / f2)**2
-        
-        # IFLC 鏍稿績璁＄畻
-        P_IF = (P2 - gamma * P1) / (1.0 - gamma)
-        
-        # 閲嶈锛氬寳鏂?IFLC 蹇呴』淇 TGD 缁勫悎椤?
-        if sys == 'C':
-            # 鑾峰彇 B1I 鐨?TGD1 鍜?B2I 鐨?TGD2
-            tgd1 = self.get_tgd_for_sys(sys, sat_key, '2C') # TGD_B1I
-            tgd2 = self.get_tgd_for_sys(sys, sat_key, '7C') # TGD_B2I
-            P_IF -= (tgd2 - gamma * tgd1) / (1.0 - gamma)
+        if f1 <= 0.0 or f2 <= 0.0 or abs(f1 - f2) < 1e-9:
+            tgd = self.get_tgd_for_sys(system, sat_key, sig1_id)
+            return p1 - tgd, 0.3 ** 2
 
-        # IFLC 鏂瑰樊鏀惧ぇ绯绘暟涓?3.0 (鏂瑰樊鍒欐槸 9.0)
-        return P_IF, (0.3 * 3.0)**2
+        gamma = (f1 / f2) ** 2
 
-    
+        if system == "E" and sig2_id.startswith("7"):
+            eph = self._fetch_ephemeris(sat_key)
+            if eph is not None:
+                bgd_e5a = eph.get("BGD_E5aE1")
+                bgd_e5b = eph.get("BGD_E5bE1")
+                if bgd_e5a is not None and bgd_e5b is not None:
+                    try:
+                        p2 -= (float(bgd_e5a) - float(bgd_e5b)) * self.CLIGHT
+                    except (TypeError, ValueError):
+                        pass
+
+        p_if = (p2 - gamma * p1) / (1.0 - gamma)
+
+        if system == "C":
+            tgd1 = self.get_tgd_for_sys(system, sat_key, sig1_id)
+            tgd2 = self.get_tgd_for_sys(system, sat_key, sig2_id)
+            p_if -= (tgd2 - gamma * tgd1) / (1.0 - gamma)
+
+        return p_if, (0.3 * 3.0) ** 2
+
     def _fetch_ephemeris(self, satellite_id: str) -> Optional[Dict]:
-        """
-        Robustly fetch broadcast ephemeris for a satellite from the provided handler.
-
-        Supports passing either:
-          - a `BroadcastEphemeris` instance (has `get_ephemeris`), or
-          - an `RTCMHandler` instance with attribute `broadcast_eph`.
-        """
         if self.handler is None:
             return None
 
-        # If handler itself exposes get_ephemeris (e.g., BroadcastEphemeris)
         try:
-            if hasattr(self.handler, 'get_ephemeris') and callable(getattr(self.handler, 'get_ephemeris')):
+            if hasattr(self.handler, "get_ephemeris") and callable(getattr(self.handler, "get_ephemeris")):
                 return self.handler.get_ephemeris(satellite_id)
         except Exception:
             pass
 
-        # If handler wraps BroadcastEphemeris as attribute `broadcast_eph`
         try:
-            be = getattr(self.handler, 'broadcast_eph', None)
-            if be is not None and hasattr(be, 'get_ephemeris') and callable(getattr(be, 'get_ephemeris')):
-                return be.get_ephemeris(satellite_id)
+            broadcast_eph = getattr(self.handler, "broadcast_eph", None)
+            if (
+                broadcast_eph is not None
+                and hasattr(broadcast_eph, "get_ephemeris")
+                and callable(getattr(broadcast_eph, "get_ephemeris"))
+            ):
+                return broadcast_eph.get_ephemeris(satellite_id)
         except Exception:
             pass
 
-        # Fallbacks: handler may provide convenience method names
         try:
-            if hasattr(self.handler, 'get_broadcast_eph_correction') and callable(getattr(self.handler, 'get_broadcast_eph_correction')):
+            if hasattr(self.handler, "get_broadcast_eph_correction") and callable(
+                getattr(self.handler, "get_broadcast_eph_correction")
+            ):
                 return self.handler.get_broadcast_eph_correction(satellite_id)
         except Exception:
             pass
@@ -307,995 +292,615 @@ class SPPPositioner:
         return None
 
     def _geodist(self, rs: np.ndarray, rr: np.ndarray) -> Tuple[Optional[float], Optional[np.ndarray]]:
-
         dr = rs - rr
-        r2 = dr.dot(dr) 
-        
-        if np.linalg.norm(rs) < 6378137.0: # RE_WGS84
+        r2 = float(dr.dot(dr))
+        if np.linalg.norm(rs) < WGS84_SEMI_MAJOR_AXIS_M:
             return None, None
-            
-        r = np.sqrt(r2)
-        if r <= 0:
+
+        rho = math.sqrt(r2)
+        if rho <= 0.0:
             return None, None
-            
-        e = dr / r
-        
-        # Sagnac 
-        #  OMGE * (xs*yr - ys*xr) / CLIGHT
-        sagnac = 7.2921151467e-5 * (rs[0] * rr[1] - rs[1] * rr[0]) / self.CLIGHT
-        
-        return r + sagnac, e
-    
-    def var_err(self, sat_key: str, el: float) -> float:
-        """
-        璁＄畻浼窛娴嬮噺璇樊鏂瑰樊
-        
-        鍙傛暟:
-        opt: 閰嶇疆瀛楀吀, 鍖呭惈 err (璇樊妯″瀷鍙傛暟), eratio (鐮?鐩镐綅璇樊姣?, ionoopt (鐢电灞傞€夐」)
-        obs: 瑙傛祴鏁版嵁瀛楀吀, 鍖呭惈 SNR (淇″櫔姣?, Pstd (鎺ユ敹鏈鸿嚜甯︾殑浼窛鏍囧噯宸?
-        el:  楂樺害瑙?(寮у害)
-        sys: 绯荤粺 ID
-        """
-        fact = 1.0
-        
-        EFACT_GPS = 1.0
-        EFACT_GLO = 1.5
-        EFACT_SBS = 2.0
-        EFACT_GAL = 1.0
-        EFACT_CMP = 1.0
-        EFACT_QZS = 1.0
-        EFACT_IRN = 1.0
 
-        # 1. 鏍规嵁绯荤粺閫夋嫨璇樊绯绘暟鍥犲瓙
-        if sat_key[0] == 'G': fact = EFACT_GPS
-        elif sat_key[0] == 'R': fact = EFACT_GLO
-        elif sat_key[0] == 'S': fact = EFACT_SBS
-        elif sat_key[0] == 'C': fact = EFACT_CMP
-        elif sat_key[0] == 'E': fact = EFACT_GAL
-        elif sat_key[0] == 'J': fact = EFACT_QZS
-        elif sat_key[0] == 'I': fact = EFACT_IRN
-        else: fact = EFACT_GPS
+        line_of_sight = dr / rho
+        sagnac = EARTH_ROTATION_RATE * (rs[0] * rr[1] - rs[1] * rr[0]) / self.CLIGHT
+        return rho + sagnac, line_of_sight
 
-        # 3. 鍩虹鏂瑰樊妯″瀷: var = a^2 + b^2 / sin(el)
-        # opt['err'][1] 鏄父鏁伴」 a
-        # opt['err'][2] 鏄珮搴﹁鐩稿叧椤?b
-        err_a = 0.003
-        err_b = 0.003
-        try:
-            varr = (err_a**2) + (err_b**2 / math.sin(el))
-        except (ValueError, ZeroDivisionError):
-            varr = err_a**2
-        # 4. SNR (淇″櫔姣? 褰卞搷椤?(濡傛灉閰嶇疆浜嗗弬鏁?
-        # opt['err'][5] 鏄?snr_max, opt['err'][6] 鏄?snr 鐩稿叧绯绘暟 c
-        snr_max = 52.0
-        snr_factor = 0.0
-        if snr_factor > 0.0:
-            # 娉ㄦ剰: RTKLIB 鍐呴儴 SNR 閫氬父鏄互 0.25 dBHz 涓哄崟浣嶇殑鏁存暟锛岃繖閲屽亣璁句紶鍏ョ殑鏄疄闄?dBHz
-            # 濡傛灉鏄?RTKLIB 鍘熷鏁版嵁锛屾澶勯€氬父鏄?obs['SNR'][0] * 0.25
-            snr_curr = obs['SNR'][0] 
-            snr_diff = max(snr_max - snr_curr, 0)
-            varr += (snr_factor**2) * math.pow(10, 0.1 * snr_diff)
+    def var_err(
+        self,
+        sat_key: str,
+        elevation_rad: float,
+        snr: Optional[float] = None,
+        pstd: Optional[float] = None,
+    ) -> float:
+        """Approximate pseudorange measurement variance, aligned with RTKLIB's `varerr`."""
+        system_factor = {
+            "G": 1.0,
+            "R": 1.5,
+            "S": 2.0,
+            "E": 1.0,
+            "C": 1.0,
+            "J": 1.0,
+            "I": 1.0,
+        }.get(sat_key[0], 1.0)
 
-        # 5. 搴旂敤鐮?鐩镐綅璇樊姣?(Code/Phase Error Ratio)
-        # 浼窛璇樊閫氬父鏄浉浣嶈宸殑 100 鍊嶅乏鍙?
-        #varr *= (opt['eratio'][0]**2)
+        elevation_rad = max(float(elevation_rad), MIN_ERROR_ELEVATION_RAD)
 
-        # 6. 鎺ユ敹鏈烘彁渚涚殑娴嬮噺鏍囧噯宸?(濡傛灉瀛樺湪)
-        # opt['err'][7] 鏄帴鏀舵満 Pstd 鐨勬潈閲嶅洜瀛?d
-        pstd_factor = 0.0
-        if pstd_factor > 0.0 :
-            varr += (pstd_factor * obs['Pstd'][0])**2
+        if self.WEIGHT_MODE == "equal":
+            variance = 1.0 ** 2
+        else:
+            err_a = 0.3
+            err_b = 0.3
+            variance = err_a ** 2 + err_b ** 2 / max(math.sin(elevation_rad), 1e-3)
 
-        # 7. 娑堢數绂诲眰缁勫悎 (IFLC) 鍣０鏀惧ぇ
-        # 鍙岄缁勫悎浼氭斁澶ф祴閲忓櫔澹帮紝閫氬父璁や负鏍囧噯宸斁澶?3 鍊嶏紝鏂瑰樊鏀惧ぇ 9 鍊?
+            if self.WEIGHT_MODE == "snr" and snr is not None and snr > 0.0:
+                snr_max = 52.0
+                snr_factor = 0.3
+                variance += snr_factor ** 2 * math.pow(10.0, 0.1 * max(snr_max - float(snr), 0.0))
+
+        if pstd is not None and pstd > 0.0:
+            variance += float(pstd) ** 2
+
         if self.ionosphere_option == "IFLC":
-            varr *= (3.0**2)
+            variance *= 3.0 ** 2
 
-        # 8. 鏈€缁堜箻涓婄郴缁熷洜瀛愬苟杩斿洖
-        return (fact**2) * varr
-    def _compute_initial_position(self, epoch_obs: object) -> Optional[np.ndarray]:
-        """
-        Compute an initial approximate receiver position from satellite observations.
-        Args:
-            epoch_obs: EpochObservation object with satellite observations
-            approx_position: an optional guess; typically ``None`` 
+        return (system_factor ** 2) * variance
 
-        Returns:
-            Initial position estimate [X, Y, Z] in ECEF (meters), or ``None``
-            if there is insufficient data to form a solution.
-        """
-        if not hasattr(epoch_obs, 'satellites') or len(epoch_obs.satellites) == 0:
+    def _normalize_position_guess(self, approx_position: Optional[np.ndarray]) -> Optional[np.ndarray]:
+        if approx_position is None:
             return None
 
-        # Build observation list using whatever approximate position is available
-        observations = self._extract_observations(epoch_obs, np.zeros(3))
-        if observations is None or len(observations) == 0:
-            return None
-
-        # require at least four distinct satellites to solve for 4 unknowns
-        unique_sats = {obs['sat_key'] for obs in observations}
-        if len(unique_sats) < self.MIN_SATELLITES:
-            return None
-
-        # Prepare data arrays for LS
-        sat_pos_arr = np.vstack([obs['sat_pos'] for obs in observations])
-        pr_arr = np.array([obs['pseudorange'] for obs in observations])
-
-        x0 = np.zeros(3)
-        clk0 = 0.0
-
-        # linearized iteration
-        max_iter = 10
-        tol = 1e-2
-        c = float(self.CLIGHT)
-        for _ in range(max_iter):
-            n = len(observations)
-            A = np.zeros((n, 4))
-            b = np.zeros(n)
-            for i in range(n):
-                dr = sat_pos_arr[i] - x0
-                rho = np.linalg.norm(dr)
-                if rho <= 0:
-                    rho = 1e-8
-                A[i, :3] = -dr / rho
-                A[i, 3] = 1.0
-                b[i] = pr_arr[i] - (rho + clk0)
-            try:
-                dx, *_ = np.linalg.lstsq(A, b, rcond=None)
-            except Exception:
-                break
-            x0 = x0 + dx[:3]
-            clk0 = clk0 + dx[3]
-            if np.linalg.norm(dx[:3]) < tol and abs(dx[3]) < tol:
-                break
-
-        initial_pos = x0
-
-        # update satellite az/el for downstream processing
         try:
-            for sat_key, satellite in epoch_obs.satellites.items():
-                sat_pos = getattr(satellite, 'sat_pos_ecef', None)
-                if sat_pos is None:
-                    continue
-                az, el = calculate_az_el(np.array(sat_pos, dtype=float), initial_pos)
-                try:
-                    satellite.azimuth = float(az)
-                    satellite.elevation = float(el)
-                except Exception:
-                    pass
+            arr = np.asarray(approx_position, dtype=float).reshape(-1)
         except Exception:
-            # non鈥慺atal
-            pass
-
-        return initial_pos
-    
-    def process_epoch(self, epoch_obs, approx_position: Optional[np.ndarray] = None) -> Optional[PositioningResult]:
-        """
-        Process one observation epoch and compute SPP solution.
-        
-        Args:
-            epoch_obs: EpochObservation object with satellite observations
-            approx_position: Approximate receiver position [X, Y, Z] in ECEF (meters)
-                           If None or all zeros, will be computed automatically from satellite positions
-        
-        Returns:
-            PositioningResult object if solution is valid, None otherwise
-        """
-        try:
-            # make sure approx_position is a numeric numpy array to avoid
-            # ambiguous truth values later (e.g. if it contains None)
-            if approx_position is not None:
-                try:
-                    approx_position = np.array(approx_position, dtype=float)
-                except Exception:
-                    approx_position = None
-            else:
-                approx_position = np.array([0.0, 0.0, 0.0])
-
-            self._update_satellite_positions(epoch_obs)
-            
-            solution = self._spp(epoch_obs, approx_position)
-            
-            if solution is not None:
-                self.last_solution = solution
-                return solution
-            else:
-                return None
-                
-        except Exception as e:
-            # log full traceback to aid debugging of unexpected float/None errors
-            self.logger.error(f"SPP processing error: {str(e)}", exc_info=True)
             return None
-    
-    def _update_satellite_positions(self, epoch_obs):
+
+        if arr.size < 3 or not np.all(np.isfinite(arr[:3])):
+            return None
+
+        arr = arr[:3]
+        if np.linalg.norm(arr) < 1e6:
+            return None
+        return arr.copy()
+
+    def _compute_initial_position(self, observations: List[Dict]) -> Optional[np.ndarray]:
+        if len(observations) < self.MIN_SATELLITES:
+            return None
+
+        sat_pos_arr = np.vstack([obs["sat_pos"] for obs in observations])
+        centroid = sat_pos_arr.mean(axis=0)
+        if np.linalg.norm(centroid) > 0.0:
+            x_curr = centroid / np.linalg.norm(centroid) * WGS84_SEMI_MAJOR_AXIS_M
+        else:
+            x_curr = np.array([WGS84_SEMI_MAJOR_AXIS_M, 0.0, 0.0], dtype=float)
+        clk_bias = 0.0
+
+        for _ in range(10):
+            design_rows: List[List[float]] = []
+            residuals: List[float] = []
+
+            for obs in observations:
+                sat_pos = obs["sat_pos"]
+                rho = np.linalg.norm(sat_pos - x_curr)
+                if rho <= 0.0:
+                    continue
+
+                corrected_pr, _ = self.calculate_prange(obs["sat_key"], obs["pr_list"], obs["fcn"])
+                if corrected_pr <= 0.0:
+                    continue
+
+                design_rows.append(
+                    [
+                        -(sat_pos[0] - x_curr[0]) / rho,
+                        -(sat_pos[1] - x_curr[1]) / rho,
+                        -(sat_pos[2] - x_curr[2]) / rho,
+                        1.0,
+                    ]
+                )
+                residuals.append(corrected_pr - (rho + clk_bias - self.CLIGHT * obs["sat_clock_correction_s"]))
+
+            if len(design_rows) < 4:
+                return None
+
+            design = np.asarray(design_rows, dtype=float)
+            residual_vec = np.asarray(residuals, dtype=float)
+
+            try:
+                dx, *_ = np.linalg.lstsq(design, residual_vec, rcond=None)
+            except np.linalg.LinAlgError:
+                return None
+
+            x_curr = x_curr + dx[:3]
+            clk_bias += float(dx[3])
+
+            if np.linalg.norm(dx[:3]) < 1.0 and abs(dx[3]) < 1.0:
+                return x_curr
+
+        return x_curr
+
+    def process_epoch(
+        self,
+        epoch_obs,
+        approx_position: Optional[np.ndarray] = None,
+    ) -> Optional[PositioningResult]:
+        try:
+            self._update_satellite_positions(epoch_obs)
+            observations = self._extract_observations(epoch_obs)
+            if len(observations) < self.MIN_SATELLITES:
+                return None
+
+            initial_guess = self._normalize_position_guess(approx_position)
+            if initial_guess is None and self.last_solution is not None:
+                initial_guess = self._normalize_position_guess(self.last_solution.position_ecef)
+            if initial_guess is None:
+                initial_guess = self._compute_initial_position(observations)
+            if initial_guess is None:
+                return None
+
+            solution = self._solve_least_squares(observations, initial_guess, epoch_obs)
+            if solution is not None and solution.solution_status != "No Fix":
+                self.last_solution = solution
+            return solution
+        except Exception as exc:
+            self.logger.error("SPP processing error: %s", exc, exc_info=True)
+            return None
+
+    def _build_be2pos_input(self, eph: Dict) -> Optional[Tuple[str, Dict]]:
+        sat_id = str(eph.get("satellite_id", ""))
+        if not sat_id:
+            return None
+
+        system = sat_id[0]
+        sys_type = "GLO" if system == "R" else "SBS" if system == "S" else system
+        payload = {"SatType": sys_type, "PRN": eph.get("PRN")}
+
+        if sys_type == "GLO":
+            payload.update(
+                {
+                    "X": eph.get("X"),
+                    "Y": eph.get("Y"),
+                    "Z": eph.get("Z"),
+                    "Vx": eph.get("Vx"),
+                    "Vy": eph.get("Vy"),
+                    "Vz": eph.get("Vz"),
+                    "Ax": eph.get("Ax"),
+                    "Ay": eph.get("Ay"),
+                    "Az": eph.get("Az"),
+                    "tb": eph.get("tb"),
+                    "tau_n": eph.get("tau_n"),
+                    "gamma_n": eph.get("gamma_n"),
+                }
+            )
+        elif sys_type == "SBS":
+            payload.update(
+                {
+                    "t0": eph.get("t0", eph.get("toe")),
+                    "pos": eph.get("pos"),
+                    "vel": eph.get("vel"),
+                    "acc": eph.get("acc"),
+                    "af0": eph.get("af0", 0.0),
+                    "af1": eph.get("af1", 0.0),
+                    "af2": eph.get("af2", 0.0),
+                    "Toc": eph.get("toc", eph.get("t0", 0.0)),
+                }
+            )
+        else:
+            payload.update(
+                {
+                    "Week": eph.get("week"),
+                    "Toe": eph.get("toe"),
+                    "sqrtA": eph.get("sqrt_a"),
+                    "Eccentricity": eph.get("e"),
+                    "M0": eph.get("M0"),
+                    "omega": eph.get("omega"),
+                    "i0": eph.get("i0"),
+                    "OMEGA0": eph.get("Omega0"),
+                    "Delta_n": eph.get("delta_n"),
+                    "OMEGA_DOT": eph.get("Omega_dot"),
+                    "IDOT": eph.get("idot"),
+                    "Crs": eph.get("Crs"),
+                    "Crc": eph.get("Crc"),
+                    "Cus": eph.get("Cus"),
+                    "Cuc": eph.get("Cuc"),
+                    "Cis": eph.get("Cis"),
+                    "Cic": eph.get("Cic"),
+                    "af0": eph.get("af0"),
+                    "af1": eph.get("af1"),
+                    "af2": eph.get("af2"),
+                    "Toc": eph.get("toc"),
+                }
+            )
+        return sys_type, payload
+
+    def _compute_satellite_clock_correction(self, eph: Dict, transmit_time: float) -> float:
+        af0 = float(eph.get("af0", 0.0) or 0.0)
+        af1 = float(eph.get("af1", 0.0) or 0.0)
+        af2 = float(eph.get("af2", 0.0) or 0.0)
+        toc = float(eph.get("toc") or eph.get("Toc") or 0.0)
+
+        dt = transmit_time - toc
+        saved_dt = dt
+        for _ in range(2):
+            dt = saved_dt - (af0 + af1 * dt + af2 * dt * dt)
+        clock_bias = af0 + af1 * dt + af2 * dt * dt
+
+        sqrt_a = eph.get("sqrt_a")
+        ecc = eph.get("e")
+        m0 = eph.get("M0")
+        delta_n = eph.get("delta_n")
+        toe = eph.get("toe")
+        if sqrt_a and ecc is not None and m0 is not None and delta_n is not None and toe is not None:
+            try:
+                semi_major_axis = float(sqrt_a) ** 2
+                mean_motion = math.sqrt(3.986005e14 / (semi_major_axis ** 3)) + float(delta_n)
+                tk = transmit_time - float(toe)
+                if tk > 302400.0:
+                    tk -= 604800.0
+                elif tk < -302400.0:
+                    tk += 604800.0
+                mean_anomaly = float(m0) + mean_motion * tk
+                eccentric_anomaly = mean_anomaly
+                for _ in range(10):
+                    next_value = mean_anomaly + float(ecc) * math.sin(eccentric_anomaly)
+                    if abs(next_value - eccentric_anomaly) < 1e-13:
+                        eccentric_anomaly = next_value
+                        break
+                    eccentric_anomaly = next_value
+                clock_bias -= 4.442807633e-10 * float(ecc) * float(sqrt_a) * math.sin(eccentric_anomaly)
+            except (TypeError, ValueError, ZeroDivisionError):
+                pass
+
+        return clock_bias
+
+    def _update_satellite_positions(self, epoch_obs) -> None:
+        gps_time = getattr(epoch_obs, "gps_time", None)
+        if gps_time is None:
+            return
+
         for sat_key, satellite in epoch_obs.satellites.items():
-            sigs = getattr(satellite, 'signals', None)
-            if not sigs:
+            signals = getattr(satellite, "signals", None)
+            if not signals:
                 continue
 
-            # collect all valid pseudorange measurements from this satellite
-            pr_list: List[Tuple[str, float, object]] = []
-            for sig_id, signal in sigs.items():
+            pr_list: List[Tuple[str, float]] = []
+            for sig_id, signal in signals.items():
                 if signal is None:
                     continue
-                pr = getattr(signal, 'pseudorange', None)
-                if pr is not None and float(pr) > 0:
-                    pr_list.append((sig_id, float(pr)))
-
+                pseudorange = getattr(signal, "pseudorange", None)
+                if pseudorange is not None and float(pseudorange) > 0.0:
+                    pr_list.append((sig_id, float(pseudorange)))
             if not pr_list:
                 continue
 
-
-            t_rx = getattr(epoch_obs, 'gps_time', None)
-            if t_rx is None:
+            if getattr(satellite, "sat_pos_ecef", None) is not None and getattr(satellite, "sat_clk_corr", None) is not None:
+                if not hasattr(satellite, "sat_var"):
+                    satellite.sat_var = 30.0 ** 2
                 continue
-            t_tx = t_rx - float(pr_list[0][1]) / self.CLIGHT #  transmit time
-
 
             eph = self._fetch_ephemeris(sat_key)
             if eph is None:
                 continue
-            af0 = eph.get('af0', 0.0)
-            af1 = eph.get('af1', 0.0)
-            af2 = eph.get('af2', 0.0)
-            toc = eph.get('toc') or eph.get('Toc') or 0.0
-            dt = t_tx - toc
-            ts = dt
-            for i in range(2):
-                clock_bias = af0 + af1 * dt + af2 * dt**2
-                dt = ts - clock_bias
-            sat_clk_corr_s = af0 + af1 * dt + af2 * dt**2
 
-            # Relativistic correction (for Keplerian systems)
-            F_rel = -4.442807633e-10  # Relativistic correction factor
-            rel_corr_s = 0.0
-            try:
-                sqrt_a = float(eph.get('sqrt_a') or eph.get('sqrtA') or 0.0)
-                ecc = float(eph.get('e', 0.0))
-                M0 = float(eph.get('M0', 0.0))
-                delta_n = float(eph.get('delta_n', 0.0))
-                toe = float(eph.get('toe') or eph.get('Toe') or 0.0)
-                mu = 3.986005e14  # Earth's universal gravitational parameter (m^3/s^2)
-
-                if sqrt_a > 0 and ecc >= 0:
-                    A = sqrt_a ** 2
-                    n0 = math.sqrt(mu / (A ** 3))
-                    n = n0 + delta_n
-                    
-                    # Time from ephemeris epoch
-                    tk = t_tx - toe
-                    if tk > 302400:
-                        tk -= 604800
-                    elif tk < -302400:
-                        tk += 604800
-                    
-                    # Mean anomaly
-                    M = M0 + n * tk
-                    
-                    # Solve Kepler equation (Newton iteration)
-                    E = M
-                    for _ in range(10):
-                        E_old = E
-                        sin_E = math.sin(E)
-                        cos_E = math.cos(E)
-                        denom = 1.0 - ecc * cos_E
-                        if abs(denom) < 1e-12:
-                            break
-                        E = E - (E - ecc * sin_E - M) / denom
-                        if abs(E - E_old) < 1e-13:
-                            break
-                    
-                    # Relativistic correction
-                    rel_corr_s = F_rel * ecc * sqrt_a * math.sin(E)
-            except Exception:
-                rel_corr_s = 0.0
-            sat_clk_corr_s -= rel_corr_s
-
-            t_tx = t_tx - sat_clk_corr_s
-
-            sys_type = sat_key[0]  # e.g., 'G' for GPS, 'R' for GLONASS
-            if sys_type == 'R':
-                sys_type = 'GLO'
-            # avoid ambiguous truth value if eph happens to be a numpy array
-            if eph is not None:
-                # Convert to format expected by BE2pos
-                eph_for_calc = {
-                    'SatType': sys_type,
-                    'PRN': eph.get('PRN'),
-                }                    
-                # Add system-specific fields
-                if sys_type == 'GLO':
-                    # GLONASS uses Cartesian coordinates
-                    eph_for_calc.update({
-                        'X': eph.get('X'),      # km
-                        'Y': eph.get('Y'),      # km
-                        'Z': eph.get('Z'),      # km
-                        'Vx': eph.get('Vx'),    # km/s
-                        'Vy': eph.get('Vy'),    # km/s
-                        'Vz': eph.get('Vz'),    # km/s
-                        'Ax': eph.get('Ax'),    # km/s虏
-                        'Ay': eph.get('Ay'),    # km/s虏
-                        'Az': eph.get('Az'),    # km/s虏
-                        'tb': eph.get('tb'),    # Time of ephemeris (seconds within week)
-                        'tau_n': eph.get('tau_n'),
-                        'gamma_n': eph.get('gamma_n'),
-                    })
-                elif sys_type == 'SBS':
-                    eph_for_calc.update({
-                        't0': eph.get('t0', eph.get('toe')),
-                        'pos': eph.get('pos'),
-                        'vel': eph.get('vel'),
-                        'acc': eph.get('acc'),
-                        'af0': eph.get('af0', 0.0),
-                        'af1': eph.get('af1', 0.0),
-                        'af2': eph.get('af2', 0.0),
-                        'Toc': eph.get('toc', eph.get('t0')),
-                    })
-                else:
-                    # GPS, Galileo, BeiDou use Keplerian parameters
-                    eph_for_calc.update({
-                        'Week': eph.get('week'),
-                        'Toe': eph.get('toe'),
-                        'sqrtA': eph.get('sqrt_a'),
-                        'Eccentricity': eph.get('e'),
-                        'M0': eph.get('M0'),
-                        'omega': eph.get('omega'),
-                        'i0': eph.get('i0'),
-                        'OMEGA0': eph.get('Omega0'),
-                        'Delta_n': eph.get('delta_n'),
-                        'OMEGA_DOT': eph.get('Omega_dot'),
-                        'IDOT': eph.get('idot'),
-                        'Crs': eph.get('Crs'),
-                        'Crc': eph.get('Crc'),
-                        'Cus': eph.get('Cus'),
-                        'Cuc': eph.get('Cuc'),
-                        'Cis': eph.get('Cis'),
-                        'Cic': eph.get('Cic'),
-                        'af0': eph.get('af0'),
-                        'af1': eph.get('af1'),
-                        'af2': eph.get('af2'),
-                        'Toc': eph.get('toc'),
-                    })
-                sat_pos = brdc2pos(eph_for_calc, sys_type, t_tx)
-                # if ephemeris conversion fails we may get None back
-                if sat_pos is None:
-                    # stop the correction loop and mark this satellite invalid
-                    rho = None
-                    break
-                var = get_var_ura(eph)
-
-                epoch_obs.satellites[sat_key].sat_var = var  # satellite variance
-                epoch_obs.satellites[sat_key].sat_pos_ecef = sat_pos  # update satellite position
-                epoch_obs.satellites[sat_key].sat_clk_corr = sat_clk_corr_s # update satellite clock correction in seconds
-    def _spp(self, epoch_obs, approx_position: Optional[np.ndarray] = None) -> Optional[PositioningResult]:
-        NX = 4 + len(SYS_OFFSET_INDICES)
-        x_curr = np.zeros(NX)  # [X,Y,Z, dtr_gps, dtr_glo, dtr_gal, ...] in meters
-        x_curr[:3] = approx_position.copy()
-        x_curr[3] = 0.0  # initial GPS clock bias guess (meters)
-
-        MAXITR = self.MAX_ITERATIONS
-        for i in range(MAXITR):
-            res_data = self._estimate_range_res(i, epoch_obs, x_curr)
-            if res_data is None:
-                self.logger.debug("No valid observations.")
-                break
-            H, v, var = res_data
-
-            nv = len(v)
-            if nv < NX:
-                self.logger.debug(f"Lack of valid satellites: ns={nv}")
-                break
-
-            # 3. 鍔犳潈 (Weighting)
-            sig = np.sqrt(var)
-            v = v / sig
-            H = H / sig[:, np.newaxis]  # 姣忚闄や互瀵瑰簲鐨勬爣鍑嗗樊
-
-            print(H)
-            # 4. 鏈€灏忎簩涔樻眰瑙?dx = (H^T * H)^-1 * H^T * v
-            try:
-                # 浣跨敤 numpy 鐨?lstsq 鎴栬€呯洿鎺ヨ绠楁瑙勬柟绋?
-                # dx, residuals, rank, s = np.linalg.lstsq(H_weighted, v_weighted, rcond=None)
-                # 1. 璁＄畻姝ｈ鏂圭▼宸︿晶 (9x43) @ (43x9) = (9x9)
-                HTH = H.T @ H 
-                Q = np.linalg.inv(HTH)
-                dx = Q @ (H.T @ v)
-            except np.linalg.LinAlgError:
-                self.logger.debug("LSQ error: Matrix is singular.")
-                break
-
-            # 5. 鏇存柊鐘舵€侀噺
-            x_curr += dx
-
-            # 6. 妫€鏌ユ敹鏁?(浣嶇疆鏇存柊閲忓皬浜庨槇鍊硷紝濡?0.1mm)
-            sol_stat = 0
-            if np.linalg.norm(dx[:3]) < 1E-4:
-                # 7. 楠岃瘉瑙ｇ殑鍙潬鎬?(绛夊悓浜?RTKLIB 鐨?valsol)
-                if self._validate_solution(v, nv, NX):
-                    sol_stat = 1 # 鎵惧埌鏈夋晥瑙?
-                break
-        
-        if sol_stat == 1:
-            # 8. 灏佽缁撴灉杩斿洖
-            return self._finalize_result(epoch_obs, x_curr, Q, nv)
-        
-        return None
-
-    def _validate_solution(self, v, nv, nx) -> bool:
-        """ 绠€鍗曠殑娈嬪樊楠岃瘉 (Chi-square test 绠€鍖栫増) """
-        if nv <= nx:
-            return False
-        # 璁＄畻鍗曚綅鏉冩爣鍑嗗樊 (Standard deviation of unit weight)
-        # v 宸茬粡鏄姞鏉冨悗鐨勬畫宸垨鑰呴渶瑕佸湪杩欓噷缁撳悎 var 璁＄畻
-        # 姝ゅ绠€鍖栧鐞嗭細
-        vv = np.dot(v, v)
-        sigma0_sq = vv / (nv - nx)
-        if sigma0_sq > self.MAX_UNIT_VAR: # 棰勮涓€涓槇鍊硷紝濡?30.0
-            return False
-        return True
-
-    def _finalize_result(self, epoch_obs, x, Q, ns) -> PositioningResult:
-        """ 鏁寸悊鏈€缁堢殑瀹氫綅缁撴灉瀵硅薄 """
-        # 鏃堕棿淇锛欸PS time - receiver clock bias
-        t_rx = epoch_obs.gps_time
-        # x[3] 鏄互绫充负鍗曚綅鐨勯挓宸紝闄や互鍏夐€熻浆涓虹
-        corrected_time = t_rx - (x[3] / self.CLIGHT)
-        
-        # 鎻愬彇鍚勪釜绯荤粺鐨勯挓鍋?(s)
-        # dtr 瀵瑰簲 [GPS, GLO, GAL, BDS, IRN, QZS]
-        dtr = np.zeros(6)
-        dtr[0] = x[3] / self.CLIGHT
-        if len(x) > 4:
-            # 鏍规嵁 SYS_OFFSET_INDICES 渚濇鎻愬彇
-            # 娉ㄦ剰锛氳繖閲岀殑閫昏緫闇€瀵瑰簲浣犲湪 _estimate_range_res 涓?sys_idx 鐨勮璁?
-            # 鍋囪 sys_idx 4=GLO, 5=GAL, 6=BDS...
-            for i, idx in enumerate(range(4, len(x))):
-                if i+1 < len(dtr):
-                    dtr[i+1] = x[idx] / self.CLIGHT
-
-        # 鏋勫缓 PositioningResult
-        res = PositioningResult(
-            time=corrected_time,
-            pos=x[:3],         # ECEF XYZ
-            vel=np.zeros(3),   # SPP 閫氬父涓嶄及绠楅€熷害锛屾垨閫氳繃澶氭櫘鍕掍及绠?
-            dtr=dtr,           # 鍚勭郴缁熼挓鍋?
-            cov=Q[:3, :3],     # 浣嶇疆鍗忔柟宸?
-            ns=ns,             # 浣跨敤鍗槦鏁?
-            stat=1             # 鐘舵€佺爜
-        )
-        return res
-
-        
-    def _estimate_range_res(self, i, epoch_obs, x_curr
-    ) -> Optional[List[Dict]]:
-        """Build residuals, design matrix and variance for an SPP epoch.
-        * Validate each satellite (system filtering, duplicates, elevation mask,
-          etc.).
-        * Compute geometric range and azimuth/elevation from the current
-          receiver estimate ``x_curr``.
-        * Apply all relevant corrections including satellite clock, relativistic
-          term, tropo/iono models (according to the configured options), and
-          system-specific time offsets (GLONASS/BeiDou/Galileo, etc.).
-        * Form an observation dictionary for each usable satellite containing the
-          residual, design matrix row and estimated variance.  These dictionaries
-          are later consumed by ``_solve_least_squares()``.
-
-        Parameters
-        ----------
-        i : int
-            Iteration index (zero-based) of the outer nonlinear solver.  When
-            ``i == 0`` only geometric quantities are computed; corrections are
-            applied from the second iteration onwards.
-        epoch_obs : object
-            An ``EpochObservation`` instance containing ``satellites`` with
-            associated signal measurements (pseudoranges, SNR, etc.).
-        x_curr : numpy.ndarray
-            Current state vector containing receiver position and clock bias
-            (and optionally additional system offsets) in metres.  Only the
-            first three elements (ECEF XYZ) and index 3 (GPS clock bias) are
-            referenced here.
-
-        Returns
-        -------
-        Optional[List[Dict]]
-            A list of per-satellite observation dictionaries with keys ``'H'``,
-            ``'v'`` and ``'var'``.  ``None`` is returned if the processing
-            cannot proceed (e.g. missing time or position information).
-        """
-        cur_pos = x_curr[:3]
-        dtr = x_curr[3]  # GPS clock bias in meters
-
-        CLIGHT = self.CLIGHT
-        
-        try:
-            # Step 1: Convert receiver position from ECEF to LLA for tropospheric model
-            rec_lat_rad, rec_lon_rad, rec_h = ecef2lla(cur_pos)
-            rec_lla = (rec_lat_rad, rec_lon_rad, rec_h)
-            apply_tropo = True
-        except Exception as e:
-            self.logger.debug(f"Failed to convert receiver position to LLA: {e}")
-            rec_lla = None
-            apply_tropo = False
-
-        # retrieve GPS receiver time from epoch observation
-        t_rx = getattr(epoch_obs, 'gps_time', None)
-        if t_rx is None:
-            return None
-        # ============================================
-        # iterate through each satellite in the epoch
-        # ============================================
-        num_sats = len(epoch_obs.satellites)
-        v_res = np.zeros(num_sats)  # residuals vector
-        H = np.zeros((num_sats, len(x_curr)))  # design matrix
-        var = np.zeros(num_sats)  # variance for pseudorange error
-        indx = -1
-        sys_mask = np.zeros(6, dtype=bool)  # mask for system offsets [GLO, GAL, BDS, IRN, QZS]
-        for sat_key, satellite in epoch_obs.satellites.items():
-            indx += 1
-            sigs = getattr(satellite, 'signals', None)
-            if not sigs:
+            primary_signal_id, primary_pr = self._select_primary_signal(sat_key, pr_list)
+            if primary_signal_id is None or primary_pr <= 0.0:
                 continue
 
-            # Extract satellite system character
-            sys_char = sat_key[0]
-
-            # Collect all valid pseudorange measurements for this satellite
-            pr_list = []
-            for sig_id, signal in sigs.items():
-                if signal is None:
-                    continue
-                pr = getattr(signal, 'pseudorange', None)
-                if pr is not None and float(pr) > 0:
-                    pr_list.append((sig_id, float(pr)))
-
-            if not pr_list:
+            transmit_time = float(gps_time) - primary_pr / self.CLIGHT
+            built_input = self._build_be2pos_input(eph)
+            if built_input is None:
                 continue
 
-            # Get satellite position and clk (precomputed by _update_satellite_positions)
-            sat_pos = getattr(satellite, 'sat_pos_ecef', None)
-            sat_clk_corr_s = getattr(satellite, 'sat_clk_corr', 0.0)
-            sat_var = getattr(satellite, 'sat_var', 0.0)
+            sys_type, payload = built_input
+            sat_pos = brdc2pos(payload, sys_type, transmit_time)
             if sat_pos is None:
                 continue
-            sat_pos = np.array(sat_pos, dtype=float)
 
-            # ========================================
-            # Geometric distance and elevation angle
-            # ========================================
-            rho, _ = self._geodist(sat_pos, cur_pos)
-            if rho is None or rho <= 0:
+            sat_clock_correction = self._compute_satellite_clock_correction(eph, transmit_time)
+            sat_variance = get_var_ura(eph)
+
+            satellite.sat_pos_ecef = np.asarray(sat_pos, dtype=float).tolist()
+            satellite.sat_clk_corr = float(sat_clock_correction)
+            satellite.sat_var = float(sat_variance if sat_variance is not None else 30.0 ** 2)
+
+    def _extract_observations(self, epoch_obs) -> List[Dict]:
+        observations: List[Dict] = []
+
+        for sat_key, satellite in epoch_obs.satellites.items():
+            if sat_key[0] not in self.gnss_systems:
                 continue
 
-            # Calculate azimuth and elevation
-            try:
-                az, el = calculate_az_el(sat_pos, cur_pos)
+            signals = getattr(satellite, "signals", None)
+            if not signals:
+                continue
 
-                el_rad = math.radians(float(el))
-                az_rad = math.radians(float(az))
-            except Exception:
-                el = 0.0
-                az = 0.0
-                el_rad = 0.0
-                az_rad = 0.0
+            pr_list: List[Tuple[str, float]] = []
+            snr_by_signal: Dict[str, float] = {}
+            for sig_id, signal in signals.items():
+                if signal is None:
+                    continue
+                pseudorange = getattr(signal, "pseudorange", None)
+                if pseudorange is None or float(pseudorange) <= 0.0:
+                    continue
+                pr_list.append((sig_id, float(pseudorange)))
+                snr_by_signal[sig_id] = float(getattr(signal, "snr", 0.0) or 0.0)
 
-            # Fetch ephemeris data
+            if not pr_list:
+                continue
+
+            sat_pos = getattr(satellite, "sat_pos_ecef", None)
+            sat_clk_corr = getattr(satellite, "sat_clk_corr", None)
+            if sat_pos is None or sat_clk_corr is None:
+                continue
+
+            primary_signal_id, raw_pseudorange = self._select_primary_signal(sat_key, pr_list)
+            if primary_signal_id is None or raw_pseudorange <= 0.0:
+                continue
+
             eph = self._fetch_ephemeris(sat_key)
-            if eph is None:
+            frequency_channel = 0
+            if eph is not None:
+                try:
+                    frequency_channel = int(eph.get("frequency_channel", 0) or 0)
+                except (TypeError, ValueError):
+                    frequency_channel = 0
+
+            observations.append(
+                {
+                    "sat_key": sat_key,
+                    "sat_pos": np.asarray(sat_pos, dtype=float),
+                    "sat_clock_correction_s": float(sat_clk_corr),
+                    "sat_var": float(getattr(satellite, "sat_var", 30.0 ** 2) or 30.0 ** 2),
+                    "pr_list": pr_list,
+                    "primary_signal_id": primary_signal_id,
+                    "raw_pseudorange": float(raw_pseudorange),
+                    "snr": snr_by_signal.get(primary_signal_id),
+                    "fcn": frequency_channel,
+                    "satellite_ref": satellite,
+                }
+            )
+
+        return observations
+
+    def _calculate_tropospheric_delay(
+        self,
+        rec_lla_rad: Tuple[float, float, float],
+        azel_rad: Tuple[float, float],
+    ) -> Tuple[float, float]:
+        if self.troposphere_model in {"None", None}:
+            return 0.0, 0.0
+
+        if self.troposphere_model == "Sastamoinen":
+            try:
+                return tropsphere_model(rec_lla_rad, azel_rad, humi=0.7)
+            except Exception as exc:
+                self.logger.debug("Sastamoinen troposphere model failed: %s", exc)
+                return 0.0, 0.0
+
+        if self.troposphere_model == "HMSL":
+            try:
+                height_m = float(rec_lla_rad[2])
+                trop_delay = max(0.0, 2.3 - 0.0001 * height_m)
+                trop_var = 0.5 ** 2
+                return trop_delay, trop_var
+            except Exception as exc:
+                self.logger.debug("HMSL troposphere model failed: %s", exc)
+                return 0.0, 0.0
+
+        self.logger.warning("Unknown troposphere model: %s", self.troposphere_model)
+        return 0.0, 0.0
+
+    def _build_measurement_model(self, observations: List[Dict], x_curr: np.ndarray, gps_time: float, iteration: int) -> Dict:
+        nx = 4 + len(SYS_OFFSET_INDICES)
+        rec_pos = x_curr[:3]
+        rec_lla = None
+        if np.linalg.norm(rec_pos) > WGS84_SEMI_MAJOR_AXIS_M * 0.5:
+            try:
+                rec_lla = ecef2lla(rec_pos)
+            except Exception:
+                rec_lla = None
+
+        residual_rows: List[float] = []
+        design_rows: List[np.ndarray] = []
+        variance_rows: List[float] = []
+        measurement_rows: List[np.ndarray] = []
+        measurement_residuals: List[float] = []
+        clock_state_present = [False] * (nx - 3)
+
+        for obs in observations:
+            sat_pos = obs["sat_pos"]
+            rho, line_of_sight = self._geodist(sat_pos, rec_pos)
+            if rho is None or line_of_sight is None:
                 continue
 
-            if i > 0:
-                # Check elevation mask
-                #if el < self.MIN_ELEVATION:
-                #    continue
+            az_deg, el_deg = calculate_az_el(sat_pos, rec_pos)
+            az_rad = math.radians(float(az_deg))
+            el_rad = math.radians(float(el_deg))
+            if el_deg < self.MIN_ELEVATION:
+                continue
 
-                # Tropospheric delay
-                tropo_delay_m = 0.0
-                if apply_tropo and rec_lla is not None:
-                    try:
-                        azel = (az_rad, el_rad)
-                        tropo_delay_m, trop_var = self._calculate_tropospheric_delay(self,rec_lla, azel)
-                    except Exception as e:
-                        self.logger.debug(f"Tropospheric delay failed for {sat_key}: {e}")
-                        tropo_delay_m = 0.0
-                        trop_var = 0.0
-                # ionospheric delay
-                ion = None # placeholder for ionospheric model parameters if needed
-                t = t_rx - rho / CLIGHT
-                iono_delay_m, iono_var = self._calculate_ionospheric_delay(self, rec_lla, azel, t, ion)
-            else:
-                iono_delay_m = 0.0
-                iono_var = 0.0
-                tropo_delay_m = 0.0
-                trop_var = 0.0
-            
-            if sys_char != 'R':
-                P, p_var = self.calculate_prange(sat_key, pr_list)
-            else:
-                fcn = eph.get('frequency_channel')
-                P, p_var = self.calculate_prange(sat_key, pr_list, fcn)
-            v_res[indx] = P - (rho + dtr - self.CLIGHT*sat_clk_corr_s + tropo_delay_m + iono_delay_m)  # residual
-            var[indx] = p_var + sat_var + self.var_err(sat_key, el) + trop_var + iono_var # measurement variance + satellite variance + base error
-            # design matrix
-            e = (sat_pos - cur_pos) / rho
-            
-            for j in range(len(x_curr)):
-                if j < 3:
-                    H[indx,j] = -e[j]
-                elif j == 3:
-                    H[indx,j] = 1.0
-                else:
-                    H[indx,j] = 0.0
-            
-            # adjust residual for multi鈥憇ystem time offset and mark column in H
-            sys_idx = -1
-            if sys_char == 'R': # GLONASS
-                sys_idx = 4
-                sys_mask[1] = True
-            elif sys_char == 'E': # Galileo
-                sys_idx = 5
-                sys_mask[2] = True
-            elif sys_char == 'C': # Beidou
-                sys_idx = 6
-                sys_mask[3] = True
-            elif sys_char == 'I': # IRNS
-                sys_idx = 7
-                sys_mask[4] = True
-            elif sys_char == 'J': # QZSS
-                sys_idx = 8
-                sys_mask[5] = True
-            else:
-                sys_mask[0] = True
-
-            if sys_idx != -1 and sys_idx < len(x_curr):
-                v_res[indx] -= x_curr[sys_idx]  # subtract estimated system clock offset
-                H[indx,sys_idx] = 1.0      # enable corresponding column in design matrix
-        
-
-        v_list = v_res[:indx].tolist()
-        H_list = H[:indx, :].tolist() if H.shape[0] == num_sats else H[:, :indx].T.tolist()
-        var_list = var[:indx].tolist()
-
-        num_clks = len(x_curr) - 3
-        for icon in range(num_clks):
-            if sys_mask[icon]: 
-                continue 
-                
-            v_constraint = 0.0
-            h_constraint = np.zeros(len(x_curr))
-            h_constraint[icon + 3] = 1.0 
-            var_constraint = 0.01
-            
-            # 鐜板湪鍙互 append 浜嗭紝鍥犱负瀹冧滑宸茬粡鏄?list 浜?
-            v_list.append(v_constraint)
-            H_list.append(h_constraint.tolist()) # H 鐨勬瘡涓€琛屼篃瑕佽浆鎴?list 鎴栦繚鎸?1D array
-            var_list.append(var_constraint)
-
-        # --- 3. 绾︽潫瀹屾垚鍚庯紝缁熶竴杞洖 NumPy 鏁扮粍杩斿洖 ---
-        v_res_final = np.array(v_list)
-        H_final = np.array(H_list)
-        var_final = np.array(var_list)
-
-        return H_final, v_res_final, var_final
-
-    def _calculate_tropospheric_delay(self, rec_lla_rad, azel_rad):
-        """
-        Calculate tropospheric delay based on configured model.
-        
-        Args:
-            rec_lla_rad: (latitude_rad, longitude_rad, height_m)
-            azel_rad: (azimuth_rad, elevation_rad)
-        
-        Returns:
-            Tropospheric delay in meters (0.0 if model is 'None')
-        """
-        if self.troposphere_model == 'None' or self.troposphere_model is None:
-            return 0.0, 0.0
-        elif self.troposphere_model == 'Sastamoinen':
-            # Use the standard Sastamoinen model with 70% humidity
             try:
-                trop_delay, trop_var = tropsphere_model(rec_lla_rad, azel_rad, humi=0.7)
-                return trop_delay, trop_var
-            except Exception as e:
-                self.logger.debug(f"Sastamoinen tropospheric model failed: {e}")
-                return 0.0, 0.0
-        elif self.troposphere_model == 'HMSL':
-            # Simple height-based model: delay proportional to height above reference
-            try:
-                height_m = rec_lla_rad[2]
-                trop_delay = max(0.0, 2.3 - 0.0001 * height_m) # 2.3 m at sea level, decreases with height
-                trop_var = (0.5)**2 # assume a fixed variance for this simple model
-                return trop_delay, trop_var
-            except Exception as e:
-                self.logger.debug(f"HMSL tropospheric model failed: {e}")
-                return 0.0, 0.0
-        else:
-            self.logger.warning(f"Unknown troposphere model: {self.troposphere_model}")
-            return 0.0, 0.0
+                obs["satellite_ref"].azimuth = float(az_deg)
+                obs["satellite_ref"].elevation = float(el_deg)
+            except Exception:
+                pass
 
-    def _add_isb_constraints(self, obs_data, x_curr):
-        """Add weak constraints for missing inter-system bias states."""
-        present_sys_indices = set()
-        for obj in obs_data:
-            indices = np.where(obj['H'][4:] == 1.0)[0]
-            if len(indices) > 0:
-                present_sys_indices.add(indices[0] + 4)
+            iono_delay = 0.0
+            iono_var = 0.0
+            tropo_delay = 0.0
+            tropo_var = 0.0
 
-        # 妫€鏌ユ瘡涓?ISB 鐘舵€佷綅 (4, 5, 6, 7...)
-        for i in range(4, len(x_curr)):
-            if i not in present_sys_indices:
-                h_const = np.zeros(len(x_curr))
-                h_const[i] = 1.0
-                obs_data.append({
-                    'sat': 'FIX',
-                    'v': 0.0,
-                    'H': h_const,
-                    'var': 0.01**2, # 缁欎竴涓緢灏忕殑鏂瑰樊锛屽己鍒惰绯荤粺鍋忕疆瓒嬩簬 0
-                    'azel': (0, 0)
-                })
-        return obs_data
+            if iteration > 0 and rec_lla is not None:
+                if self.ionosphere_option == "SINGLE":
+                    freq_hz, _ = get_freq(obs["primary_signal_id"], obs["sat_key"], obs["fcn"])
+                    iono_delay, iono_var = self._calculate_ionospheric_delay(
+                        rec_lla,
+                        (az_rad, el_rad),
+                        gps_time,
+                        freq_hz=freq_hz or GPS_L1_FREQUENCY_HZ,
+                    )
+                tropo_delay, tropo_var = self._calculate_tropospheric_delay(rec_lla, (az_rad, el_rad))
 
-    
-    def _solve_least_squares(
-        self, observations: List[Dict], approx_position: np.ndarray, gps_time: float
-    ) -> Optional[PositioningResult]:
-        """
-        Iterative least-squares solution for SPP.
-        
-        Solves the system:
-          A * x = b
-        where:
-          A: Design matrix (n_sat x NX), each row contains the partial
-             derivatives with respect to the three position components and
-             one clock bias term plus additional columns for any multi-
-             system time offsets (e.g. GLONASS-GPS, Galileo-GPS, etc.).
-          x: State vector [dX, dY, dZ, dtr_gps, dtr_glo, dtr_gal, ...]
-             (clock bias and offsets are in meters)
-          b: Pseudorange residuals
-        """
-        # State vector length: 3 position components + 1 GPS clock bias +
-        # one offset per additional system (GLONASS, Galileo, BeiDou, IRNSS).
-        # This mirrors the C estpos routine where NX is typically 8.
-        NX = 4 + len(SYS_OFFSET_INDICES)
-        x_curr = np.zeros(NX)  # [螖X, 螖Y, 螖Z, dtr_gps, dtr_glo, dtr_gal, ...] in meters
-        pos_curr = approx_position.copy()
+            corrected_pr, code_bias_var = self.calculate_prange(obs["sat_key"], obs["pr_list"], obs["fcn"])
+            if corrected_pr <= 0.0:
+                continue
+
+            residual = corrected_pr - (
+                rho
+                + x_curr[3]
+                - self.CLIGHT * obs["sat_clock_correction_s"]
+                + iono_delay
+                + tropo_delay
+            )
+
+            design_row = np.zeros(nx, dtype=float)
+            design_row[:3] = -line_of_sight
+            design_row[3] = 1.0
+
+            system = obs["sat_key"][0]
+            if system in SYS_OFFSET_INDICES:
+                state_index = SYS_OFFSET_INDICES[system]
+                residual -= x_curr[state_index]
+                design_row[state_index] = 1.0
+                clock_state_present[state_index - 3] = True
+            else:
+                clock_state_present[0] = True
+
+            variance = (
+                float(obs["sat_var"])
+                + float(code_bias_var)
+                + self.var_err(obs["sat_key"], el_rad, snr=obs.get("snr"))
+                + float(iono_var)
+                + float(tropo_var)
+            )
+            variance = max(variance, 1e-6)
+
+            residual_rows.append(float(residual))
+            design_rows.append(design_row)
+            variance_rows.append(variance)
+            measurement_rows.append(design_row.copy())
+            measurement_residuals.append(float(residual))
+
+        for clock_offset_index, present in enumerate(clock_state_present):
+            if present:
+                continue
+            design_row = np.zeros(nx, dtype=float)
+            design_row[clock_offset_index + 3] = 1.0
+            design_rows.append(design_row)
+            residual_rows.append(0.0)
+            variance_rows.append(DEFAULT_CLOCK_CONSTRAINT_VARIANCE)
+
+        return {
+            "H": np.asarray(design_rows, dtype=float),
+            "v": np.asarray(residual_rows, dtype=float),
+            "var": np.asarray(variance_rows, dtype=float),
+            "measurement_H": np.asarray(measurement_rows, dtype=float),
+            "measurement_v": np.asarray(measurement_residuals, dtype=float),
+        }
+
+    def _solve_least_squares(self, observations: List[Dict], approx_position: np.ndarray, epoch_obs) -> Optional[PositioningResult]:
+        nx = 4 + len(SYS_OFFSET_INDICES)
+        x_curr = np.zeros(nx, dtype=float)
+        x_curr[:3] = approx_position.copy()
 
         convergence = False
+        final_model = None
 
-        # Parameters for robust estimation
-        MAX_IRLS = 5
-        BASE_SIGMA = 5.0  # baseline std dev (m) at zenith
+        for iteration in range(self.MAX_ITERATIONS):
+            model = self._build_measurement_model(observations, x_curr, float(epoch_obs.gps_time), iteration)
+            h_mat = model["H"]
+            residual_vec = model["v"]
+            variance_vec = model["var"]
 
-        n_sat = len(observations)
-        if n_sat < self.MIN_SATELLITES:
-            return None
-
-        # Precompute satellite data arrays
-        sat_pos_arr = np.vstack([obs['sat_pos'] for obs in observations])
-        pr_raw_arr = np.array([obs['raw_pseudorange'] for obs in observations])
-        sat_clk_corr_arr = np.array([obs['sat_clock_correction_m'] for obs in observations])
-        # Force float dtype to avoid object arrays (which trigger ambiguous-boolean
-        # errors and ufunc loops that expect a "radians" method on each element).
-        # ensure numeric values; None -> 0.0 to avoid float(None) errors
-        el_arr = np.array([
-            float(obs['elevation']) if obs.get('elevation') is not None else 0.0
-            for obs in observations
-        ], dtype=float)
-        az_arr = np.array([
-            float(obs['azimuth']) if obs.get('azimuth') is not None else 0.0
-            for obs in observations
-        ], dtype=float)
-
-        # initial per-observation variance (elevation-based)
-        sin_el = np.sin(np.radians(el_arr))
-        sin_el[sin_el <= 1e-6] = 1e-6
-        var_obs = (BASE_SIGMA ** 2) / (sin_el ** 2)
-        W_diag = 1.0 / var_obs  # inverse variance
-
-        for irls in range(MAX_IRLS):
-            # ================================================================
-            # Recompute tropospheric corrections for current position estimate
-            # ================================================================
-            pr_meas_arr = np.zeros(n_sat)
-            try:
-                # Get current receiver position in LLA
-                pos_lla = ecef2lla(pos_curr)
-                rec_lat = math.radians(pos_lla[0])
-                rec_lon = math.radians(pos_lla[1])
-                rec_h = pos_lla[2]
-                rec_lla = (rec_lat, rec_lon, rec_h)
-                
-                # Recalculate pseudoranges with updated tropospheric delay
-                for i in range(n_sat):
-                    # Apply tropospheric correction based on configured model
-                    tropo_delay = self._calculate_tropospheric_delay(
-                        rec_lla, 
-                        (math.radians(az_arr[i]), math.radians(el_arr[i]))
-                    )
-                    pr_meas_arr[i] = pr_raw_arr[i] - sat_clk_corr_arr[i] - tropo_delay
-            except Exception as e:
-                self.logger.debug(f"Tropospheric correction in iteration failed: {e}")
-                # Fallback: use pseudoranges from observations (already have basic corrections)
-                pr_meas_arr = np.array([obs['pseudorange'] for obs in observations])
-            
-            # build design matrix A and observation vector b for current estimate
-            A = np.zeros((n_sat, NX))
-            b = np.zeros(n_sat)
-            for i in range(n_sat):
-                dr = sat_pos_arr[i] - pos_curr
-                rho = np.linalg.norm(dr)
-                if rho > 0:
-                    A[i, :3] = -dr / rho
-
-                # GPS clock bias term (always present at index 3)
-                A[i, 3] = 1.0
-
-                # system-specific offset terms
-                sys_char = observations[i]['sat_key'][0]
-                if sys_char in SYS_OFFSET_INDICES:
-                    idx = SYS_OFFSET_INDICES[sys_char]
-                    # make sure idx < NX
-                    if idx < NX:
-                        A[i, idx] = 1.0
-                        b[i] = pr_meas_arr[i] - (rho + x_curr[3] + x_curr[idx])
-                    else:
-                        # unknown system, fall back to GPS bias only
-                        b[i] = pr_meas_arr[i] - (rho + x_curr[3])
-                else:
-                    # treat as GPS
-                    b[i] = pr_meas_arr[i] - (rho + x_curr[3])
-
-            # apply sqrt weights and solve via least squares (more stable than normal eq)
-            w_sqrt = np.sqrt(W_diag)
-            Aw = A * w_sqrt[:, np.newaxis]
-            bw = b * w_sqrt
-            try:
-                # delta = least squares solution of Aw * delta = bw
-                delta_x, *_ = np.linalg.lstsq(Aw, bw, rcond=None)
-            except Exception as e:
-                self.logger.error(f"Least squares failed: {e}")
+            if model["measurement_H"].shape[0] < self.MIN_SATELLITES or h_mat.shape[0] < nx:
                 return None
 
-            pos_curr = pos_curr + delta_x[:3]
-            x_curr = x_curr + delta_x
+            sigma = np.sqrt(np.maximum(variance_vec, 1e-6))
+            weighted_h = h_mat / sigma[:, np.newaxis]
+            weighted_v = residual_vec / sigma
 
-            # compute residuals with updated state (including any system offsets)
-            residuals = np.zeros(n_sat)
-            for i in range(n_sat):
-                rho = np.linalg.norm(sat_pos_arr[i] - pos_curr)
-                sys_char = observations[i]['sat_key'][0]
-                offset_term = 0.0
-                if sys_char in SYS_OFFSET_INDICES and SYS_OFFSET_INDICES[sys_char] < NX:
-                    offset_term = x_curr[SYS_OFFSET_INDICES[sys_char]]
-                residuals[i] = pr_meas_arr[i] - (rho + x_curr[3] + offset_term)
+            try:
+                dx, _, rank, _ = np.linalg.lstsq(weighted_h, weighted_v, rcond=None)
+            except np.linalg.LinAlgError:
+                return None
 
-            # compute weighted sum of squared residuals (SSR) for scale
-            dof = max(1, n_sat - NX)
-            SSR = np.sum((residuals ** 2) * W_diag)
-            variance_uow = SSR / dof
-            sigma = math.sqrt(variance_uow) if variance_uow > 0 else 1.0
+            if rank < nx:
+                return None
 
-            # Huber threshold
-            k = 1.345 * sigma
-            # robust weights: 1 for |r|<=k, else k/|r|
-            abs_r = np.abs(residuals)
-            huber_w = np.ones(n_sat)
-            mask = abs_r > k
-            huber_w[mask] = (k / abs_r[mask])
+            x_curr += dx
+            final_model = model
 
-            # update W_diag and check for convergence of delta
-            new_W_diag = (1.0 / var_obs) * huber_w
-            if np.linalg.norm(new_W_diag - W_diag) < 1e-6:
-                W_diag = new_W_diag
-                convergence = np.linalg.norm(delta_x[:3]) < self.CONVERGENCE_THRESHOLD
+            if np.linalg.norm(dx[:3]) < self.CONVERGENCE_THRESHOLD and abs(dx[3]) < self.CONVERGENCE_THRESHOLD:
+                convergence = True
                 break
-            W_diag = new_W_diag
 
-        # final A matrix for covariance (same build as above)
-        A_final = np.zeros((n_sat, NX))
-        for i in range(n_sat):
-            dr = sat_pos_arr[i] - pos_curr
-            rho = np.linalg.norm(dr)
-            if rho > 0:
-                A_final[i, :3] = -dr / rho
-            A_final[i, 3] = 1.0
-            sys_char = observations[i]['sat_key'][0]
-            if sys_char in SYS_OFFSET_INDICES and SYS_OFFSET_INDICES[sys_char] < NX:
-                A_final[i, SYS_OFFSET_INDICES[sys_char]] = 1.0
+        if final_model is None:
+            return None
 
-        # compute final residuals incorporating offsets
-        residuals_final = np.zeros(n_sat)
-        for i in range(n_sat):
-            rho = np.linalg.norm(sat_pos_arr[i] - pos_curr)
-            sys_char = observations[i]['sat_key'][0]
-            offset_term = 0.0
-            if sys_char in SYS_OFFSET_INDICES and SYS_OFFSET_INDICES[sys_char] < NX:
-                offset_term = x_curr[SYS_OFFSET_INDICES[sys_char]]
-            residuals_final[i] = pr_meas_arr[i] - (rho + x_curr[3] + offset_term)
+        final_model = self._build_measurement_model(observations, x_curr, float(epoch_obs.gps_time), self.MAX_ITERATIONS)
+        h_mat = final_model["H"]
+        residual_vec = final_model["v"]
+        variance_vec = final_model["var"]
+        measurement_h = final_model["measurement_H"]
+        measurement_residuals = final_model["measurement_v"]
 
-        SSR_final = np.sum((residuals_final ** 2) * W_diag)
-        variance_uow = SSR_final / max(1, n_sat - NX)
+        if measurement_h.shape[0] < self.MIN_SATELLITES:
+            return None
 
-        # covariance matrix: var_uow * inv(A^T W A)
-        W_mat = np.diag(W_diag)
-        AtWA_final = A_final.T @ W_mat @ A_final
-        # regularize to avoid singular
-        AtWA_final += 1e-12 * np.eye(NX)
+        sigma = np.sqrt(np.maximum(variance_vec, 1e-6))
+        weighted_h = h_mat / sigma[:, np.newaxis]
+        weighted_v = residual_vec / sigma
+        dof = max(1, weighted_h.shape[0] - nx)
+        variance_uow = float(np.dot(weighted_v, weighted_v) / dof)
+
         try:
-            Q = np.linalg.inv(AtWA_final)  # geometry/information matrix inverse
-            cov_matrix = variance_uow * Q
+            information_matrix = weighted_h.T @ weighted_h
+            cov_matrix = variance_uow * np.linalg.inv(information_matrix + 1e-12 * np.eye(nx))
         except np.linalg.LinAlgError:
-            self.logger.warning("Covariance inversion failed")
-            Q = None
             cov_matrix = None
 
-        # compute standard deviations in ECEF from covariance
-        if cov_matrix is not None and cov_matrix.shape[0] >= 4:
-            std_clock = math.sqrt(max(cov_matrix[3, 3], 0.0))
-        else:
-            std_clock = 0.0
+        lat_rad, lon_rad, height_m = ecef2lla(x_curr[:3])
 
-        # Compute DOP values
-        try:
-            gdop, pdop, hdop, vdop, tdop = self._compute_dop(pos_curr, observations, cov_matrix, variance_uow)
-        except Exception:
-            gdop = pdop = hdop = vdop = tdop = 0.0
-        
-        # Convert ECEF to LLA (returns lat_rad, lon_rad, h)
-        lla = ecef2lla(pos_curr)
-        
-        # Compute positional standard deviation (horizontal RMS)
-        if cov_matrix is not None and cov_matrix.shape[0] >= 3:
-            std_x = math.sqrt(max(cov_matrix[0, 0], 0.0))
-            std_y = math.sqrt(max(cov_matrix[1, 1], 0.0))
-            std_z = math.sqrt(max(cov_matrix[2, 2], 0.0))
-            std_pos = math.sqrt(std_x**2 + std_y**2 + std_z**2)  # 3D position std
+        std_clock = math.sqrt(max(cov_matrix[3, 3], 0.0)) if cov_matrix is not None else float("inf")
+        if cov_matrix is not None:
+            sin_lat = math.sin(lat_rad)
+            cos_lat = math.cos(lat_rad)
+            sin_lon = math.sin(lon_rad)
+            cos_lon = math.cos(lon_rad)
+            rot = np.array(
+                [
+                    [-sin_lon, cos_lon, 0.0],
+                    [-sin_lat * cos_lon, -sin_lat * sin_lon, cos_lat],
+                    [cos_lat * cos_lon, cos_lat * sin_lon, sin_lat],
+                ],
+                dtype=float,
+            )
+            cov_enu = rot @ cov_matrix[:3, :3] @ rot.T
+            std_east = math.sqrt(max(cov_enu[0, 0], 0.0))
+            std_north = math.sqrt(max(cov_enu[1, 1], 0.0))
+            std_up = math.sqrt(max(cov_enu[2, 2], 0.0))
         else:
-            std_pos = float('inf')
-        
-        # Determine solution status based on convergence and std dev thresholds
-        if len(observations) < self.MIN_SATELLITES:
-            solution_status = 'No Fix'
-        elif convergence and std_pos <= self.fixed_std_pos:
-            solution_status = 'Fixed'
-        elif std_pos <= self.uncertain_std_pos:
-            solution_status = 'Uncertain'
-        else:
-            solution_status = 'No Fix'
-        
-        # Extract LLA values (lla is already in radians)
-        lat_rad = lla[0]
-        lon_rad = lla[1]
-        
-        # Rotation matrix ECEF->ENU
-        sl = math.sin(lat_rad)
-        cl = math.cos(lat_rad)
-        slon = math.sin(lon_rad)
-        clon = math.cos(lon_rad)
-        
-        R = np.array([
-            [-slon, clon, 0],
-            [-sl*clon, -sl*slon, cl],
-            [cl*clon, cl*slon, sl]
-        ])
-        
-        cov_enu = R @ cov_matrix[:3, :3] @ R.T if cov_matrix is not None else np.zeros((3, 3))
-        std_north = math.sqrt(max(cov_enu[0, 0], 0)) if cov_matrix is not None else 0.0
-        std_east = math.sqrt(max(cov_enu[1, 1], 0)) if cov_matrix is not None else 0.0
-        std_up = math.sqrt(max(cov_enu[2, 2], 0)) if cov_matrix is not None else 0.0
-        
+            std_north = float("inf")
+            std_east = float("inf")
+            std_up = float("inf")
+
+        gdop, pdop, hdop, vdop, tdop = self._compute_dop(x_curr[:3], measurement_h[:, :4])
+        std_pos_3d = math.sqrt(std_north ** 2 + std_east ** 2 + std_up ** 2)
+
+        solution_status = "No Fix"
+        if convergence and gdop > 0.0 and gdop <= MAX_GDOP and pdop > 0.0 and pdop <= self.max_pdop:
+            if std_pos_3d <= self.fixed_std_pos:
+                solution_status = "Fixed"
+            elif std_pos_3d <= self.uncertain_std_pos:
+                solution_status = "Uncertain"
+
+        epoch_time = getattr(epoch_obs, "utc_datetime", None) or datetime.now(timezone.utc)
         return PositioningResult(
-            timestamp=gps_time,
-            epoch_time=datetime.utcnow(),
-            position_ecef=pos_curr.tolist(),
-            clock_bias=x_curr[3],
-            clock_bias_seconds=x_curr[3] / self.CLIGHT,
-            time_offsets={
-                sys: x_curr[idx] / self.CLIGHT
-                for sys, idx in SYS_OFFSET_INDICES.items()
-                if idx < NX
-            },
-            num_satellites=len(observations),
-            residuals=residuals_final,
+            timestamp=float(epoch_obs.gps_time),
+            epoch_time=epoch_time,
+            position_ecef=x_curr[:3].tolist(),
+            clock_bias=float(x_curr[3]),
+            clock_bias_seconds=float(x_curr[3] / self.CLIGHT),
+            num_satellites=int(measurement_h.shape[0]),
+            residuals=measurement_residuals.tolist(),
             variance=variance_uow,
             std_dev_north=std_north,
             std_dev_east=std_east,
@@ -1308,68 +913,43 @@ class SPPPositioner:
             tdop=tdop,
             latitude=math.degrees(lat_rad),
             longitude=math.degrees(lon_rad),
-            height=lla[2],
+            height=height_m,
             convergence=convergence,
             solution_status=solution_status,
+            time_offsets={
+                system: float(x_curr[index] / self.CLIGHT)
+                for system, index in SYS_OFFSET_INDICES.items()
+                if index < nx
+            },
         )
-    
-    def _compute_dop(self, position: np.ndarray, observations: List[Dict], cov_matrix: np.ndarray, variance_uow: float) -> Tuple:
-        """
-        Compute DOP (Dilution of Precision) values.
-        
-        Returns:
-            (GDOP, PDOP, HDOP, VDOP, TDOP)
-        """
-        if cov_matrix is None:
+
+    def _compute_dop(self, position: np.ndarray, geometry_matrix: np.ndarray) -> Tuple[float, float, float, float, float]:
+        if geometry_matrix is None or geometry_matrix.shape[0] < 4:
             return 0.0, 0.0, 0.0, 0.0, 0.0
-        
+
         try:
-            # Convert covariance matrix to geometry matrix inverse (unitless Q = Cov / variance_uow)
-            if variance_uow > 0:
-                Q = cov_matrix / variance_uow
-            else:
-                Q = cov_matrix * 0.0
-
-            # GDOP = sqrt(trace(Q))
-            trace = np.trace(Q)
-            gdop = math.sqrt(trace) if trace > 0 else 0.0
-
-            # PDOP = sqrt(Qxx + Qyy + Qzz)
-            pdop_var = Q[0, 0] + Q[1, 1] + Q[2, 2]
-            pdop = math.sqrt(pdop_var) if pdop_var > 0 else 0.0
-            
-            # Convert to ENU for HDOP/VDOP
-            # ecef2lla returns (lat_rad, lon_rad, height)
-            lat, lon, _ = ecef2lla(position)
-            
-            sl = math.sin(lat)
-            cl = math.cos(lat)
-            slon = math.sin(lon)
-            clon = math.cos(lon)
-            
-            R = np.array([
-                [-slon, clon, 0],
-                [-sl*clon, -sl*slon, cl],
-                [cl*clon, cl*slon, sl]
-            ])
-            
-            cov_enu = R @ Q[:3, :3] @ R.T
-
-            # HDOP = sqrt(Qee + Qnn)
-            hdop_var = cov_enu[1, 1] + cov_enu[0, 0]
-            hdop = math.sqrt(hdop_var) if hdop_var > 0 else 0.0
-
-            # VDOP = sqrt(Quu)
-            vdop_var = cov_enu[2, 2]
-            vdop = math.sqrt(vdop_var) if vdop_var > 0 else 0.0
-
-            # TDOP = sqrt(Qtt)
-            tdop_var = Q[3, 3]
-            tdop = math.sqrt(tdop_var) if tdop_var > 0 else 0.0
-            
-            return gdop, pdop, hdop, vdop, tdop
-        except Exception as e:
-            self.logger.warning(f"DOP computation failed: {str(e)}")
+            q_dop = np.linalg.inv(geometry_matrix.T @ geometry_matrix)
+        except np.linalg.LinAlgError:
             return 0.0, 0.0, 0.0, 0.0, 0.0
 
+        gdop = math.sqrt(max(np.trace(q_dop), 0.0))
+        pdop = math.sqrt(max(q_dop[0, 0] + q_dop[1, 1] + q_dop[2, 2], 0.0))
+        tdop = math.sqrt(max(q_dop[3, 3], 0.0))
 
+        lat_rad, lon_rad, _ = ecef2lla(position)
+        sin_lat = math.sin(lat_rad)
+        cos_lat = math.cos(lat_rad)
+        sin_lon = math.sin(lon_rad)
+        cos_lon = math.cos(lon_rad)
+        rot = np.array(
+            [
+                [-sin_lon, cos_lon, 0.0],
+                [-sin_lat * cos_lon, -sin_lat * sin_lon, cos_lat],
+                [cos_lat * cos_lon, cos_lat * sin_lon, sin_lat],
+            ],
+            dtype=float,
+        )
+        q_enu = rot @ q_dop[:3, :3] @ rot.T
+        hdop = math.sqrt(max(q_enu[0, 0] + q_enu[1, 1], 0.0))
+        vdop = math.sqrt(max(q_enu[2, 2], 0.0))
+        return gdop, pdop, hdop, vdop, tdop

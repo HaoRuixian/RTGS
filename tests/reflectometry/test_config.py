@@ -2,13 +2,13 @@
 
 from pathlib import Path
 
+from core.config_paths import default_ir_config_path
 from core.reflectometry.config import load_config
 
 
 def test_example_config_loads():
-    config = load_config("core/reflectometry/mock_reflectometry.yaml")
-    assert config.station.station_id == "DEMO"
-    assert config.input.source_type == "mock"
+    config = load_config(default_ir_config_path())
+    assert config.station.station_id
     assert "csv" in config.output.file_format
     assert len(config.geometry.reflection_zones) == 1
     assert config.geometry.reflection_zones[0].azimuth_windows == [[150.0, 330.0]]
@@ -31,7 +31,7 @@ station:
     longitude_deg: 121.0
     height_m: 10.0
 input:
-  source_type: mock
+  constellations: []
 processing:
   min_elevation_deg: 6.0
   max_elevation_deg: 18.0

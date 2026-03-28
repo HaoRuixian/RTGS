@@ -1,4 +1,4 @@
-﻿"""Offline and windowed batch processing pipeline."""
+"""Observation-provider processing pipeline for GNSS-IR runs."""
 
 from __future__ import annotations
 
@@ -10,14 +10,7 @@ import pandas as pd
 
 from core.reflectometry.outputs import ResultSerializer
 from core.reflectometry.outputs import OutputManager
-from core.reflectometry.providers import (
-    CacheObservationProvider,
-    CsvObservationProvider,
-    JsonObservationProvider,
-    MockObservationProvider,
-    ObservationProvider,
-    ParquetObservationProvider,
-)
+from core.reflectometry.providers import ObservationProvider
 from core.reflectometry.config import ReflectorConfig
 from core.reflectometry.models import ArcDirection
 from core.reflectometry.models import ArcSolution, ObservationRequest, ProcessingRunResult, SnrSeries
@@ -32,7 +25,7 @@ from core.reflectometry.services.spectrum import SpectrumAnalyzer
 
 
 class BatchProcessor:
-    """Configuration-driven GNSS-IR batch pipeline."""
+    """Observation-provider-driven GNSS-IR processing pipeline."""
 
     def __init__(
         self,
@@ -42,7 +35,9 @@ class BatchProcessor:
     ) -> None:
         self.config = config
         self.logger = logger or configure_logging(config.logging)
-        self.provider = provider or self._build_provider()
+        if provider is None:
+            raise ValueError("BatchProcessor now requires an explicit ObservationProvider.")
+        self.provider = provider
         self.geometry_resolver = GeometryResolver(config.geometry, processing_config=config.processing)
         self.arc_builder = ArcBuilder(config.processing, config.ir, config.input.sampling_interval)
         self.preprocessor = SnrPreprocessor(config.processing, config.ir)
@@ -58,7 +53,7 @@ class BatchProcessor:
         """Run the end-to-end batch pipeline and return structured results."""
         request = self._build_request()
         observations = self.provider.fetch_observations(request)
-        self.logger.info("Loaded %d observations from %s", len(observations), self.config.input.source_type)
+        self.logger.info("Loaded %d observations from %s", len(observations), type(self.provider).__name__)
 
         observations = self.geometry_resolver.filter_and_resolve(observations)
         arcs = self.arc_builder.build_arcs(observations)
@@ -82,8 +77,8 @@ class BatchProcessor:
         products = self.product_converter.convert(arc_solutions)
         aggregates = self.product_converter.aggregate(
             products,
-            window_start=request.start_time or (arc_solutions[0].timestamp_start if arc_solutions else datetime.utcnow()),
-            window_end=request.end_time or (arc_solutions[-1].timestamp_end if arc_solutions else datetime.utcnow()),
+            window_start=arc_solutions[0].timestamp_start if arc_solutions else datetime.utcnow(),
+            window_end=arc_solutions[-1].timestamp_end if arc_solutions else datetime.utcnow(),
         )
         result = ProcessingRunResult(
             station_id=self.config.station.station_id,
@@ -152,45 +147,8 @@ class BatchProcessor:
         """Return the most recent preprocessed arc series keyed by arc id."""
         return dict(self._series_by_arc)
 
-    def _build_provider(self) -> ObservationProvider:
-        source_type = self.config.input.source_type
-        station_id = self.config.station.station_id
-        receiver_position = self.config.station.receiver_position
-        source_path = self.config.input.source_path
-
-        if source_type == "csv":
-            return CsvObservationProvider(source_path or "", station_id, receiver_position)
-        if source_type == "json":
-            return JsonObservationProvider(source_path or "", station_id, receiver_position)
-        if source_type == "parquet":
-            return ParquetObservationProvider(source_path or "", station_id, receiver_position)
-        if source_type == "mock":
-            return MockObservationProvider(
-                station_id=station_id,
-                receiver_position=receiver_position,
-                source_options=self.config.input.source_options,
-            )
-        if source_type == "cache":
-            raise ValueError(
-                "input.source_type=cache requires injecting a CacheObservationProvider "
-                "or another ObservationProvider instance from the host application."
-            )
-        raise ValueError(f"Unsupported provider source_type: {source_type}")
-
     def _build_request(self) -> ObservationRequest:
-        start_time = (
-            datetime.fromisoformat(self.config.input.time_window.start)
-            if self.config.input.time_window.start
-            else None
-        )
-        end_time = (
-            datetime.fromisoformat(self.config.input.time_window.end)
-            if self.config.input.time_window.end
-            else None
-        )
         return ObservationRequest(
-            start_time=start_time,
-            end_time=end_time,
             constellations=tuple(self.config.input.constellations),
             signals=tuple(self.config.input.signals),
             exclude_constellations=tuple(self.config.input.exclude_constellations),
@@ -216,5 +174,3 @@ class BatchProcessor:
             success=False,
             fail_reason=reason,
         )
-
-

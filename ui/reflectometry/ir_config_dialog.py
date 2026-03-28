@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 import yaml
 
+from core.config_paths import IR_CONFIG_DIR, ensure_config_directories, resolve_ir_config_path
 from core.reflectometry.config import DEFAULT_CONFIG_YAML, config_to_dict, load_config
 from core.reflectometry.services.products import classify_environment
 from ui.responsive import adaptive_window_size
@@ -54,7 +55,7 @@ class ReflectometryConfigDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Reflectometry IR Config")
         adaptive_window_size(self, target=(960, 680), minimum=(700, 520))
-        self.project_root = Path(__file__).resolve().parents[2]
+        ensure_config_directories()
         self.config_path = self._resolve_path(config_path)
         self.current_path = self.config_path
         self.current_yaml_text = initial_yaml_text if initial_yaml_text is not None else self._read_initial_yaml(self.current_path)
@@ -230,7 +231,7 @@ class ReflectometryConfigDialog(QDialog):
         form.addRow("Enabled Systems", _wrap_layout(systems_row))
         form.addRow("Exclude Signals", self.exclude_signals_edit)
         info_label = QLabel(
-            "Advanced offline source selection and time-window settings are kept in the YAML tab."
+            "System, signal, and reflection-zone controls here are applied directly to the realtime stream."
         )
         info_label.setObjectName("cardDescription")
         info_label.setWordWrap(True)
@@ -270,8 +271,8 @@ class ReflectometryConfigDialog(QDialog):
             _connect_change(widget, self._sync_form_to_yaml)
         self.smoothing_method_combo.currentTextChanged.connect(self._update_processing_control_state)
 
-        form.addRow("Live Arc Window (min)", self.live_arc_window_spin)
-        form.addRow("Live Analysis Interval (s)", self.live_interval_spin)
+        form.addRow("Realtime Arc Window (min)", self.live_arc_window_spin)
+        form.addRow("Realtime Analysis Interval (s)", self.live_interval_spin)
         form.addRow("Min Arc Duration (s)", self.min_arc_seconds_spin)
         form.addRow("Detrend Order", self.detrend_order_spin)
         form.addRow("Smoothing", self.smoothing_method_combo)
@@ -654,7 +655,6 @@ class ReflectometryConfigDialog(QDialog):
         data.setdefault("station", {})
         data.setdefault("station", {}).setdefault("receiver_position", {})
         data.setdefault("input", {})
-        data.setdefault("input", {}).setdefault("time_window", {})
         data.setdefault("processing", {})
         data.setdefault("ir", {})
         data.setdefault("qc", {})
@@ -672,6 +672,8 @@ class ReflectometryConfigDialog(QDialog):
         station["reflector_surface_type"] = self.surface_combo.currentText().strip()
 
         input_data = data["input"]
+        for legacy_key in ("source_type", "source_path", "cache_endpoint", "time_window", "source_options"):
+            input_data.pop(legacy_key, None)
         input_data["constellations"] = []
         input_data["signals"] = []
         enabled_systems = [sys_char for sys_char, checkbox in self.system_checks.items() if checkbox.isChecked()]
@@ -807,7 +809,13 @@ class ReflectometryConfigDialog(QDialog):
             pass
 
     def import_yaml(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Import IR YAML", str(self.current_path.parent), "YAML Files (*.yaml *.yml)")
+        ensure_config_directories()
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import IR YAML",
+            str(self.current_path.parent if self.current_path.parent.exists() else IR_CONFIG_DIR),
+            "YAML Files (*.yaml *.yml)",
+        )
         if not path:
             return
         self.current_path = self._resolve_path(path)
@@ -816,6 +824,7 @@ class ReflectometryConfigDialog(QDialog):
         self._load_config_to_form()
 
     def export_yaml(self) -> None:
+        ensure_config_directories()
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Export IR YAML",
@@ -852,10 +861,7 @@ class ReflectometryConfigDialog(QDialog):
         return DEFAULT_CONFIG_YAML
 
     def _resolve_path(self, path: str | Path) -> Path:
-        candidate = Path(path)
-        if candidate.is_absolute():
-            return candidate
-        return self.project_root / candidate
+        return resolve_ir_config_path(path)
 
     def _set_yaml_editor_text(self, text: str) -> None:
         if self.yaml_editor.toPlainText() == text:

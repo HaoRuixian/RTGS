@@ -1,33 +1,25 @@
-﻿"""Arc builder tests."""
+"""Arc builder tests."""
 
-from core.reflectometry.providers import MockObservationProvider
 from core.reflectometry.config import ReflectionZoneConfig
-from core.reflectometry.models import ObservationRequest
 from core.reflectometry.services.arc_builder import ArcBuilder
 from core.reflectometry.services.geometry import GeometryResolver, matches_reflection_zones
+from tests.reflectometry.helpers import generate_synthetic_observations
 
 
 def test_arc_builder_creates_rising_and_setting_arcs(example_config):
     example_config.input.constellations = ["G"]
     example_config.input.signals = ["1C"]
-    example_config.input.source_options = {
-        "arc_count": 4,
-        "samples_per_arc": 50,
-        "reflector_height_m": 4.0,
-        "noise_std_db": 0.2,
-    }
-
-    provider = MockObservationProvider(
+    observations = generate_synthetic_observations(
         station_id=example_config.station.station_id,
         receiver_position=example_config.station.receiver_position,
-        source_options=example_config.input.source_options,
-    )
-    request = ObservationRequest(
+        constellations=("G",),
+        signals=("1C",),
+        arc_count=4,
+        samples_per_arc=50,
+        reflector_height_m=4.0,
+        noise_std_db=0.2,
         sampling_interval_seconds=example_config.input.sampling_interval,
-        constellations=tuple(example_config.input.constellations),
-        signals=tuple(example_config.input.signals),
     )
-    observations = provider.fetch_observations(request)
     observations = GeometryResolver(example_config.geometry).filter_and_resolve(observations)
     arcs = ArcBuilder(
         example_config.processing,
@@ -61,5 +53,3 @@ def test_multiple_reflection_zones_are_treated_as_union(example_config):
     assert matches_reflection_zones(235.0, 15.0, example_config.geometry, example_config.processing) is True
     assert matches_reflection_zones(190.0, 8.0, example_config.geometry, example_config.processing) is False
     assert matches_reflection_zones(150.0, 16.0, example_config.geometry, example_config.processing) is False
-
-

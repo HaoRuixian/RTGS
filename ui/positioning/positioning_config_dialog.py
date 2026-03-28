@@ -26,7 +26,7 @@ class PositioningConfigDialog(QDialog):
         self.cutoff_spin.setRange(0.0, 90.0)
         self.cutoff_spin.setValue(float(self.settings.get("cutoff_elevation_deg", 10.0)))
         self.cutoff_spin.setSingleStep(0.5)
-        self.cutoff_spin.setSuffix(" 掳")
+        self.cutoff_spin.setSuffix(" deg")
         basic_layout.addRow("Cutoff Elevation Angle:", self.cutoff_spin)
 
         self.min_sats_spin = QSpinBox()
@@ -81,17 +81,23 @@ class PositioningConfigDialog(QDialog):
         self.gnss_glonass = QCheckBox("GLONASS (R)")
         self.gnss_galileo = QCheckBox("Galileo (E)")
         self.gnss_beidou = QCheckBox("BeiDou (C)")
+        self.gnss_qzss = QCheckBox("QZSS (J)")
+        self.gnss_irnss = QCheckBox("NavIC (I)")
 
-        gnss_systems = self.settings.get("gnss_systems", ["G", "R", "E", "C"])
+        gnss_systems = self.settings.get("gnss_systems", ["G", "R", "E", "C", "J", "I"])
         self.gnss_gps.setChecked("G" in gnss_systems)
         self.gnss_glonass.setChecked("R" in gnss_systems)
         self.gnss_galileo.setChecked("E" in gnss_systems)
         self.gnss_beidou.setChecked("C" in gnss_systems)
+        self.gnss_qzss.setChecked("J" in gnss_systems)
+        self.gnss_irnss.setChecked("I" in gnss_systems)
 
         gnss_layout.addRow("Available Systems:", self.gnss_gps)
         gnss_layout.addRow("", self.gnss_glonass)
         gnss_layout.addRow("", self.gnss_galileo)
         gnss_layout.addRow("", self.gnss_beidou)
+        gnss_layout.addRow("", self.gnss_qzss)
+        gnss_layout.addRow("", self.gnss_irnss)
 
         gnss_group.setLayout(gnss_layout)
         layout.addWidget(gnss_group)
@@ -103,7 +109,10 @@ class PositioningConfigDialog(QDialog):
         self.weight_mode.addItem("Elevation Angle", "elevation")
         self.weight_mode.addItem("Signal-to-Noise Ratio (SNR)", "snr")
         self.weight_mode.addItem("Equal Weight", "equal")
-        self.weight_mode.setCurrentText(self.settings.get("weight_mode", "elevation"))
+        weight_mode = self.settings.get("weight_mode", "elevation")
+        weight_index = self.weight_mode.findData(weight_mode)
+        if weight_index >= 0:
+            self.weight_mode.setCurrentIndex(weight_index)
         weight_layout.addRow("Weighting Method:", self.weight_mode)
 
         weight_group.setLayout(weight_layout)
@@ -175,7 +184,7 @@ class PositioningConfigDialog(QDialog):
             "max_pdop": 10.0,
             "ionosphere_option": "IFLC",
             "troposphere_model": "Sastamoinen",
-            "gnss_systems": ["G", "R", "E", "C"],
+            "gnss_systems": ["G", "R", "E", "C", "J", "I"],
             "weight_mode": "elevation",
             "use_smoothing": False,
             "smoothing_window": 10,
@@ -193,6 +202,8 @@ class PositioningConfigDialog(QDialog):
         self.gnss_glonass.setChecked("R" in defaults["gnss_systems"])
         self.gnss_galileo.setChecked("E" in defaults["gnss_systems"])
         self.gnss_beidou.setChecked("C" in defaults["gnss_systems"])
+        self.gnss_qzss.setChecked("J" in defaults["gnss_systems"])
+        self.gnss_irnss.setChecked("I" in defaults["gnss_systems"])
         self.weight_mode.setCurrentData(defaults["weight_mode"])
         self.use_smoothing.setChecked(defaults["use_smoothing"])
         self.smoothing_window.setValue(defaults["smoothing_window"])
@@ -215,6 +226,10 @@ class PositioningConfigDialog(QDialog):
             gnss_systems.append("E")
         if self.gnss_beidou.isChecked():
             gnss_systems.append("C")
+        if self.gnss_qzss.isChecked():
+            gnss_systems.append("J")
+        if self.gnss_irnss.isChecked():
+            gnss_systems.append("I")
 
         return {
             "cutoff_elevation_deg": float(self.cutoff_spin.value()),

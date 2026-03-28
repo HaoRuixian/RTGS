@@ -1,4 +1,4 @@
-﻿"""Stateful near-real-time processor for live reflectometry."""
+"""Stateful near-real-time processor for realtime reflectometry."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from core.reflectometry.services.batch import BatchProcessor
 
 
 class RealtimeProcessor:
-    """Maintain open arcs, finalize closed arcs, and emit live preview solutions."""
+    """Maintain open arcs, finalize closed arcs, and emit realtime preview solutions."""
 
     def __init__(
         self,
@@ -50,7 +50,7 @@ class RealtimeProcessor:
         window_seconds: float | None = None,
         include_open_preview: bool = True,
     ) -> ProcessingRunResult:
-        """Ingest new observations and return a current live snapshot."""
+        """Ingest new observations and return a current realtime snapshot."""
         ordered = sorted(observations, key=lambda item: item.timestamp)
         completed_records: list[ObservationRecord] = []
         latest_timestamp = reference_time
@@ -91,7 +91,7 @@ class RealtimeProcessor:
         window_seconds: float | None = None,
         include_open_preview: bool = True,
     ) -> ProcessingRunResult:
-        """Compose a live snapshot from finalized arcs plus optional open-arc previews."""
+        """Compose a realtime snapshot from finalized arcs plus optional open-arc previews."""
         snapshot_time = reference_time or datetime.utcnow()
         self._trim_open_buffers(snapshot_time, window_seconds)
         stale_records = self._collect_stale_buffers(snapshot_time)
@@ -166,7 +166,7 @@ class RealtimeProcessor:
         return self.snapshot()
 
     def reset(self) -> None:
-        """Clear live state and cached results."""
+        """Clear realtime state and cached results."""
         self.buffers.clear()
         self.clear_finalized_history()
         self._series_by_arc.clear()
@@ -217,7 +217,7 @@ class RealtimeProcessor:
         return stale_records
 
     def _trim_open_buffers(self, reference_time: datetime, window_seconds: float | None) -> None:
-        """Discard open-arc samples older than the live analysis window."""
+        """Discard open-arc samples older than the realtime analysis window."""
         if window_seconds is None or window_seconds <= 0:
             return
         cutoff = reference_time - timedelta(seconds=window_seconds)
@@ -268,11 +268,7 @@ class RealtimeProcessor:
             return empty, {}, {}
 
         original_provider = self.batch_processor.provider
-        original_start = self.batch_processor.config.input.time_window.start
-        original_end = self.batch_processor.config.input.time_window.end
         self.batch_processor.provider = ListObservationProvider(sorted(observations, key=lambda item: item.timestamp))
-        self.batch_processor.config.input.time_window.start = observations[0].timestamp.isoformat()
-        self.batch_processor.config.input.time_window.end = observations[-1].timestamp.isoformat()
         try:
             result = self.batch_processor.run()
             series = self.batch_processor.get_intermediate_series()
@@ -280,8 +276,6 @@ class RealtimeProcessor:
             return result, series, spectra
         finally:
             self.batch_processor.provider = original_provider
-            self.batch_processor.config.input.time_window.start = original_start
-            self.batch_processor.config.input.time_window.end = original_end
 
     def _should_split(self, previous: ObservationRecord, current: ObservationRecord) -> bool:
         time_gap = (current.timestamp - previous.timestamp).total_seconds()
@@ -314,4 +308,3 @@ class RealtimeProcessor:
             float(window_seconds or 0.0),
         )
         return duration_seconds >= required_duration
-

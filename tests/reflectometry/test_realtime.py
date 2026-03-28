@@ -1,38 +1,29 @@
-﻿"""Realtime reflectometry processor tests."""
+"""Realtime reflectometry processor tests."""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from core.reflectometry.providers import MockObservationProvider
-from core.reflectometry.models import ObservationRecord, ObservationRequest, ReceiverPosition
+from core.reflectometry.models import ObservationRecord, ReceiverPosition
 from core.reflectometry.services.realtime import RealtimeProcessor
+from tests.reflectometry.helpers import generate_synthetic_observations
 
 
 def test_realtime_processor_emits_windowed_results(example_config):
     example_config.input.constellations = ["G"]
     example_config.input.signals = ["1C"]
-    example_config.input.source_options = {
-        "arc_count": 3,
-        "samples_per_arc": 55,
-        "reflector_height_m": 4.25,
-        "noise_std_db": 0.2,
-        "amplitude_db": 2.7,
-    }
-
-    provider = MockObservationProvider(
+    observations = generate_synthetic_observations(
         station_id=example_config.station.station_id,
         receiver_position=example_config.station.receiver_position,
-        source_options=example_config.input.source_options,
-    )
-    request = ObservationRequest(
-        start_time=None,
-        end_time=None,
-        constellations=tuple(example_config.input.constellations),
-        signals=tuple(example_config.input.signals),
+        constellations=("G",),
+        signals=("1C",),
+        arc_count=3,
+        samples_per_arc=55,
+        reflector_height_m=4.25,
+        noise_std_db=0.2,
+        amplitude_db=2.7,
         sampling_interval_seconds=example_config.input.sampling_interval,
     )
-    observations = provider.fetch_observations(request)
     processor = RealtimeProcessor(example_config)
 
     chunk_size = 30
@@ -85,7 +76,7 @@ def test_realtime_processor_discards_open_arc_samples_outside_window(example_con
     assert kept_timestamps == [observations[1].timestamp, observations[2].timestamp, observations[3].timestamp]
 
 
-def test_realtime_preview_waits_for_live_window(example_config):
+def test_realtime_preview_waits_for_realtime_window(example_config):
     example_config.qc.min_arc_duration = 60.0
     processor = RealtimeProcessor(example_config)
     receiver = ReceiverPosition(latitude_deg=30.0, longitude_deg=114.0, height_m=20.0)
@@ -107,4 +98,3 @@ def test_realtime_preview_waits_for_live_window(example_config):
 
     assert processor._buffer_is_ready_for_preview(buffer, window_seconds=120.0)
     assert not processor._buffer_is_ready_for_preview(buffer, window_seconds=300.0)
-

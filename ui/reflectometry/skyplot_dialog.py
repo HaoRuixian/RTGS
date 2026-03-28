@@ -42,7 +42,7 @@ class ReflectometrySkyplotCanvas(FigureCanvas):
         self.ax.set_rlim(0, 90)
         self.ax.set_yticks([0, 15, 30, 45, 60, 75, 90])
         self.ax.set_yticklabels(
-            ["90掳", "75掳", "60掳", "45掳", "30掳", "15掳", "0掳"],
+            ["90 deg", "75 deg", "60 deg", "45 deg", "30 deg", "15 deg", "0 deg"],
             fontsize=8,
             color=self.theme["muted"],
         )

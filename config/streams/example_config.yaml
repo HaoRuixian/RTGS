@@ -3,7 +3,7 @@
 
 # Observation stream settings
 obs_settings:
-  source_type: NTRIP Server          # "NTRIP Server" or "Serial Port"
+  source_type: NTRIP Server          # "NTRIP Server", "Serial Port", or "RINEX File"
   # NTRIP settings
   host: ntrip.example.com
   port: '2101'
@@ -18,6 +18,9 @@ obs_settings:
   parity: None                        # None, Even, Odd, Mark, Space
   flowctrl: None                      # None, RTS/CTS, XOn/XOff
   enabled: true
+  file_path: ''                       # Used when source_type is "RINEX File"
+  replay_speed: 1.0                   # RINEX replay speed multiplier
+  file_type: Auto Detect              # Reserved for file mode
 
 # Ephemeris stream settings (optional)
 eph_settings:
@@ -34,6 +37,9 @@ eph_settings:
   parity: None
   flowctrl: None
   enabled: false                      # Set to true to enable ephemeris stream
+  file_path: ''                       # RINEX NAV or SP3 file when source_type is "File"
+  replay_speed: 1.0
+  file_type: Auto Detect              # Auto Detect, Broadcast RINEX, Precise SP3
 
 # Receiver approximate position (ECEF coordinates in meters)
 # Set to null to omit approximate position

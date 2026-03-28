@@ -12,23 +12,11 @@ station:
   environment_type: coastal
   reflector_surface_type: sea
 input:
-  source_type: mock
-  source_path: null
-  cache_endpoint: null
   constellations: []
   signals: []
   exclude_constellations: []
   exclude_signals: []
-  time_window:
-    start: '2026-03-19T00:00:00'
-    end: '2026-03-19T04:00:00'
   sampling_interval: 30.0
-  source_options:
-    arc_count: 6
-    samples_per_arc: 60
-    reflector_height_m: 4.2
-    noise_std_db: 0.45
-    amplitude_db: 2.6
 processing:
   min_elevation_deg: 5.0
   max_elevation_deg: 25.0

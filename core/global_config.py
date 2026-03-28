@@ -18,7 +18,7 @@ class ConnectionSettings:
     """
     Data class representing connection settings for either NTRIP or serial connection.
     """
-    source_type: str = "NTRIP Server"  # "NTRIP Server" or "Serial Port"
+    source_type: str = "NTRIP Server"  # "NTRIP Server", "Serial Port", or file mode
     
     # NTRIP settings
     host: str = ""
@@ -37,6 +37,12 @@ class ConnectionSettings:
     
     # Common settings
     enabled: bool = True
+    
+    # File replay settings
+    file_path: str = ""
+    replay_speed: float = 1.0
+    file_type: str = "Auto Detect"
+    final_results_only: bool = False
 
 
 @dataclass
@@ -173,6 +179,10 @@ class GlobalConfig:
                 'parity': self.obs_settings.parity,
                 'flowctrl': self.obs_settings.flowctrl,
                 'enabled': self.obs_settings.enabled,
+                'file_path': self.obs_settings.file_path,
+                'replay_speed': self.obs_settings.replay_speed,
+                'file_type': self.obs_settings.file_type,
+                'final_results_only': self.obs_settings.final_results_only,
             },
             'eph_settings': {
                 'source_type': self.eph_settings.source_type,
@@ -188,6 +198,10 @@ class GlobalConfig:
                 'parity': self.eph_settings.parity,
                 'flowctrl': self.eph_settings.flowctrl,
                 'enabled': self.eph_settings.enabled,
+                'file_path': self.eph_settings.file_path,
+                'replay_speed': self.eph_settings.replay_speed,
+                'file_type': self.eph_settings.file_type,
+                'final_results_only': self.eph_settings.final_results_only,
             },
             'approx_rec_pos': self.approx_rec_pos,
             'target_systems': self.target_systems,

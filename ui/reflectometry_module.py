@@ -6,7 +6,6 @@ from collections import deque
 from copy import deepcopy
 from datetime import datetime
 import logging
-from pathlib import Path
 import threading
 import time
 
@@ -45,11 +44,16 @@ from PySide6.QtWidgets import (
 )
 
 from core.geo_utils import ecef2lla
+from core.config_paths import default_ir_config_path, ensure_config_directories
 from core.global_config import get_global_config
+from core.replay_ui_policy import (
+    THROTTLED_GUI_INTERVAL_SECONDS,
+    choose_gui_refresh_interval,
+    estimate_effective_replay_period_seconds,
+)
 from core.ring_buffer import RingBuffer
 from core.rtcm_handler import get_shared_handler
 from core.reflectometry import (
-    BatchProcessor,
     ObservationRecord,
     ProcessingRunResult,
     ProductType,
@@ -61,11 +65,12 @@ from core.reflectometry import (
 )
 from core.reflectometry.config import minimum_required_arc_samples
 from core.reflectometry.models import SnrSeries
+from core.reflectometry.rinex_batch import build_observation_records_from_epoch
 from core.reflectometry.services.geometry import matches_reflection_zones
 from core.reflectometry.models import ArcSolution, ProductResult
 from ui.ConfigDialog import ConfigDialog
 from ui.gnss_colordef import get_sys_color
-from ui.monitoring.workers import DataProcessingThread, IOThread, StreamSignals
+from ui.monitoring.workers import DataProcessingThread, IOThread, RinexReplayThread, StreamSignals
 from ui.reflectometry.arc_status import (
     ArcSelectorOption,
     ArcStatusRow,
@@ -81,6 +86,7 @@ from ui.reflectometry.arc_status import (
 )
 from ui.reflectometry.ir_config_dialog import ReflectometryConfigDialog
 from ui.reflectometry.skyplot_dialog import ReflectometrySkyplotDialog
+from ui.reflectometry.workers import ReflectometryBatchSignals, RinexBatchAnalysisThread
 from ui.style import get_app_stylesheet
 from ui.responsive import adaptive_window_size, window_ui_scale
 
@@ -122,16 +128,18 @@ class ReflectometryModule(QMainWindow):
         self.latest_epoch_data = None
         self.latest_result: ProcessingRunResult | None = None
         self.latest_series_by_arc = {}
-        self.last_processor: BatchProcessor | RealtimeProcessor | None = None
+        self.last_processor: RealtimeProcessor | None = None
         self.selected_arc_id: str | None = None
         self.last_analysis_timestamp: datetime | None = None
         self.analysis_running = False
         self.analysis_loop_enabled = False
         self.analysis_button_state = "idle"
+        self.batch_analysis_thread: RinexBatchAnalysisThread | None = None
         self.skyplot_dialog: ReflectometrySkyplotDialog | None = None
         self.live_realtime_processor: RealtimeProcessor | None = None
         self.pending_live_records: list[ObservationRecord] = []
         self.live_product_history: dict[tuple[str, str, str], ProductResult] = {}
+        self.processed_observation_count = 0
         self.selected_product_type: str | None = None
         self.product_system_checks: dict[str, QCheckBox] = {}
         self.tracking_context_by_arc: dict[str, TrackingArcContext] = {}
@@ -140,7 +148,8 @@ class ReflectometryModule(QMainWindow):
         self._compact_scale = None
 
         self.last_gui_update_time = 0.0
-        self.gui_update_interval = 0.4
+        self.base_gui_update_interval = 0.4
+        self.gui_update_interval = self.base_gui_update_interval
         self.pending_update = False
         self.last_runtime_config_signature: tuple[object, ...] | None = None
 
@@ -153,6 +162,11 @@ class ReflectometryModule(QMainWindow):
         self.signals.log_signal.connect(self.append_log)
         self.signals.epoch_signal.connect(self.process_gui_epoch)
         self.signals.status_signal.connect(self.update_status)
+        self.batch_signals = ReflectometryBatchSignals()
+        self.batch_signals.log_signal.connect(self.append_log)
+        self.batch_signals.completed.connect(self._on_batch_analysis_completed)
+        self.batch_signals.failed.connect(self._on_batch_analysis_failed)
+        self.batch_signals.cancelled.connect(self._on_batch_analysis_cancelled)
 
         self.io_threads: list[IOThread] = []
         self.processing_threads: list[DataProcessingThread] = []
@@ -160,8 +174,9 @@ class ReflectometryModule(QMainWindow):
         self.handler = get_shared_handler()
 
         self.settings = self._default_stream_settings()
-        self.project_root = Path(__file__).resolve().parent.parent
-        self.ir_config_path = self.project_root / "core" / "reflectometry" / "default_ir.yaml"
+        self._apply_gui_refresh_policy(announce=False)
+        ensure_config_directories()
+        self.ir_config_path = default_ir_config_path()
         if not self.ir_config_path.exists():
             dump_example_config(self.ir_config_path)
         self.ir_config = load_config(self.ir_config_path)
@@ -170,6 +185,7 @@ class ReflectometryModule(QMainWindow):
         self.active_systems = self._configured_active_systems()
 
         self.setup_ui()
+        self._sync_mode_combo_label()
         self._apply_runtime_controls_from_config()
         self._sync_runtime_ir_defaults(force=True)
         self._refresh_config_view()
@@ -188,7 +204,7 @@ class ReflectometryModule(QMainWindow):
         self.analysis_timer.start(1000)
 
         self.signals.log_signal.emit("=== GNSS Reflectometry module ready ===")
-        self.signals.log_signal.emit("Edit or import an IR config, or connect a live OBS/EPH stream to start analysis.")
+        self.signals.log_signal.emit("Edit or import an IR config, then connect a realtime OBS/EPH stream to start analysis.")
 
     def setup_ui(self) -> None:
         """Build the reflectometry UI with the same visual language as Monitoring."""
@@ -233,7 +249,8 @@ class ReflectometryModule(QMainWindow):
         self.lbl_mode = QLabel("Mode:")
         top_bar.addWidget(self.lbl_mode)
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["Live Stream", "Config Source"])
+        self.mode_combo.addItem("Realtime Stream")
+        self.mode_combo.setEnabled(False)
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         top_bar.addWidget(self.mode_combo)
 
@@ -242,7 +259,7 @@ class ReflectometryModule(QMainWindow):
         self.window_spin = QSpinBox()
         self.window_spin.setRange(5, 240)
         self.window_spin.setValue(20)
-        self.window_spin.setToolTip("Maximum arc duration retained for live IR analysis. Older samples are discarded.")
+        self.window_spin.setToolTip("Maximum arc duration retained for realtime IR analysis. Older samples are discarded.")
         self.window_spin.valueChanged.connect(self._on_window_changed)
         top_bar.addWidget(self.window_spin)
 
@@ -709,6 +726,10 @@ class ReflectometryModule(QMainWindow):
                 "stopbits": getattr(obs_cfg, "stopbits", 1),
                 "parity": getattr(obs_cfg, "parity", "None"),
                 "flowctrl": getattr(obs_cfg, "flowctrl", "None"),
+                "file_path": getattr(obs_cfg, "file_path", ""),
+                "replay_speed": getattr(obs_cfg, "replay_speed", 1.0),
+                "file_type": getattr(obs_cfg, "file_type", "Auto Detect"),
+                "final_results_only": getattr(obs_cfg, "final_results_only", False),
             },
             "EPH_ENABLED": bool(getattr(eph_cfg, "enabled", False)),
             "EPH": {
@@ -723,6 +744,10 @@ class ReflectometryModule(QMainWindow):
                 "stopbits": getattr(eph_cfg, "stopbits", 1),
                 "parity": getattr(eph_cfg, "parity", "None"),
                 "flowctrl": getattr(eph_cfg, "flowctrl", "None"),
+                "file_path": getattr(eph_cfg, "file_path", ""),
+                "replay_speed": getattr(eph_cfg, "replay_speed", 1.0),
+                "file_type": getattr(eph_cfg, "file_type", "Auto Detect"),
+                "final_results_only": getattr(eph_cfg, "final_results_only", False),
             },
         }
 
@@ -733,10 +758,7 @@ class ReflectometryModule(QMainWindow):
         return separator
 
     def _on_mode_changed(self) -> None:
-        live_mode = self.mode_combo.currentText() == "Live Stream"
-        if not live_mode and self.analysis_loop_enabled:
-            self._set_analysis_loop_enabled(False, announce=True)
-        elif not self.analysis_running:
+        if not self.analysis_running:
             self._set_run_button_state("active" if self.analysis_loop_enabled else "idle")
         self._update_summary_cards()
 
@@ -777,8 +799,39 @@ class ReflectometryModule(QMainWindow):
             finally:
                 checkbox.blockSignals(False)
 
+    def _use_fast_file_analysis(self) -> bool:
+        obs_settings = self.settings.get("OBS", {}) or {}
+        return (
+            str(obs_settings.get("source", "")) == "RINEX File"
+            and bool(obs_settings.get("final_results_only", False))
+        )
+
+    def _mode_label(self) -> str:
+        if self._use_fast_file_analysis():
+            return "File Batch (Products Only)"
+        return "Realtime Stream"
+
+    def _sync_mode_combo_label(self) -> None:
+        if not hasattr(self, "mode_combo"):
+            return
+        label = self._mode_label()
+        self.mode_combo.blockSignals(True)
+        try:
+            self.mode_combo.clear()
+            self.mode_combo.addItem(label)
+            self.mode_combo.setCurrentIndex(0)
+        finally:
+            self.mode_combo.blockSignals(False)
+
+    @staticmethod
+    def _ecef_position_from_global_config() -> list[float] | None:
+        approx_rec_pos = getattr(get_global_config(), "approx_rec_pos", None)
+        if approx_rec_pos and len(approx_rec_pos) == 3 and any(abs(float(item)) > 1e-6 for item in approx_rec_pos):
+            return [float(approx_rec_pos[0]), float(approx_rec_pos[1]), float(approx_rec_pos[2])]
+        return None
+
     def toggle_analysis(self) -> None:
-        if self.mode_combo.currentText() != "Live Stream":
+        if self._use_fast_file_analysis():
             self.run_ir_analysis()
             return
         self._set_analysis_loop_enabled(
@@ -794,16 +847,15 @@ class ReflectometryModule(QMainWindow):
 
         if announce:
             self.append_log(
-                "Automatic reflectometry analysis started."
+                "Automatic realtime reflectometry analysis started."
                 if enabled
-                else "Automatic reflectometry analysis stopped."
+                else "Automatic realtime reflectometry analysis stopped."
             )
 
         if not enabled and not self.analysis_running:
             self._set_run_button_state("idle")
         elif enabled:
-            if self.mode_combo.currentText() == "Live Stream":
-                self._reset_realtime_processing(reseed_from_buffer=True)
+            self._reset_realtime_processing(reseed_from_buffer=True)
             self._set_run_button_state("active")
             if trigger_now:
                 QTimer.singleShot(0, self._maybe_run_auto_analysis)
@@ -840,36 +892,18 @@ class ReflectometryModule(QMainWindow):
     def _epoch_to_observation_records(self, epoch_data, timestamp: datetime) -> list[ObservationRecord]:
         """Convert one EpochObservation into canonical reflectometry observations."""
         receiver_position = self._current_receiver_position(self.ir_config.station.receiver_position)
-        observations: list[ObservationRecord] = []
-        satellites = getattr(epoch_data, "satellites", {}) or {}
-        for sat_key, sat in satellites.items():
-            constellation = getattr(sat, "sys_id", sat_key[0])
-            azimuth = getattr(sat, "azimuth", getattr(sat, "az", None))
-            elevation = getattr(sat, "elevation", getattr(sat, "el", None))
-            signals = getattr(sat, "signals", {}) or {}
-            for signal_id, signal in signals.items():
-                snr = float(getattr(signal, "snr", 0.0) or 0.0)
-                if snr <= 0:
-                    continue
-                observations.append(
-                    ObservationRecord(
-                        station_id=self.ir_config.station.station_id,
-                        timestamp=timestamp,
-                        constellation=str(constellation),
-                        satellite=str(sat_key),
-                        signal=str(signal_id),
-                        snr=snr,
-                        azimuth_deg=float(azimuth) if azimuth is not None else None,
-                        elevation_deg=float(elevation) if elevation is not None else None,
-                        pseudorange_m=_optional_float(getattr(signal, "pseudorange", None)),
-                        carrier_phase_cycles=_optional_float(getattr(signal, "phase", None)),
-                        receiver_position=receiver_position,
-                    )
-                )
+        observations = build_observation_records_from_epoch(
+            epoch_data,
+            station_id=self.ir_config.station.station_id,
+            timestamp=timestamp,
+            receiver_position=receiver_position,
+            active_systems=set(self.active_systems),
+            input_config=self.ir_config.input,
+        )
         return [record for record in observations if self._record_matches_buffer_filters(record)]
 
     def _trim_observation_buffer(self, reference_time: datetime | None = None) -> None:
-        """Keep only the most recent live observations inside the analysis window."""
+        """Keep only the most recent realtime observations inside the analysis window."""
         if not self.observation_buffer:
             self.pending_live_records.clear()
             return
@@ -890,13 +924,13 @@ class ReflectometryModule(QMainWindow):
         ]
 
     def _live_window_seconds(self) -> float:
-        """Return the live analysis window length in seconds."""
+        """Return the realtime analysis window length in seconds."""
         return float(self.window_spin.value()) * 60.0
 
     def refresh_live_widgets(self) -> None:
-        """Refresh live observation widgets and summary cards."""
+        """Refresh realtime observation widgets and summary cards."""
         self._populate_live_observation_table()
-        if self.mode_combo.currentText() == "Live Stream" and (self.analysis_loop_enabled or self.analysis_running or self.live_realtime_processor):
+        if self.analysis_loop_enabled or self.analysis_running or self.live_realtime_processor:
             self._populate_arc_table()
         self._refresh_skyplot_dialog()
         self._update_summary_cards()
@@ -1029,34 +1063,34 @@ class ReflectometryModule(QMainWindow):
 
     def _set_run_button_state(self, state: str, tooltip: str | None = None) -> None:
         self.analysis_button_state = state
-        live_mode = self.mode_combo.currentText() == "Live Stream" if hasattr(self, "mode_combo") else True
+        mode_prefix = "File Analysis" if self._use_fast_file_analysis() else "Realtime Analysis"
         button_states = {
             "idle": {
-                "text": "Start Auto Analysis" if live_mode else "Run Analysis",
+                "text": f"Start {mode_prefix}",
                 "icon": QStyle.StandardPixmap.SP_MediaPlay,
                 "color": "#2563EB",
                 "border": "#1D4ED8",
             },
             "active": {
-                "text": "Stop Auto Analysis",
+                "text": "Stop Realtime Analysis",
                 "icon": QStyle.StandardPixmap.SP_MediaStop,
                 "color": "#0F766E",
                 "border": "#115E59",
             },
             "running": {
-                "text": "Running Analysis...",
-                "icon": QStyle.StandardPixmap.SP_MediaStop if live_mode else QStyle.StandardPixmap.SP_MediaPlay,
+                "text": f"Running {mode_prefix}...",
+                "icon": QStyle.StandardPixmap.SP_MediaStop,
                 "color": "#EA580C",
                 "border": "#C2410C",
             },
             "success": {
-                "text": "Analysis Complete",
+                "text": f"{mode_prefix} Complete",
                 "icon": QStyle.StandardPixmap.SP_DialogApplyButton,
                 "color": "#15803D",
                 "border": "#166534",
             },
             "failed": {
-                "text": "Analysis Failed",
+                "text": f"{mode_prefix} Failed",
                 "icon": QStyle.StandardPixmap.SP_MessageBoxWarning,
                 "color": "#B42318",
                 "border": "#912018",
@@ -1069,7 +1103,7 @@ class ReflectometryModule(QMainWindow):
         icon = self._standard_icon(current["icon"])
         if icon is not None:
             self.btn_run.setIcon(icon)
-        self.btn_run.setEnabled(state != "running" or live_mode)
+        self.btn_run.setEnabled(state != "running")
         self.btn_run.setToolTip(tooltip or current["text"])
         self.btn_run.setStyleSheet(
             f"""
@@ -1153,10 +1187,10 @@ class ReflectometryModule(QMainWindow):
             self.pending_update = False
 
     def _maybe_run_auto_analysis(self) -> None:
-        """Trigger auto analysis for live mode when enabled and enough time has passed."""
-        if not self.analysis_loop_enabled:
+        """Trigger realtime analysis when enabled and enough time has passed."""
+        if self._use_fast_file_analysis():
             return
-        if self.mode_combo.currentText() != "Live Stream":
+        if not self.analysis_loop_enabled:
             return
         if self.analysis_running:
             return
@@ -1170,25 +1204,27 @@ class ReflectometryModule(QMainWindow):
             self.run_ir_analysis()
 
     def run_ir_analysis(self) -> None:
-        """Run the reflectometry pipeline against live or config-driven data."""
+        """Run the reflectometry pipeline against the realtime observation buffer."""
         if self.analysis_running:
+            return
+        if self._use_fast_file_analysis():
+            self._start_file_batch_analysis()
             return
 
         self.analysis_running = True
-        self._set_run_button_state("running" if self.mode_combo.currentText() != "Live Stream" else "active")
+        self._set_run_button_state("running")
         QApplication.processEvents()
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            self.append_log("Running GNSS-IR analysis...")
+            self.append_log("Running GNSS-IR realtime analysis...")
             processor, result = self._run_processing_cycle()
             if processor is None or result is None:
                 self._set_run_button_state("active" if self.analysis_loop_enabled else "idle")
                 return
             self.latest_result = result
-            if self.mode_combo.currentText() == "Live Stream":
-                self._merge_live_product_history(result)
+            self._merge_live_product_history(result)
             self.latest_series_by_arc = processor.get_intermediate_series()
-            if self.mode_combo.currentText() == "Live Stream" and isinstance(processor, RealtimeProcessor):
+            if isinstance(processor, RealtimeProcessor):
                 processor.clear_finalized_history()
             self.last_processor = processor
             self.last_analysis_timestamp = datetime.utcnow()
@@ -1200,7 +1236,7 @@ class ReflectometryModule(QMainWindow):
             self._update_summary_cards()
             success_count = sum(item.success for item in result.arc_solutions)
             self.append_log(
-                f"IR analysis finished: {len(result.arc_solutions)} arcs, "
+                f"Realtime IR analysis finished: {len(result.arc_solutions)} arcs, "
                 f"{success_count} successful, {len(result.products)} products."
             )
             next_state = "active" if self.analysis_loop_enabled else "success"
@@ -1212,31 +1248,106 @@ class ReflectometryModule(QMainWindow):
                 ),
             )
         except Exception as exc:
-            self.append_log(f"IR analysis failed: {exc}")
+            self.append_log(f"Realtime IR analysis failed: {exc}")
             if self.analysis_loop_enabled:
                 self._set_analysis_loop_enabled(False, announce=False)
             self._set_run_button_state("failed", tooltip=str(exc))
-            QMessageBox.warning(self, "Reflectometry", f"IR analysis failed:\n{exc}")
+            QMessageBox.warning(self, "Reflectometry", f"Realtime IR analysis failed:\n{exc}")
         finally:
             QApplication.restoreOverrideCursor()
             self.analysis_running = False
 
-    def _run_processing_cycle(self) -> tuple[BatchProcessor | RealtimeProcessor | None, ProcessingRunResult | None]:
-        if self.mode_combo.currentText() == "Live Stream":
-            return self._run_live_realtime_analysis()
-        processor = self._build_processor_for_current_mode()
-        if processor is None:
-            return None, None
-        return processor, processor.run()
+    def _start_file_batch_analysis(self) -> None:
+        if self.batch_analysis_thread is not None and self.batch_analysis_thread.is_alive():
+            return
 
-    def _build_processor_for_current_mode(self) -> BatchProcessor | None:
-        self._sync_runtime_ir_defaults()
+        obs_settings = self.settings.get("OBS", {}) or {}
+        eph_settings = self.settings.get("EPH", {}) or {}
+        if not obs_settings.get("file_path"):
+            QMessageBox.information(self, "Reflectometry", "Please select a RINEX observation file first.")
+            return
+        if self.settings.get("EPH_ENABLED") and not eph_settings.get("file_path"):
+            QMessageBox.information(self, "Reflectometry", "Please select an ephemeris file first.")
+            return
+
+        self._sync_runtime_ir_defaults(force=True)
         runtime_config = deepcopy(self.ir_config)
         runtime_config.logging.console = False
         runtime_config.logging.rotating_file = False
         runtime_config.station.receiver_position = self._current_receiver_position(runtime_config.station.receiver_position)
+        station_id = self._current_stream_station_id() or runtime_config.station.station_id
+        runtime_config.station.station_id = station_id
 
-        return BatchProcessor(runtime_config, logger=self.analysis_logger)
+        self.analysis_running = True
+        self.analysis_loop_enabled = False
+        self._set_run_button_state("running", tooltip="Running batch file analysis...")
+        self.append_log("Running GNSS-IR file batch analysis (products-only mode)...")
+
+        self.batch_analysis_thread = RinexBatchAnalysisThread(
+            obs_settings=obs_settings,
+            eph_settings=eph_settings,
+            ir_config=runtime_config,
+            active_systems=set(self.active_systems),
+            target_systems=sorted(self.active_systems),
+            receiver_position=runtime_config.station.receiver_position,
+            receiver_position_ecef=self._ecef_position_from_global_config(),
+            station_id=station_id,
+            handler=self.handler,
+            logger=self.analysis_logger,
+            signals=self.batch_signals,
+        )
+        self.batch_analysis_thread.start()
+
+    @Slot(object)
+    def _on_batch_analysis_completed(self, payload: object) -> None:
+        self.batch_analysis_thread = None
+        self.analysis_running = False
+        result = payload["result"]
+        processor = payload["processor"]
+        self.latest_result = result
+        self.latest_series_by_arc = dict(payload.get("series_by_arc", {}))
+        self.last_processor = processor
+        self.last_analysis_timestamp = datetime.utcnow()
+        self.processed_observation_count = int(payload.get("observation_count", 0) or 0)
+        self._clear_live_product_history()
+        self._reset_realtime_processing(reseed_from_buffer=False)
+        self._populate_arc_table()
+        self._populate_product_selector()
+        self._populate_product_table()
+        self._refresh_product_plot()
+        self._ensure_selected_arc_visible()
+        self._update_summary_cards()
+        success_count = sum(item.success for item in result.arc_solutions)
+        self.append_log(
+            f"File batch analysis finished: {len(result.arc_solutions)} arcs, "
+            f"{success_count} successful, {len(result.products)} products, "
+            f"{self.processed_observation_count} observations processed."
+        )
+        self._set_run_button_state(
+            "success",
+            tooltip=(
+                f"Last run: {len(result.arc_solutions)} arcs, "
+                f"{success_count} successful, {len(result.products)} products."
+            ),
+        )
+
+    @Slot(str)
+    def _on_batch_analysis_failed(self, message: str) -> None:
+        self.batch_analysis_thread = None
+        self.analysis_running = False
+        self.append_log(f"File batch analysis failed: {message}")
+        self._set_run_button_state("failed", tooltip=message)
+        QMessageBox.warning(self, "Reflectometry", f"File batch analysis failed:\n{message}")
+
+    @Slot()
+    def _on_batch_analysis_cancelled(self) -> None:
+        self.batch_analysis_thread = None
+        self.analysis_running = False
+        self.append_log("File batch analysis cancelled.")
+        self._set_run_button_state("idle")
+
+    def _run_processing_cycle(self) -> tuple[RealtimeProcessor | None, ProcessingRunResult | None]:
+        return self._run_live_realtime_analysis()
 
     def _run_live_realtime_analysis(self) -> tuple[RealtimeProcessor | None, ProcessingRunResult | None]:
         observations = [item for item in self.observation_buffer if item.constellation in self.active_systems]
@@ -1244,7 +1355,7 @@ class ReflectometryModule(QMainWindow):
             QMessageBox.information(
                 self,
                 "Reflectometry",
-                "No live observations are available yet. Connect OBS/EPH streams first, or switch to Config Source.",
+                "No realtime observations are available yet. Connect OBS/EPH streams first.",
             )
             return None, None
 
@@ -1254,7 +1365,6 @@ class ReflectometryModule(QMainWindow):
             runtime_config.logging.console = False
             runtime_config.logging.rotating_file = False
             runtime_config.station.receiver_position = self._current_receiver_position(runtime_config.station.receiver_position)
-            runtime_config.input.source_type = "cache"
             self.live_realtime_processor = RealtimeProcessor(runtime_config, logger=self.analysis_logger)
             if not self.pending_live_records:
                 self.pending_live_records = list(observations)
@@ -1386,11 +1496,8 @@ class ReflectometryModule(QMainWindow):
 
         entries: list[tuple[ArcSolution, str]] = []
         for solution in self.latest_result.arc_solutions:
-            if self.mode_combo.currentText() == "Live Stream":
-                browse_key = match_live_arc_id_for_solution(solution, self.tracking_context_by_arc)
-                if browse_key is None:
-                    continue
-            else:
+            browse_key = match_live_arc_id_for_solution(solution, self.tracking_context_by_arc)
+            if browse_key is None:
                 browse_key = self._browse_key_for_solution(solution)
             self.solution_arc_key_map[browse_key] = solution.arc_id
             entries.append((solution, browse_key))
@@ -1398,7 +1505,7 @@ class ReflectometryModule(QMainWindow):
 
     def _collect_tracking_contexts(self) -> dict[str, TrackingArcContext]:
         contexts: dict[str, TrackingArcContext] = {}
-        if self.mode_combo.currentText() != "Live Stream" or self.live_realtime_processor is None:
+        if self.live_realtime_processor is None:
             self.current_live_arc_ids = set()
             return contexts
         required_duration = self._tracking_preview_threshold_seconds()
@@ -1428,7 +1535,7 @@ class ReflectometryModule(QMainWindow):
         return duration_seconds >= self._tracking_preview_threshold_seconds()
 
     def _tracking_preview_threshold_seconds(self) -> float:
-        """Return the live duration threshold before an open arc enters realtime solving."""
+        """Return the realtime duration threshold before an open arc enters solving."""
         return max(float(self.ir_config.qc.min_arc_duration), self._live_window_seconds())
 
     def _populate_product_table(self) -> None:
@@ -1687,9 +1794,9 @@ class ReflectometryModule(QMainWindow):
         self.arc_detail_labels["time_span"].setText(
             f"{solution.timestamp_start.strftime('%H:%M:%S')} - {solution.timestamp_end.strftime('%H:%M:%S')}"
         )
-        self.arc_detail_labels["start_el"].setText(f"{start_el_text}掳" if start_el_text != "--" else "--")
-        self.arc_detail_labels["end_el"].setText(f"{end_el_text}掳" if end_el_text != "--" else "--")
-        self.arc_detail_labels["mean_az"].setText(f"{mean_az_text}掳" if mean_az_text != "--" else "--")
+        self.arc_detail_labels["start_el"].setText(f"{start_el_text} deg" if start_el_text != "--" else "--")
+        self.arc_detail_labels["end_el"].setText(f"{end_el_text} deg" if end_el_text != "--" else "--")
+        self.arc_detail_labels["mean_az"].setText(f"{mean_az_text} deg" if mean_az_text != "--" else "--")
         self.arc_detail_labels["height"].setText(
             f"{solution.reflector_height_m:.3f} m" if solution.reflector_height_m is not None else "--"
         )
@@ -1996,8 +2103,7 @@ class ReflectometryModule(QMainWindow):
         self.live_product_history = {}
 
     def _products_for_display(self) -> list[ProductResult]:
-        live_mode = self.mode_combo.currentText() == "Live Stream" if hasattr(self, "mode_combo") else False
-        if live_mode and self.live_product_history:
+        if self.live_product_history:
             return list(self.live_product_history.values())
         if self.latest_result is None:
             return []
@@ -2042,8 +2148,7 @@ class ReflectometryModule(QMainWindow):
         self.config_info_label.setText(
             f"Current IR YAML: {self.ir_config_path}\n"
             f"Station: {self.ir_config.station.station_id} | "
-            f"Input source: {self.ir_config.input.source_type} | "
-            "Live stream defaults are applied in memory."
+            "Realtime stream defaults are applied in memory."
         )
         try:
             self.config_text.setPlainText(self._serialize_ir_config())
@@ -2053,11 +2158,14 @@ class ReflectometryModule(QMainWindow):
     def _update_summary_cards(self) -> None:
         tracked_satellites = len([key for key in self.merged_satellites if key[0] in self.active_systems])
         mountpoint_text = self._current_stream_station_id() or self.ir_config.station.station_id or "--"
+        buffered_samples = len(self.observation_buffer)
+        if self._use_fast_file_analysis() and self.processed_observation_count > 0:
+            buffered_samples = self.processed_observation_count
         self.mountpoint_label.setText(mountpoint_text)
         self.summary_labels["ir_config"].setText(self.ir_config_path.name)
         self.summary_labels["analysis_mode"].setText(self.mode_combo.currentText())
         self.summary_labels["tracked_satellites"].setText(str(tracked_satellites))
-        self.summary_labels["buffered_samples"].setText(str(len(self.observation_buffer)))
+        self.summary_labels["buffered_samples"].setText(str(buffered_samples))
         self.summary_labels["last_run"].setText(
             self.last_analysis_timestamp.strftime("%H:%M:%S") if self.last_analysis_timestamp else "--"
         )
@@ -2134,6 +2242,13 @@ class ReflectometryModule(QMainWindow):
         self._clear_live_product_history()
         self._reset_realtime_processing(reseed_from_buffer=True)
         self.refresh_live_widgets()
+        if self._use_fast_file_analysis():
+            self._populate_arc_table()
+            self._populate_product_selector()
+            self._populate_product_table()
+            self._refresh_product_plot()
+            self._ensure_selected_arc_visible()
+            self._update_summary_cards()
 
     def cleanup_stale_satellites(self) -> None:
         now = time.time()
@@ -2150,6 +2265,8 @@ class ReflectometryModule(QMainWindow):
         dialog = ConfigDialog(self, self.settings)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.settings = dialog.get_settings()
+            self._sync_mode_combo_label()
+            self._apply_gui_refresh_policy(announce=True)
             self._sync_runtime_ir_defaults(force=True)
             if getattr(dialog, "disconnect_requested", False):
                 self.disconnect_streams()
@@ -2161,6 +2278,14 @@ class ReflectometryModule(QMainWindow):
 
     def restart_streams(self, start_streams: bool = True) -> None:
         self.append_log("=== Restarting reflectometry streams ===" if start_streams else "=== Disconnecting streams ===")
+        self._apply_gui_refresh_policy(announce=False)
+        self._sync_mode_combo_label()
+
+        if self.batch_analysis_thread is not None:
+            self.batch_analysis_thread.signals = None
+            self.batch_analysis_thread.stop()
+            self.batch_analysis_thread.join(timeout=1.0)
+            self.batch_analysis_thread = None
 
         for thread in self.io_threads:
             thread.stop()
@@ -2184,8 +2309,10 @@ class ReflectometryModule(QMainWindow):
         self._reset_realtime_processing(reseed_from_buffer=False)
         self.latest_result = None
         self.latest_series_by_arc = {}
+        self.processed_observation_count = 0
         self.selected_arc_id = None
         self.analysis_loop_enabled = False
+        self.analysis_running = False
         self._set_run_button_state("idle")
         self._populate_arc_table()
         self._populate_product_table()
@@ -2200,29 +2327,61 @@ class ReflectometryModule(QMainWindow):
 
         self.handler = get_shared_handler()
 
+        if self._use_fast_file_analysis():
+            self.stream_status["OBS"] = True
+            self.eph_data_available = bool(
+                self.settings.get("EPH_ENABLED") and (self.settings.get("EPH", {}) or {}).get("file_path")
+            )
+            self._render_status_indicators()
+            self.append_log(
+                "Fast RINEX file analysis mode ready. Live replay is disabled; click Start Analysis to compute final products."
+            )
+            self.append_log(f"Active GNSS systems: {', '.join(sorted(self.active_systems))}")
+            return
+
         if self._is_stream_configured(self.settings["OBS"]):
-            obs_buffer = RingBuffer(maxsize=1000)
-            self.ring_buffers["OBS"] = obs_buffer
-            obs_thread = IOThread("OBS", self.settings["OBS"], obs_buffer, self.signals)
-            proc_thread = DataProcessingThread("OBS", obs_buffer, self.handler, self.signals)
-            obs_thread.start()
-            proc_thread.start()
-            self.io_threads.append(obs_thread)
-            self.processing_threads.append(proc_thread)
-            self.append_log("OBS stream threads started")
+            if self.settings["OBS"].get("source") == "RINEX File":
+                obs_thread = RinexReplayThread(
+                    "OBS",
+                    self.settings["OBS"],
+                    self.signals,
+                    handler=self.handler,
+                    eph_settings=self.settings.get("EPH", {}),
+                    target_systems=sorted(self.active_systems),
+                )
+                obs_thread.start()
+                self.io_threads.append(obs_thread)
+                self.append_log("OBS RINEX replay thread started")
+            else:
+                obs_buffer = RingBuffer(maxsize=1000)
+                self.ring_buffers["OBS"] = obs_buffer
+                obs_thread = IOThread("OBS", self.settings["OBS"], obs_buffer, self.signals)
+                proc_thread = DataProcessingThread("OBS", obs_buffer, self.handler, self.signals)
+                obs_thread.start()
+                proc_thread.start()
+                self.io_threads.append(obs_thread)
+                self.processing_threads.append(proc_thread)
+                self.append_log("OBS stream threads started")
         else:
             self.append_log("OBS stream not configured")
 
-        if self.settings.get("EPH_ENABLED") and self._is_stream_configured(self.settings["EPH"]):
-            eph_buffer = RingBuffer(maxsize=1000)
-            self.ring_buffers["EPH"] = eph_buffer
-            eph_thread = IOThread("EPH", self.settings["EPH"], eph_buffer, self.signals)
-            proc_thread = DataProcessingThread("EPH", eph_buffer, self.handler, self.signals)
-            eph_thread.start()
-            proc_thread.start()
-            self.io_threads.append(eph_thread)
-            self.processing_threads.append(proc_thread)
-            self.append_log("EPH stream threads started")
+        if (
+            self.settings.get("EPH_ENABLED")
+            and self.settings["OBS"].get("source") != "RINEX File"
+            and self._is_stream_configured(self.settings["EPH"])
+        ):
+            if self.settings["EPH"].get("source") == "File":
+                self.append_log("EPH file source is supported through RINEX observation replay mode")
+            else:
+                eph_buffer = RingBuffer(maxsize=1000)
+                self.ring_buffers["EPH"] = eph_buffer
+                eph_thread = IOThread("EPH", self.settings["EPH"], eph_buffer, self.signals)
+                proc_thread = DataProcessingThread("EPH", eph_buffer, self.handler, self.signals)
+                eph_thread.start()
+                proc_thread.start()
+                self.io_threads.append(eph_thread)
+                self.processing_threads.append(proc_thread)
+                self.append_log("EPH stream threads started")
         elif self.settings.get("EPH_ENABLED"):
             self.append_log("EPH stream enabled but not configured")
 
@@ -2232,6 +2391,8 @@ class ReflectometryModule(QMainWindow):
         source = settings.get("source", "NTRIP Server")
         if source == "Serial Port":
             return bool(settings.get("port"))
+        if source in {"RINEX File", "File"}:
+            return bool(settings.get("file_path"))
         return bool(settings.get("host"))
 
     @Slot(str)
@@ -2304,6 +2465,11 @@ class ReflectometryModule(QMainWindow):
     def closeEvent(self, event) -> None:  # noqa: N802
         if self.skyplot_dialog is not None:
             self.skyplot_dialog.close()
+        if self.batch_analysis_thread is not None:
+            self.batch_analysis_thread.signals = None
+            self.batch_analysis_thread.stop()
+            self.batch_analysis_thread.join(timeout=1.0)
+            self.batch_analysis_thread = None
         for thread in self.io_threads:
             thread.stop()
         for thread in self.processing_threads:
@@ -2317,6 +2483,37 @@ class ReflectometryModule(QMainWindow):
         if hasattr(self, "analysis_timer"):
             self.analysis_timer.stop()
         event.accept()
+
+    def _apply_gui_refresh_policy(self, announce: bool) -> None:
+        previous_interval = getattr(self, "gui_update_interval", self.base_gui_update_interval)
+        self.gui_update_interval = choose_gui_refresh_interval(
+            self.base_gui_update_interval,
+            self.settings.get("OBS", {}),
+        )
+
+        timer_interval_ms = 100 if self.gui_update_interval >= THROTTLED_GUI_INTERVAL_SECONDS else 80
+        if hasattr(self, "gui_update_timer"):
+            self.gui_update_timer.start(timer_interval_ms)
+
+        if not announce:
+            return
+
+        if abs(self.gui_update_interval - previous_interval) < 1e-9:
+            return
+
+        if self.gui_update_interval >= THROTTLED_GUI_INTERVAL_SECONDS:
+            effective_period = estimate_effective_replay_period_seconds(self.settings.get("OBS", {}))
+            if effective_period and effective_period > 0.0:
+                self.append_log(
+                    f"High-rate RINEX replay detected, GUI refresh capped at {self.gui_update_interval:.1f}s "
+                    f"(effective epoch period {effective_period:.3f}s)"
+                )
+            else:
+                self.append_log(
+                    f"High-rate RINEX replay detected, GUI refresh capped at {self.gui_update_interval:.1f}s"
+                )
+        else:
+            self.append_log(f"GUI refresh restored to {self.gui_update_interval:.1f}s cadence")
 
 
 def _optional_float(value) -> float | None:

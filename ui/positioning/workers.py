@@ -146,8 +146,9 @@ class PositioningThread(threading.Thread):
                             solution = self._process_epoch(self.pending_epoch)
                             if solution is not None:
                                 self.solution_count += 1
-                                self.last_position = solution
-                                self.position_track.add_solution(solution)
+                                if solution.status != SolutionStatus.NO_FIX:
+                                    self.last_position = solution
+                                    self.position_track.add_solution(solution)
                                 self.signals.solution_signal.emit(solution)
                         self.signals.log_signal.emit(f"[{self.name}] Buffer closed, stopping")
                         break
@@ -180,9 +181,10 @@ class PositioningThread(threading.Thread):
                         
                         if solution is not None:
                             self.solution_count += 1
-                            self.last_position = solution
-                            self.position_track.add_solution(solution)
-                            
+                            if solution.status != SolutionStatus.NO_FIX:
+                                self.last_position = solution
+                                self.position_track.add_solution(solution)
+
                             # Log first solution
                             if self.first_solution:
                                 self.signals.log_signal.emit(
@@ -240,8 +242,8 @@ class PositioningThread(threading.Thread):
                     # Use previous solution as initial guess
                     approx_pos = np.array(self.last_position.position_ecef, dtype=float)
                 else:
-                    # First epoch: let positioner compute initial approximation
-                    approx_pos = None
+                    # First epoch: use configured approximate position when available.
+                    approx_pos = np.array(self.approx_position, dtype=float) if self.approx_position is not None else None
                 
                 result = self.positioner.process_epoch(epoch_obs, approx_pos)
             else:
@@ -251,11 +253,10 @@ class PositioningThread(threading.Thread):
             if result is None:
                 return None
             
-            # Update approximate position for next epoch (now computed from actual solution)
-            # This becomes the initial guess for the next epoch
-            
             # Convert RTCMHandler's PositioningResult to our PositioningSolution
             solution = self._convert_result_to_solution(result, epoch_obs)
+            if solution.status != SolutionStatus.NO_FIX:
+                self.approx_position = np.array(result.position_ecef, dtype=float)
             
             # Timing
             solution.processing_time_ms = (time.time() - start_time) * 1000
@@ -271,13 +272,12 @@ class PositioningThread(threading.Thread):
     ) -> PositioningSolution:
         """Convert SPPPositioner's PositioningResult to PositioningSolution."""
         
-        # Determine solution status
-        if result.convergence and result.num_satellites >= self.min_satellites:
-            status = SolutionStatus.FIXED
-        elif result.num_satellites >= self.min_satellites:
-            status = SolutionStatus.UNCERTAIN
-        else:
-            status = SolutionStatus.NO_FIX
+        status_map = {
+            "Fixed": SolutionStatus.FIXED,
+            "Uncertain": SolutionStatus.UNCERTAIN,
+            "No Fix": SolutionStatus.NO_FIX,
+        }
+        status = status_map.get(result.solution_status, SolutionStatus.NO_FIX)
         
         # Count total signals
         num_signals = sum(

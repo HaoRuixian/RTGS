@@ -38,11 +38,16 @@ from matplotlib.figure import Figure
 import matplotlib.dates as mdates
 
 from ui.gnss_colordef import get_sys_color, get_signal_color
-from ui.monitoring.workers import IOThread, DataProcessingThread, StreamSignals, LoggingThread
+from ui.monitoring.workers import IOThread, DataProcessingThread, RinexReplayThread, StreamSignals, LoggingThread
 from ui.monitoring.log_settings import LogSettingsDialog
 from core.rtcm_handler import RTCMHandler
 from core.ring_buffer import RingBuffer
 from core.global_config import get_global_config
+from core.replay_ui_policy import (
+    THROTTLED_GUI_INTERVAL_SECONDS,
+    choose_gui_refresh_interval,
+    estimate_effective_replay_period_seconds,
+)
 from ui.monitoring.widgets import SkyplotWidget, MultiSignalBarWidget, PlotSNRWidget, SatelliteNumWidget
 from ui.ConfigDialog import ConfigDialog
 from ui.style import get_app_stylesheet, ui_scale_for_width
@@ -86,7 +91,8 @@ class MonitoringModule(QMainWindow):
         # Step 2: Configure GUI update throttling to prevent excessive redrawing
         # Target: 3-5 updates per second (0.3s interval) for responsive but smooth rendering
         self.last_gui_update_time = 0
-        self.gui_update_interval = 0.3  # Minimum interval between full widget refreshes (seconds)
+        self.base_gui_update_interval = 0.3
+        self.gui_update_interval = self.base_gui_update_interval  # Minimum interval between full widget refreshes
         self.pending_update = False     # Flag: GUI refresh requested but throttled
         self.current_tab_index = 0      # Track visible tab to skip updates for hidden tabs
         self.last_table_data_hash = None  # Hash of table data to detect actual changes
@@ -125,7 +131,10 @@ class MonitoringModule(QMainWindow):
                 'mountpoint': '',
                 'user': '',
                 'password': '',
-                'baudrate': 115200
+                'baudrate': 115200,
+                'file_path': '',
+                'replay_speed': 1.0,
+                'file_type': 'Auto Detect',
             },
             'EPH_ENABLED': False,
             'EPH': {
@@ -135,9 +144,13 @@ class MonitoringModule(QMainWindow):
                 'mountpoint': '',
                 'user': '',
                 'password': '',
-                'baudrate': 115200
+                'baudrate': 115200,
+                'file_path': '',
+                'replay_speed': 1.0,
+                'file_type': 'Auto Detect',
             }
         }
+        self._apply_gui_refresh_policy(announce=False)
         # Logging configuration: format, directory, rotation, sampling
         self.logging_settings = {
             'enabled': False,
@@ -1053,6 +1066,7 @@ class MonitoringModule(QMainWindow):
         dlg = ConfigDialog(self, self.settings)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.settings = dlg.get_settings()
+            self._apply_gui_refresh_policy(announce=True)
             if getattr(dlg, 'disconnect_requested', False):
                 self.disconnect_streams()
             elif getattr(dlg, 'auto_connect', False):
@@ -1085,6 +1099,7 @@ class MonitoringModule(QMainWindow):
         self.signals.log_signal.emit(
             "=== Restarting streams ===" if start_streams else "=== Disconnecting streams ==="
         )
+        self._apply_gui_refresh_policy(announce=False)
         
         # Step 1: Stop all existing threads
         # This gracefully halts reception and processing of RTCM data
@@ -1149,36 +1164,51 @@ class MonitoringModule(QMainWindow):
             obs_configured = True
         elif obs_source == 'Serial Port' and self.settings['OBS'].get('port'):
             obs_configured = True
+        elif obs_source == 'RINEX File' and self.settings['OBS'].get('file_path'):
+            obs_configured = True
             
         if obs_configured:
             self.signals.log_signal.emit("Initializing OBS stream...")
-            
-            # Create pair of buffers: one for processing, one for logging
-            obs_buffer = RingBuffer(maxsize=1000)  # Standard processing buffer
-            obs_logging_buffer = RingBuffer(maxsize=5000)  # High-capacity logging buffer
-            
-            # Store buffer references for shutdown
-            self.ring_buffers['OBS'] = obs_buffer
-            self.logging_buffers['OBS'] = obs_logging_buffer
-            self.logging_buffer_ref = obs_logging_buffer
-            
-            # Create IOThread: receives RTCM via NTRIP or Serial, distributes to buffers
-            io_thread = IOThread("OBS", self.settings['OBS'], obs_buffer, self.signals, obs_logging_buffer)
-            io_thread.start()
-            self.io_threads.append(io_thread)
-            
-            # Create DataProcessingThread: parses RTCM, emits epochs
-            proc_thread = DataProcessingThread("OBS", obs_buffer, self.handler, self.signals)
-            proc_thread.start()
-            self.processing_threads.append(proc_thread)
-            self.signals.log_signal.emit("OBS stream threads started")
+
+            if obs_source == 'RINEX File':
+                replay_thread = RinexReplayThread(
+                    "OBS",
+                    self.settings['OBS'],
+                    self.signals,
+                    handler=self.handler,
+                    eph_settings=self.settings.get('EPH', {}),
+                    target_systems=sorted(self.active_systems),
+                )
+                replay_thread.start()
+                self.io_threads.append(replay_thread)
+                self.signals.log_signal.emit("OBS RINEX replay thread started")
+            else:
+                # Create pair of buffers: one for processing, one for logging
+                obs_buffer = RingBuffer(maxsize=1000)  # Standard processing buffer
+                obs_logging_buffer = RingBuffer(maxsize=5000)  # High-capacity logging buffer
+                
+                # Store buffer references for shutdown
+                self.ring_buffers['OBS'] = obs_buffer
+                self.logging_buffers['OBS'] = obs_logging_buffer
+                self.logging_buffer_ref = obs_logging_buffer
+                
+                # Create IOThread: receives RTCM via NTRIP or Serial, distributes to buffers
+                io_thread = IOThread("OBS", self.settings['OBS'], obs_buffer, self.signals, obs_logging_buffer)
+                io_thread.start()
+                self.io_threads.append(io_thread)
+                
+                # Create DataProcessingThread: parses RTCM, emits epochs
+                proc_thread = DataProcessingThread("OBS", obs_buffer, self.handler, self.signals)
+                proc_thread.start()
+                self.processing_threads.append(proc_thread)
+                self.signals.log_signal.emit("OBS stream threads started")
         else:
             self.signals.log_signal.emit("OBS stream not configured")
         
         # Step 8: Initialize EPH (Ephemeris) stream thread pipeline if enabled
         # EPH streams provide navigation messages (satellite orbits, clocks)
         # Often obtained from separate NTRIP mount point or serial port
-        if self.settings['EPH_ENABLED']:
+        if self.settings['EPH_ENABLED'] and obs_source != 'RINEX File':
             eph_source = self.settings['EPH'].get('source', 'NTRIP Server')
             eph_configured = False
             
@@ -1186,8 +1216,10 @@ class MonitoringModule(QMainWindow):
                 eph_configured = True
             elif eph_source == 'Serial Port' and self.settings['EPH'].get('port'):
                 eph_configured = True
+            elif eph_source == 'File' and self.settings['EPH'].get('file_path'):
+                eph_configured = True
             
-            if eph_configured:
+            if eph_configured and eph_source != 'File':
                 self.signals.log_signal.emit("Initializing EPH stream...")
                 
                 # Create pair of buffers for EPH stream
@@ -1209,6 +1241,8 @@ class MonitoringModule(QMainWindow):
                 proc_thread.start()
                 self.processing_threads.append(proc_thread)
                 self.signals.log_signal.emit("EPH stream threads started")
+            elif eph_source == 'File':
+                self.signals.log_signal.emit("EPH file source is supported through RINEX observation replay mode")
             else:
                 self.signals.log_signal.emit("EPH stream enabled but not configured")
         
@@ -1346,3 +1380,36 @@ class MonitoringModule(QMainWindow):
         
         # Step 7: Accept close event (proceed with window closure)
         event.accept()
+
+    def _apply_gui_refresh_policy(self, announce: bool) -> None:
+        previous_interval = getattr(self, "gui_update_interval", self.base_gui_update_interval)
+        self.gui_update_interval = choose_gui_refresh_interval(
+            self.base_gui_update_interval,
+            self.settings.get("OBS", {}),
+        )
+
+        timer_interval_ms = 100 if self.gui_update_interval >= THROTTLED_GUI_INTERVAL_SECONDS else 50
+        if hasattr(self, "gui_update_timer"):
+            self.gui_update_timer.start(timer_interval_ms)
+
+        if not announce:
+            return
+
+        if abs(self.gui_update_interval - previous_interval) < 1e-9:
+            return
+
+        if self.gui_update_interval >= THROTTLED_GUI_INTERVAL_SECONDS:
+            effective_period = estimate_effective_replay_period_seconds(self.settings.get("OBS", {}))
+            if effective_period and effective_period > 0.0:
+                self.signals.log_signal.emit(
+                    f"High-rate RINEX replay detected, GUI refresh capped at {self.gui_update_interval:.1f}s "
+                    f"(effective epoch period {effective_period:.3f}s)"
+                )
+            else:
+                self.signals.log_signal.emit(
+                    f"High-rate RINEX replay detected, GUI refresh capped at {self.gui_update_interval:.1f}s"
+                )
+        else:
+            self.signals.log_signal.emit(
+                f"GUI refresh restored to {self.gui_update_interval:.1f}s cadence"
+            )

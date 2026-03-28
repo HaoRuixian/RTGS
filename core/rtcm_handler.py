@@ -6,6 +6,7 @@ import numpy as np
 import sys
 import io
 from contextlib import redirect_stderr
+from datetime import datetime, timezone
 from core.data_models import EpochObservation, SatelliteState, SignalData
 from core.gnss_time import GNSSTime
 from core.geo_utils import calculate_az_el, get_freq
@@ -19,11 +20,36 @@ import math
 _shared_rtcm_handler = None
 
 class RTCMHandler:
-    def __init__(self):
+    def __init__(self, reference_utc=None):
         self.broadcast_eph = get_shared_broadcast_ephemeris()
         self.lock = threading.Lock()
         self.last_gps_week = None  # Track GPS week for continuity
         self.last_station_coords = None  # Store coordinates from 1005/1006 messages
+        self.reference_utc = self._normalize_reference_utc(reference_utc)
+        self.last_utc_by_system = {}
+
+    @staticmethod
+    def _normalize_reference_utc(reference_utc):
+        if reference_utc is None:
+            return None
+        if isinstance(reference_utc, datetime):
+            if reference_utc.tzinfo is None:
+                return reference_utc.replace(tzinfo=timezone.utc)
+            return reference_utc.astimezone(timezone.utc)
+        return None
+
+    def _resolve_gps_week(self, sys_id: str, gps_seconds: float, default_week: int) -> int:
+        """Pick the GPS week nearest to the system's recent timeline."""
+        anchor = self.last_utc_by_system.get(sys_id) or self.reference_utc
+        if anchor is None:
+            anchor = datetime.utcnow().replace(tzinfo=timezone.utc)
+
+        candidate_weeks = [default_week - 1, default_week, default_week + 1]
+        best_week = min(
+            candidate_weeks,
+            key=lambda week: abs((GNSSTime.gps_to_utc_datetime(week, gps_seconds) - anchor).total_seconds()),
+        )
+        return best_week
 
     @staticmethod
     def _normalize_satellite_number(sys_id: str, prn: int) -> int:
@@ -272,40 +298,37 @@ class RTCMHandler:
             # Determine GPS week and seconds-of-week corresponding to this epoch
             # Default: assume current GPS week and align seconds-of-week, adjust per system
             GPS_WEEK_SECONDS = 7 * 24 * 3600
-            current_gps_week = GNSSTime.current_gps_week()
+            current_gps_week = GNSSTime.current_gps_week(self.reference_utc)
 
             if sys_id in ['G', 'J', 'S', 'I']:
                 # GPS TOW: directly seconds within GPS week
                 gps_seconds = epoch_time_s % GPS_WEEK_SECONDS
-                gps_week = current_gps_week
 
             elif sys_id == 'C':
                 # BeiDou TOW (BDT): field is milliseconds since BDS week start.
                 # BDS TOW is typically 14s less than GPS TOW for same epoch.
                 # Convert by adding 14s and assume current GPS week.
                 gps_seconds = (epoch_time_s + 14.0) % GPS_WEEK_SECONDS
-                gps_week = current_gps_week
 
             elif sys_id == 'E':
                 # Galileo TOW (GST): treat as seconds-of-week and align to current GPS week
                 gps_seconds = epoch_time_s % GPS_WEEK_SECONDS
-                gps_week = current_gps_week
 
             elif sys_id == 'R':
                 # GLONASS: DF034 gives milliseconds of day (0..86400e3). Defined as UTC(SU)+3h
                 # Convert to seconds-of-week by using current GPS day-of-week as reference
-                day_index = GNSSTime.gps_day_of_week()
+                day_index = GNSSTime.gps_day_of_week(self.reference_utc)
                 # Subtract 3 hours to convert UTC(SU)+3h -> UTC seconds-of-day
                 seconds_of_day = (epoch_time_s) - 3 * 3600.0
                 # Ensure within 0..86400 range
                 seconds_of_day = seconds_of_day % (24 * 3600)
                 gps_seconds = (day_index * 24 * 3600) + seconds_of_day + 18
-                gps_week = current_gps_week
 
             else:
                 # Fallback: treat as seconds-of-week in current GPS week
                 gps_seconds = epoch_time_s % GPS_WEEK_SECONDS
-                gps_week = current_gps_week
+
+            gps_week = self._resolve_gps_week(sys_id, gps_seconds, current_gps_week)
 
             # Align gps_seconds to current week boundary if there is large discrepancy
             # Ensure 0 <= gps_seconds < GPS_WEEK_SECONDS
@@ -313,6 +336,7 @@ class RTCMHandler:
 
             # Convert to UTC datetime
             utc_datetime = GNSSTime.gps_to_utc_datetime(gps_week, gps_seconds)
+            self.last_utc_by_system[sys_id] = utc_datetime
             
             if epoch_data is None:
                 epoch_data = EpochObservation(gps_time=epoch_time, utc_datetime=utc_datetime)

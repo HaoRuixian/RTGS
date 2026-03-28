@@ -96,7 +96,10 @@ class MixedGNSSReader:
                 return None, None
 
             if prefix[0] == RTCM_PREAMBLE:
-                raw, msg = self._read_rtcm(prefix)
+                try:
+                    raw, msg = self._read_rtcm(prefix)
+                except EOFError:
+                    return None, None
                 return raw, msg
 
             if prefix[0] == UBX_SYNC1:
@@ -107,7 +110,10 @@ class MixedGNSSReader:
                 if sync2[0] != UBX_SYNC2:
                     continue
 
-                raw, msg = self._read_ubx(prefix + sync2)
+                try:
+                    raw, msg = self._read_ubx(prefix + sync2)
+                except EOFError:
+                    return None, None
                 if raw is None and msg is None:
                     continue
                 return raw, msg
@@ -195,6 +201,8 @@ class MixedGNSSReader:
         return bytes((ck_a, ck_b))
 
     def _read_bytes(self, size: int) -> bytes:
+        if size <= 0:
+            return b""
         data = self._stream.read(size)
         if len(data) == 0:
             raise EOFError()

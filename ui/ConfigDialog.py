@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QGroupBox, QFormLayout,
                              QSpinBox, QScrollArea, QWidget, QDoubleSpinBox, QSizePolicy)
 from PySide6.QtGui import QIcon
 from PySide6.QtCore import Qt
+from core.config_paths import CONFIG_ROOT, DEFAULT_STREAM_SAVE_NAME, STREAM_CONFIG_DIR, ensure_config_directories
 from ui.responsive import adaptive_window_size
 
 class ConfigDialog(QDialog):
@@ -44,7 +45,7 @@ class ConfigDialog(QDialog):
         
         # Data source type selector
         self.obs_source = QComboBox()
-        self.obs_source.addItems(["NTRIP Server", "Serial Port"])
+        self.obs_source.addItems(["NTRIP Server", "Serial Port", "RINEX File"])
         obs_source_val = self.settings.get('OBS', {}).get('source', 'NTRIP Server')
         self.obs_source.setCurrentText(obs_source_val)
         self.obs_source.currentTextChanged.connect(self.on_obs_source_changed)
@@ -141,6 +142,30 @@ class ConfigDialog(QDialog):
         fl_obs.addRow(self.lbl_obs_stopbits, self.obs_stopbits)
         fl_obs.addRow(self.lbl_obs_parity, self.obs_parity)
         fl_obs.addRow(self.lbl_obs_flowctrl, self.obs_flowctrl)
+
+        self.obs_file_path = QLineEdit(self.settings.get('OBS', {}).get('file_path', ''))
+        self.obs_file_path.setReadOnly(True)
+        self.obs_file_browse = QPushButton("Browse...")
+        self.obs_file_browse.clicked.connect(self.browse_obs_file)
+        self.obs_file_row = QHBoxLayout()
+        self.obs_file_row.addWidget(self.obs_file_path)
+        self.obs_file_row.addWidget(self.obs_file_browse)
+        self.lbl_obs_file = QLabel("RINEX File:")
+        fl_obs.addRow(self.lbl_obs_file, self.obs_file_row)
+
+        self.obs_replay_speed = QDoubleSpinBox()
+        self.obs_replay_speed.setRange(0.1, 1000.0)
+        self.obs_replay_speed.setDecimals(1)
+        self.obs_replay_speed.setSingleStep(0.5)
+        self.obs_replay_speed.setSuffix("x")
+        self.obs_replay_speed.setValue(float(self.settings.get('OBS', {}).get('replay_speed', 1.0) or 1.0))
+        self.lbl_obs_replay_speed = QLabel("Speed Multiplier:")
+        fl_obs.addRow(self.lbl_obs_replay_speed, self.obs_replay_speed)
+
+        self.obs_final_results_only = QCheckBox("Final products only (no live UI updates)")
+        self.obs_final_results_only.setChecked(bool(self.settings.get('OBS', {}).get('final_results_only', False)))
+        self.lbl_obs_final_results_only = QLabel("Replay Mode:")
+        fl_obs.addRow(self.lbl_obs_final_results_only, self.obs_final_results_only)
         
         grp_obs.setLayout(fl_obs)
         scroll_layout.addWidget(grp_obs)
@@ -162,7 +187,7 @@ class ConfigDialog(QDialog):
         
         # Data source type selector for EPH
         self.eph_source = QComboBox()
-        self.eph_source.addItems(["NTRIP Server", "Serial Port"])
+        self.eph_source.addItems(["NTRIP Server", "Serial Port", "File"])
         eph_source_val = self.settings.get('EPH', {}).get('source', 'NTRIP Server')
         self.eph_source.setCurrentText(eph_source_val)
         self.eph_source.currentTextChanged.connect(self.on_eph_source_changed)
@@ -258,6 +283,23 @@ class ConfigDialog(QDialog):
         fl_eph.addRow(self.lbl_eph_stopbits, self.eph_stopbits)
         fl_eph.addRow(self.lbl_eph_parity, self.eph_parity)
         fl_eph.addRow(self.lbl_eph_flowctrl, self.eph_flowctrl)
+
+        self.eph_file_path = QLineEdit(self.settings.get('EPH', {}).get('file_path', ''))
+        self.eph_file_path.setReadOnly(True)
+        self.eph_file_browse = QPushButton("Browse...")
+        self.eph_file_browse.clicked.connect(self.browse_eph_file)
+        self.eph_file_row = QHBoxLayout()
+        self.eph_file_row.addWidget(self.eph_file_path)
+        self.eph_file_row.addWidget(self.eph_file_browse)
+        self.lbl_eph_file = QLabel("Ephemeris File:")
+        fl_eph.addRow(self.lbl_eph_file, self.eph_file_row)
+
+        self.eph_file_type = QComboBox()
+        self.eph_file_type.addItems(["Auto Detect", "Broadcast RINEX", "Precise SP3"])
+        eph_file_type = self.settings.get('EPH', {}).get('file_type', 'Auto Detect')
+        self.eph_file_type.setCurrentText(eph_file_type if eph_file_type in ["Auto Detect", "Broadcast RINEX", "Precise SP3"] else "Auto Detect")
+        self.lbl_eph_file_type = QLabel("File Type:")
+        fl_eph.addRow(self.lbl_eph_file_type, self.eph_file_type)
         
         grp_eph.setLayout(fl_eph)
         grp_eph.setEnabled(self.chk_eph.isChecked())
@@ -377,6 +419,8 @@ class ConfigDialog(QDialog):
     def on_obs_source_changed(self):
         """Update OBS field visibility based on source type"""
         is_ntrip = self.obs_source.currentText() == "NTRIP Server"
+        is_serial = self.obs_source.currentText() == "Serial Port"
+        is_file = self.obs_source.currentText() == "RINEX File"
         
         self.lbl_obs_host.setVisible(is_ntrip)
         self.obs_h.setVisible(is_ntrip)
@@ -389,18 +433,38 @@ class ConfigDialog(QDialog):
         self.lbl_obs_pw.setVisible(is_ntrip)
         self.obs_pw.setVisible(is_ntrip)
         
-        self.lbl_obs_serial_port.setVisible(not is_ntrip)
-        self.obs_port.setVisible(not is_ntrip)
-        self.lbl_obs_baudrate.setVisible(not is_ntrip)
-        self.obs_baudrate.setVisible(not is_ntrip)
-        self.lbl_obs_databits.setVisible(not is_ntrip)
-        self.obs_databits.setVisible(not is_ntrip)
-        self.lbl_obs_stopbits.setVisible(not is_ntrip)
-        self.obs_stopbits.setVisible(not is_ntrip)
-        self.lbl_obs_parity.setVisible(not is_ntrip)
-        self.obs_parity.setVisible(not is_ntrip)
-        self.lbl_obs_flowctrl.setVisible(not is_ntrip)
-        self.obs_flowctrl.setVisible(not is_ntrip)
+        self.lbl_obs_serial_port.setVisible(is_serial)
+        self.obs_port.setVisible(is_serial)
+        self.lbl_obs_baudrate.setVisible(is_serial)
+        self.obs_baudrate.setVisible(is_serial)
+        self.lbl_obs_databits.setVisible(is_serial)
+        self.obs_databits.setVisible(is_serial)
+        self.lbl_obs_stopbits.setVisible(is_serial)
+        self.obs_stopbits.setVisible(is_serial)
+        self.lbl_obs_parity.setVisible(is_serial)
+        self.obs_parity.setVisible(is_serial)
+        self.lbl_obs_flowctrl.setVisible(is_serial)
+        self.obs_flowctrl.setVisible(is_serial)
+
+        self.lbl_obs_file.setVisible(is_file)
+        self.obs_file_path.setVisible(is_file)
+        self.obs_file_browse.setVisible(is_file)
+        self.lbl_obs_replay_speed.setVisible(is_file)
+        self.obs_replay_speed.setVisible(is_file)
+        self.lbl_obs_final_results_only.setVisible(is_file)
+        self.obs_final_results_only.setVisible(is_file)
+
+        if is_file:
+            self.chk_eph.setChecked(True)
+            self.chk_eph.setEnabled(False)
+            self.eph_source.setCurrentText("File")
+            self.eph_source.setEnabled(False)
+        else:
+            self.chk_eph.setEnabled(True)
+            self.eph_source.setEnabled(True)
+
+        self.on_eph_enabled_changed()
+        self.on_eph_source_changed()
 
     def on_eph_enabled_changed(self):
         """Update EPH group visibility based on enable checkbox"""
@@ -409,6 +473,8 @@ class ConfigDialog(QDialog):
     def on_eph_source_changed(self):
         """Update EPH field visibility based on source type"""
         is_ntrip = self.eph_source.currentText() == "NTRIP Server"
+        is_serial = self.eph_source.currentText() == "Serial Port"
+        is_file = self.eph_source.currentText() == "File"
         
         self.lbl_eph_host.setVisible(is_ntrip)
         self.eph_h.setVisible(is_ntrip)
@@ -421,18 +487,24 @@ class ConfigDialog(QDialog):
         self.lbl_eph_pw.setVisible(is_ntrip)
         self.eph_pw.setVisible(is_ntrip)
         
-        self.lbl_eph_serial_port.setVisible(not is_ntrip)
-        self.eph_port.setVisible(not is_ntrip)
-        self.lbl_eph_baudrate.setVisible(not is_ntrip)
-        self.eph_baudrate.setVisible(not is_ntrip)
-        self.lbl_eph_databits.setVisible(not is_ntrip)
-        self.eph_databits.setVisible(not is_ntrip)
-        self.lbl_eph_stopbits.setVisible(not is_ntrip)
-        self.eph_stopbits.setVisible(not is_ntrip)
-        self.lbl_eph_parity.setVisible(not is_ntrip)
-        self.eph_parity.setVisible(not is_ntrip)
-        self.lbl_eph_flowctrl.setVisible(not is_ntrip)
-        self.eph_flowctrl.setVisible(not is_ntrip)
+        self.lbl_eph_serial_port.setVisible(is_serial)
+        self.eph_port.setVisible(is_serial)
+        self.lbl_eph_baudrate.setVisible(is_serial)
+        self.eph_baudrate.setVisible(is_serial)
+        self.lbl_eph_databits.setVisible(is_serial)
+        self.eph_databits.setVisible(is_serial)
+        self.lbl_eph_stopbits.setVisible(is_serial)
+        self.eph_stopbits.setVisible(is_serial)
+        self.lbl_eph_parity.setVisible(is_serial)
+        self.eph_parity.setVisible(is_serial)
+        self.lbl_eph_flowctrl.setVisible(is_serial)
+        self.eph_flowctrl.setVisible(is_serial)
+
+        self.lbl_eph_file.setVisible(is_file)
+        self.eph_file_path.setVisible(is_file)
+        self.eph_file_browse.setVisible(is_file)
+        self.lbl_eph_file_type.setVisible(is_file)
+        self.eph_file_type.setVisible(is_file)
 
     def _get_available_ports(self):
         """Get list of available serial ports"""
@@ -444,6 +516,11 @@ class ConfigDialog(QDialog):
 
     def on_connect(self):
         """User pressed Connect: mark auto_connect and accept dialog."""
+        try:
+            self._validate_connect_settings()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid Configuration", str(exc))
+            return
         self.auto_connect = True
         self.disconnect_requested = False
         self.accept()
@@ -454,12 +531,102 @@ class ConfigDialog(QDialog):
         self.disconnect_requested = True
         self.accept()
 
+    def browse_obs_file(self):
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select RINEX Observation File",
+            "",
+            "RINEX Observation Files (*.rnx *.obs *.o *.O);;All Files (*.*)"
+        )
+        if not filepath:
+            return
+        self.obs_file_path.setText(filepath)
+        self._apply_obs_file_metadata(filepath)
+
+    def browse_eph_file(self):
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Ephemeris File",
+            "",
+            "Ephemeris Files (*.rnx *.nav *.sp3 *.SP3);;All Files (*.*)"
+        )
+        if not filepath:
+            return
+        self.eph_file_path.setText(filepath)
+        lower = filepath.lower()
+        if lower.endswith(".sp3"):
+            self.eph_file_type.setCurrentText("Precise SP3")
+        elif lower.endswith((".rnx", ".nav")):
+            self.eph_file_type.setCurrentText("Broadcast RINEX")
+
+    def _apply_obs_file_metadata(self, filepath):
+        try:
+            from core.rinex_loader import read_rinex_observation_header
+
+            metadata = read_rinex_observation_header(filepath)
+        except Exception as exc:
+            QMessageBox.warning(self, "RINEX Read Error", f"Failed to read RINEX header:\n{exc}")
+            return
+
+        coords = metadata.approx_position_ecef
+        if coords and any(abs(float(value)) > 1e-6 for value in coords[:3]):
+            self.rec_pos_x.setText(str(coords[0]))
+            self.rec_pos_y.setText(str(coords[1]))
+            self.rec_pos_z.setText(str(coords[2]))
+        elif coords:
+            QMessageBox.information(
+                self,
+                "Approximate Position Required",
+                "The selected RINEX file contains APPROX POSITION XYZ = 0.\n"
+                "Please enter receiver ECEF coordinates manually before connecting.",
+            )
+
+        if metadata.interval_seconds and metadata.interval_seconds > 0:
+            speed_guess = float(self.obs_replay_speed.value() or 1.0)
+            if speed_guess <= 0:
+                self.obs_replay_speed.setValue(1.0)
+
+    def _validate_connect_settings(self):
+        obs_source = self.obs_source.currentText()
+        if obs_source == "NTRIP Server" and not self.obs_h.text().strip():
+            raise ValueError("Observation stream is missing the NTRIP host.")
+        if obs_source == "Serial Port" and not self.obs_port.currentText().strip():
+            raise ValueError("Observation stream is missing the serial port.")
+        if obs_source == "RINEX File":
+            if not self.obs_file_path.text().strip():
+                raise ValueError("Please select a RINEX observation file.")
+            if not self.eph_file_path.text().strip():
+                raise ValueError("RINEX replay requires an ephemeris file for azimuth/elevation computation.")
+            coords = []
+            for field in (self.rec_pos_x, self.rec_pos_y, self.rec_pos_z):
+                text = field.text().strip()
+                if not text:
+                    raise ValueError("RINEX replay requires a valid receiver ECEF position.")
+                try:
+                    coords.append(float(text))
+                except ValueError as exc:
+                    raise ValueError("Receiver ECEF coordinates must be numeric.") from exc
+            if not any(abs(value) > 1e-6 for value in coords):
+                raise ValueError(
+                    "The RINEX header position is zero. Please enter receiver ECEF coordinates manually before connecting."
+                )
+
+        if self.chk_eph.isChecked():
+            eph_source = self.eph_source.currentText()
+            if eph_source == "NTRIP Server" and not self.eph_h.text().strip():
+                raise ValueError("Ephemeris stream is missing the NTRIP host.")
+            if eph_source == "Serial Port" and not self.eph_port.currentText().strip():
+                raise ValueError("Ephemeris stream is missing the serial port.")
+            if eph_source == "File" and not self.eph_file_path.text().strip():
+                raise ValueError("Please select an ephemeris file.")
+
     def load_file(self):
         """Load configuration from file (supports .yaml, .yml, and legacy .py formats)"""
+        ensure_config_directories()
         f, _ = QFileDialog.getOpenFileName(
             self, 
             "Select Config File", 
-            "", 
+            str(CONFIG_ROOT), 
             "YAML Files (*.yaml *.yml);;Python Files (*.py);;All Files (*.*)"
         )
         if not f:
@@ -495,7 +662,7 @@ class ConfigDialog(QDialog):
                 self.obs_m.setText(str(obs.get('mountpoint', '')))
                 self.obs_u.setText(str(obs.get('user', '')))
                 self.obs_pw.setText(str(obs.get('password', '')))
-            else:
+            elif obs.get('source_type') == 'Serial Port':
                 self.obs_source.setCurrentText('Serial Port')
                 self.obs_port.setCurrentText(str(obs.get('serial_port', 'COM1')))
                 self.obs_baudrate.setCurrentText(str(obs.get('baudrate', 115200)))
@@ -503,6 +670,13 @@ class ConfigDialog(QDialog):
                 self.obs_stopbits.setCurrentText(str(obs.get('stopbits', 1)))
                 self.obs_parity.setCurrentText(str(obs.get('parity', 'None')))
                 self.obs_flowctrl.setCurrentText(str(obs.get('flowctrl', 'None')))
+            else:
+                self.obs_source.setCurrentText('RINEX File')
+                self.obs_file_path.setText(str(obs.get('file_path', '')))
+                self.obs_replay_speed.setValue(float(obs.get('replay_speed', 1.0) or 1.0))
+                self.obs_final_results_only.setChecked(bool(obs.get('final_results_only', False)))
+                if not config.get('approx_rec_pos') and self.obs_file_path.text().strip():
+                    self._apply_obs_file_metadata(self.obs_file_path.text().strip())
         
         # Load EPH settings
         if 'eph_settings' in config:
@@ -517,7 +691,7 @@ class ConfigDialog(QDialog):
                     self.eph_m.setText(str(eph.get('mountpoint', '')))
                     self.eph_u.setText(str(eph.get('user', '')))
                     self.eph_pw.setText(str(eph.get('password', '')))
-                else:
+                elif eph.get('source_type') == 'Serial Port':
                     self.eph_source.setCurrentText('Serial Port')
                     self.eph_port.setCurrentText(str(eph.get('serial_port', 'COM2')))
                     self.eph_baudrate.setCurrentText(str(eph.get('baudrate', 115200)))
@@ -525,6 +699,13 @@ class ConfigDialog(QDialog):
                     self.eph_stopbits.setCurrentText(str(eph.get('stopbits', 1)))
                     self.eph_parity.setCurrentText(str(eph.get('parity', 'None')))
                     self.eph_flowctrl.setCurrentText(str(eph.get('flowctrl', 'None')))
+                else:
+                    self.eph_source.setCurrentText('File')
+                    self.eph_file_path.setText(str(eph.get('file_path', '')))
+                    eph_file_type = str(eph.get('file_type', 'Auto Detect'))
+                    self.eph_file_type.setCurrentText(
+                        eph_file_type if eph_file_type in ["Auto Detect", "Broadcast RINEX", "Precise SP3"] else "Auto Detect"
+                    )
         
         # Load general settings
         if 'approx_rec_pos' in config and config['approx_rec_pos']:
@@ -553,7 +734,9 @@ class ConfigDialog(QDialog):
         spec.loader.exec_module(m)
         
         # Load OBS settings
-        if hasattr(m, 'NTRIP_HOST'): self.obs_h.setText(str(m.NTRIP_HOST))
+        if hasattr(m, 'NTRIP_HOST'):
+            self.obs_source.setCurrentText('NTRIP Server')
+            self.obs_h.setText(str(m.NTRIP_HOST))
         if hasattr(m, 'NTRIP_PORT'): self.obs_p.setText(str(m.NTRIP_PORT))
         if hasattr(m, 'MOUNTPOINT'): self.obs_m.setText(str(m.MOUNTPOINT))
         if hasattr(m, 'USER'): self.obs_u.setText(str(m.USER))
@@ -562,6 +745,7 @@ class ConfigDialog(QDialog):
         # Load EPH settings
         if hasattr(m, 'EPH_HOST'): 
             self.chk_eph.setChecked(True)
+            self.eph_source.setCurrentText('NTRIP Server')
             self.eph_h.setText(str(m.EPH_HOST))
             self.eph_p.setText(str(m.EPH_PORT))
             self.eph_m.setText(str(m.EPH_MOUNTPOINT))
@@ -584,6 +768,10 @@ class ConfigDialog(QDialog):
             else:
                 self.target_systems.setText(str(systems))
 
+        self.on_obs_source_changed()
+        self.on_eph_enabled_changed()
+        self.on_eph_source_changed()
+
     def get_settings(self):
         """Return settings dictionary with both NTRIP and serial port configuration"""
         from core.global_config import update_connection_settings, update_general_settings
@@ -593,7 +781,7 @@ class ConfigDialog(QDialog):
         obs_settings = {
             'source_type': obs_source_type,
             'host': self.obs_h.text(),
-            'port': self.obs_p.text() if obs_source_type == "NTRIP Server" else self.obs_port.currentText(),
+            'port': self.obs_p.text() if obs_source_type == "NTRIP Server" else (self.obs_port.currentText() if obs_source_type == "Serial Port" else ""),
             'serial_port': self.obs_port.currentText(),
             'baudrate': int(self.obs_baudrate.currentText()),
             'databits': int(self.obs_databits.currentText()),
@@ -602,7 +790,11 @@ class ConfigDialog(QDialog):
             'flowctrl': self.obs_flowctrl.currentText(),
             'mountpoint': self.obs_m.text(),
             'user': self.obs_u.text(),
-            'password': self.obs_pw.text()
+            'password': self.obs_pw.text(),
+            'file_path': self.obs_file_path.text().strip(),
+            'replay_speed': float(self.obs_replay_speed.value()),
+            'file_type': 'Auto Detect',
+            'final_results_only': bool(self.obs_final_results_only.isChecked()),
         }
         update_connection_settings('OBS', obs_settings)
         
@@ -614,7 +806,7 @@ class ConfigDialog(QDialog):
                 'source_type': eph_source_type,
                 'enabled': eph_enabled,
                 'host': self.eph_h.text(),
-                'port': self.eph_p.text() if eph_source_type == "NTRIP Server" else self.eph_port.currentText(),
+                'port': self.eph_p.text() if eph_source_type == "NTRIP Server" else (self.eph_port.currentText() if eph_source_type == "Serial Port" else ""),
                 'serial_port': self.eph_port.currentText(),
                 'baudrate': int(self.eph_baudrate.currentText()),
                 'databits': int(self.eph_databits.currentText()),
@@ -623,7 +815,11 @@ class ConfigDialog(QDialog):
                 'flowctrl': self.eph_flowctrl.currentText(),
                 'mountpoint': self.eph_m.text(),
                 'user': self.eph_u.text(),
-                'password': self.eph_pw.text()
+                'password': self.eph_pw.text(),
+                'file_path': self.eph_file_path.text().strip(),
+                'replay_speed': 1.0,
+                'file_type': self.eph_file_type.currentText(),
+                'final_results_only': False,
             }
             update_connection_settings('EPH', eph_settings)
         else:
@@ -665,7 +861,7 @@ class ConfigDialog(QDialog):
             'OBS': {
                 'source': obs_source_type,
                 'host': self.obs_h.text(),
-                'port': self.obs_p.text() if obs_source_type == "NTRIP Server" else self.obs_port.currentText(),
+                'port': self.obs_p.text() if obs_source_type == "NTRIP Server" else (self.obs_port.currentText() if obs_source_type == "Serial Port" else ""),
                 'baudrate': int(self.obs_baudrate.currentText()),
                 'databits': int(self.obs_databits.currentText()),
                 'stopbits': float(self.obs_stopbits.currentText()),
@@ -673,13 +869,17 @@ class ConfigDialog(QDialog):
                 'flowctrl': self.obs_flowctrl.currentText(),
                 'mountpoint': self.obs_m.text(),
                 'user': self.obs_u.text(),
-                'password': self.obs_pw.text()
+                'password': self.obs_pw.text(),
+                'file_path': self.obs_file_path.text().strip(),
+                'replay_speed': float(self.obs_replay_speed.value()),
+                'file_type': 'Auto Detect',
+                'final_results_only': bool(self.obs_final_results_only.isChecked()),
             },
             'EPH_ENABLED': eph_enabled,
             'EPH': {
                 'source': self.eph_source.currentText(),
                 'host': self.eph_h.text(),
-                'port': self.eph_p.text() if self.eph_source.currentText() == "NTRIP Server" else self.eph_port.currentText(),
+                'port': self.eph_p.text() if self.eph_source.currentText() == "NTRIP Server" else (self.eph_port.currentText() if self.eph_source.currentText() == "Serial Port" else ""),
                 'baudrate': int(self.eph_baudrate.currentText()),
                 'databits': int(self.eph_databits.currentText()),
                 'stopbits': float(self.eph_stopbits.currentText()),
@@ -687,7 +887,11 @@ class ConfigDialog(QDialog):
                 'flowctrl': self.eph_flowctrl.currentText(),
                 'mountpoint': self.eph_m.text(),
                 'user': self.eph_u.text(),
-                'password': self.eph_pw.text()
+                'password': self.eph_pw.text(),
+                'file_path': self.eph_file_path.text().strip(),
+                'replay_speed': 1.0,
+                'file_type': self.eph_file_type.currentText(),
+                'final_results_only': False,
             },
             'APPROX_REC_POS': legacy_pos,
             'TARGET_SYSTEMS': target_systems
@@ -695,10 +899,11 @@ class ConfigDialog(QDialog):
 
     def save_config_to_file(self):
         """Save current configuration to a YAML file"""
+        ensure_config_directories()
         filepath, _ = QFileDialog.getSaveFileName(
             self,
             "Save Configuration",
-            "",
+            str(STREAM_CONFIG_DIR / DEFAULT_STREAM_SAVE_NAME),
             "YAML Files (*.yaml);;YAML Files (*.yml)"
         )
         

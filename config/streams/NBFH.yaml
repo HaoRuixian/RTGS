@@ -5,21 +5,21 @@ approx_rec_pos:
 eph_settings:
   baudrate: 115200
   databits: 8
-  enabled: false
+  enabled: true
   file_path: ''
   file_type: Auto Detect
   final_results_only: false
   flowctrl: None
-  host: ''
-  mountpoint: ''
+  host: ntrip.data.gnss.ga.gov.au
+  mountpoint: BCEP00BKG0
   parity: None
-  password: ''
+  password: Hao20030801@
   port: '2101'
   replay_speed: 1.0
-  serial_port: COM1
+  serial_port: COM8
   source_type: NTRIP Server
-  stopbits: 1
-  user: ''
+  stopbits: 1.0
+  user: hrx
 obs_settings:
   baudrate: 115200
   databits: 8
@@ -34,7 +34,7 @@ obs_settings:
   password: hao20030801
   port: '2101'
   replay_speed: 1.0
-  serial_port: No ports found
+  serial_port: COM8
   source_type: NTRIP Server
   stopbits: 1.0
   user: adminHRX

@@ -383,17 +383,45 @@ class ReflectometryConfigDialog(QDialog):
         self.enable_sea_level_chk = QCheckBox("Sea Level")
         self.enable_snow_depth_chk = QCheckBox("Snow Depth")
         self.sea_level_ref_spin = _float_spin(-100.0, 1000.0, 3)
+        self.dynamic_sea_level_chk = QCheckBox("Second-Order Dynamic Correction")
+        self.dynamic_sea_level_chk.setToolTip(
+            "Enable the second-order sea-level dynamic correction described in the CMC workflow."
+        )
+        self.dynamic_window_hours_spin = _float_spin(0.5, 48.0, 2)
+        self.dynamic_window_hours_spin.setSingleStep(0.5)
+        self.dynamic_window_hours_spin.setToolTip(
+            "Trailing estimation window used to fit sea-level rate and acceleration."
+        )
+        self.dynamic_min_points_spin = _float_spin(3.0, 500.0, 0)
+        self.dynamic_max_iterations_spin = _float_spin(1.0, 100.0, 0)
+        self.dynamic_tolerance_spin = _float_spin(0.000001, 0.1, 6)
+        self.dynamic_tolerance_spin.setSingleStep(0.0001)
+        self.dynamic_igg3_k0_spin = _float_spin(0.05, 10.0, 2)
+        self.dynamic_igg3_k1_spin = _float_spin(0.10, 20.0, 2)
+        self.dynamic_normalize_design_chk = QCheckBox("Normalize design matrix")
         self.snow_ref_spin = _float_spin(-100.0, 1000.0, 3)
         self.product_policy_label = QLabel()
         self.product_policy_label.setWordWrap(True)
+        self.dynamic_status_label = QLabel()
+        self.dynamic_status_label.setWordWrap(True)
 
         for widget in [
             self.enable_sea_level_chk,
             self.enable_snow_depth_chk,
             self.sea_level_ref_spin,
+            self.dynamic_sea_level_chk,
+            self.dynamic_window_hours_spin,
+            self.dynamic_min_points_spin,
+            self.dynamic_max_iterations_spin,
+            self.dynamic_tolerance_spin,
+            self.dynamic_igg3_k0_spin,
+            self.dynamic_igg3_k1_spin,
+            self.dynamic_normalize_design_chk,
             self.snow_ref_spin,
         ]:
             _connect_change(widget, self._sync_form_to_yaml)
+        self.enable_sea_level_chk.stateChanged.connect(self._update_dynamic_control_state)
+        self.dynamic_sea_level_chk.stateChanged.connect(self._update_dynamic_control_state)
 
         product_row = QHBoxLayout()
         product_row.addWidget(self.enable_height_chk)
@@ -401,10 +429,25 @@ class ReflectometryConfigDialog(QDialog):
         product_row.addWidget(self.enable_snow_depth_chk)
         product_row.addStretch()
         self.sea_level_ref_label = QLabel("Sea Level Reference")
+        self.dynamic_window_label = QLabel("Dynamic Window (h)")
+        self.dynamic_min_points_label = QLabel("Dynamic Min Samples")
+        self.dynamic_max_iterations_label = QLabel("Dynamic Max Iterations")
+        self.dynamic_tolerance_label = QLabel("Dynamic Fit Tolerance")
+        self.dynamic_igg3_k0_label = QLabel("IGG-III k0")
+        self.dynamic_igg3_k1_label = QLabel("IGG-III k1")
         self.snow_ref_label = QLabel("Snow Reference Height")
         form.addRow("Policy", self.product_policy_label)
         form.addRow("Enabled", _wrap_layout(product_row))
         form.addRow(self.sea_level_ref_label, self.sea_level_ref_spin)
+        form.addRow("Dynamic Correction", self.dynamic_sea_level_chk)
+        form.addRow(self.dynamic_window_label, self.dynamic_window_hours_spin)
+        form.addRow(self.dynamic_min_points_label, self.dynamic_min_points_spin)
+        form.addRow(self.dynamic_max_iterations_label, self.dynamic_max_iterations_spin)
+        form.addRow(self.dynamic_tolerance_label, self.dynamic_tolerance_spin)
+        form.addRow(self.dynamic_igg3_k0_label, self.dynamic_igg3_k0_spin)
+        form.addRow(self.dynamic_igg3_k1_label, self.dynamic_igg3_k1_spin)
+        form.addRow("Dynamic Normalize", self.dynamic_normalize_design_chk)
+        form.addRow("Dynamic Status", self.dynamic_status_label)
         form.addRow(self.snow_ref_label, self.snow_ref_spin)
         card.layout().addWidget(form_widget)
         return card
@@ -631,8 +674,21 @@ class ReflectometryConfigDialog(QDialog):
             self.enable_sea_level_chk.setChecked(bool(data["products"]["enable_sea_level"]))
             self.enable_snow_depth_chk.setChecked(bool(data["products"]["enable_snow_depth"]))
             self.sea_level_ref_spin.setValue(float(data["products"]["sea_level_reference"] or 0.0))
+            self.dynamic_sea_level_chk.setChecked(bool(data["products"].get("enable_dynamic_sea_level_correction", False)))
+            self.dynamic_window_hours_spin.setValue(float(data["products"].get("dynamic_sea_level_window_hours", 4.0)))
+            self.dynamic_min_points_spin.setValue(float(data["products"].get("dynamic_sea_level_min_points", 6)))
+            self.dynamic_max_iterations_spin.setValue(
+                float(data["products"].get("dynamic_sea_level_max_iterations", 12))
+            )
+            self.dynamic_tolerance_spin.setValue(float(data["products"].get("dynamic_sea_level_tolerance", 1e-4)))
+            self.dynamic_igg3_k0_spin.setValue(float(data["products"].get("dynamic_sea_level_igg3_k0", 0.5)))
+            self.dynamic_igg3_k1_spin.setValue(float(data["products"].get("dynamic_sea_level_igg3_k1", 2.0)))
+            self.dynamic_normalize_design_chk.setChecked(
+                bool(data["products"].get("dynamic_sea_level_normalize_design", False))
+            )
             self.snow_ref_spin.setValue(float(data["products"]["snow_depth_reference_height"] or 0.0))
             self._apply_environment_policy(sync_yaml=False)
+            self._update_dynamic_control_state()
         finally:
             self._building_form = False
 
@@ -720,6 +776,18 @@ class ReflectometryConfigDialog(QDialog):
         products["sea_level_reference"] = (
             self.sea_level_ref_spin.value() if self.enable_sea_level_chk.isChecked() else None
         )
+        products["enable_dynamic_sea_level_correction"] = self.dynamic_sea_level_chk.isChecked()
+        products["dynamic_sea_level_window_hours"] = self.dynamic_window_hours_spin.value()
+        products["dynamic_sea_level_min_points"] = int(self.dynamic_min_points_spin.value())
+        products["dynamic_sea_level_max_iterations"] = int(self.dynamic_max_iterations_spin.value())
+        products["dynamic_sea_level_tolerance"] = self.dynamic_tolerance_spin.value()
+        products["dynamic_sea_level_igg3_k0"] = self.dynamic_igg3_k0_spin.value()
+        products["dynamic_sea_level_igg3_k1"] = self.dynamic_igg3_k1_spin.value()
+        products["dynamic_sea_level_min_weight"] = float(products.get("dynamic_sea_level_min_weight", 1e-12))
+        products["dynamic_sea_level_regularization"] = float(
+            products.get("dynamic_sea_level_regularization", 1e-12)
+        )
+        products["dynamic_sea_level_normalize_design"] = self.dynamic_normalize_design_chk.isChecked()
         products["snow_depth_reference_height"] = (
             self.snow_ref_spin.value() if self.enable_snow_depth_chk.isChecked() else None
         )
@@ -728,6 +796,7 @@ class ReflectometryConfigDialog(QDialog):
 
         self.current_yaml_text = yaml.safe_dump(data, sort_keys=False, allow_unicode=False)
         self._set_yaml_editor_text(self.current_yaml_text)
+        self._update_dynamic_control_state()
 
     def _on_environment_changed(self, _text: str | None = None) -> None:
         if self._building_form:
@@ -792,8 +861,63 @@ class ReflectometryConfigDialog(QDialog):
         finally:
             self._building_form = previous_state
 
+        self.dynamic_sea_level_chk.setVisible(True)
+        self.dynamic_window_hours_spin.setVisible(True)
+        self.dynamic_window_label.setVisible(True)
+        self.dynamic_min_points_spin.setVisible(True)
+        self.dynamic_min_points_label.setVisible(True)
+        self.dynamic_max_iterations_spin.setVisible(True)
+        self.dynamic_max_iterations_label.setVisible(True)
+        self.dynamic_tolerance_spin.setVisible(True)
+        self.dynamic_tolerance_label.setVisible(True)
+        self.dynamic_igg3_k0_spin.setVisible(True)
+        self.dynamic_igg3_k0_label.setVisible(True)
+        self.dynamic_igg3_k1_spin.setVisible(True)
+        self.dynamic_igg3_k1_label.setVisible(True)
+        self.dynamic_normalize_design_chk.setVisible(True)
+        self.dynamic_status_label.setVisible(True)
+        self._update_dynamic_control_state()
+
         if sync_yaml:
             self._sync_form_to_yaml()
+
+    def _update_dynamic_control_state(self, _value=None) -> None:
+        sea_level_enabled = self.enable_sea_level_chk.isChecked()
+        dynamic_enabled = self.dynamic_sea_level_chk.isChecked()
+        window_hours = self.dynamic_window_hours_spin.value()
+        k0 = self.dynamic_igg3_k0_spin.value()
+        k1 = self.dynamic_igg3_k1_spin.value()
+
+        self.dynamic_window_hours_spin.setEnabled(True)
+        self.dynamic_min_points_spin.setEnabled(True)
+        self.dynamic_max_iterations_spin.setEnabled(True)
+        self.dynamic_tolerance_spin.setEnabled(True)
+        self.dynamic_igg3_k0_spin.setEnabled(True)
+        self.dynamic_igg3_k1_spin.setEnabled(True)
+        self.dynamic_normalize_design_chk.setEnabled(True)
+
+        if sea_level_enabled and dynamic_enabled:
+            self.dynamic_status_label.setText(
+                f"Second-order dynamic correction is enabled with a {window_hours:g} h trailing window and "
+                f"IGG-III thresholds k0={k0:g}, k1={k1:g}."
+            )
+            return
+
+        if sea_level_enabled:
+            self.dynamic_status_label.setText(
+                "Sea-level products are enabled. Turn on dynamic correction to estimate tide rate and acceleration."
+            )
+            return
+
+        if dynamic_enabled:
+            self.dynamic_status_label.setText(
+                "This correction is configured, but it only takes effect when Sea Level products are enabled."
+            )
+            return
+
+        self.dynamic_status_label.setText(
+            "Dynamic correction is available here even if the current environment policy is not generating Sea Level products."
+        )
 
     def _on_yaml_text_changed(self) -> None:
         if self._building_form:

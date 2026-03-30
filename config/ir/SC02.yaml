@@ -78,6 +78,16 @@ products:
   enable_sea_level: true
   enable_snow_depth: false
   sea_level_reference: 6.8
+  enable_dynamic_sea_level_correction: true
+  dynamic_sea_level_window_hours: 4.0
+  dynamic_sea_level_min_points: 6
+  dynamic_sea_level_max_iterations: 12
+  dynamic_sea_level_tolerance: 0.0001
+  dynamic_sea_level_igg3_k0: 0.5
+  dynamic_sea_level_igg3_k1: 2.0
+  dynamic_sea_level_min_weight: 1.0e-12
+  dynamic_sea_level_regularization: 1.0e-12
+  dynamic_sea_level_normalize_design: false
   snow_depth_reference_height: null
 output:
   output_dir: output/reflectometry

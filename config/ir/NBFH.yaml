@@ -15,19 +15,20 @@ input:
   constellations: []
   signals: []
   exclude_constellations: []
-  exclude_signals: []
+  exclude_signals:
+  - 2W
   sampling_interval: 30.0
 processing:
   min_elevation_deg: 5.0
   max_elevation_deg: 25.0
-  live_arc_window_minutes: 15
-  live_analysis_interval_seconds: 10
+  live_arc_window_minutes: 30
+  live_analysis_interval_seconds: 60
   elevation_rate_mode: monotonic
   min_arc_length: 300.0
   max_time_gap_seconds: 90.0
   detrend_method: polynomial_sin_elevation
   detrend_order: 2
-  smoothing_method: none
+  smoothing_method: savgol
   smoothing_window: 5
   outlier_method: mad
   outlier_threshold: 3.5
@@ -70,7 +71,7 @@ geometry:
     - - 90.0
       - 180.0
 qc:
-  min_peak_to_noise_ratio: 3.0
+  min_peak_to_noise_ratio: 10.0
   min_primary_peak_ratio: 1.25
   min_arc_duration: 120.0
   min_snr_amplitude: 1.0
@@ -83,6 +84,16 @@ products:
   enable_sea_level: true
   enable_snow_depth: false
   sea_level_reference: 6.8
+  enable_dynamic_sea_level_correction: true
+  dynamic_sea_level_window_hours: 3.0
+  dynamic_sea_level_min_points: 6
+  dynamic_sea_level_max_iterations: 12
+  dynamic_sea_level_tolerance: 0.0001
+  dynamic_sea_level_igg3_k0: 0.5
+  dynamic_sea_level_igg3_k1: 2.0
+  dynamic_sea_level_min_weight: 1.0e-12
+  dynamic_sea_level_regularization: 1.0e-12
+  dynamic_sea_level_normalize_design: true
   snow_depth_reference_height: null
 output:
   output_dir: output/reflectometry

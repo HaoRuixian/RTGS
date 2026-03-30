@@ -17,7 +17,12 @@ def test_example_config_loads():
     assert config.ir.peak_selection.max_candidates == 1
     assert config.qc.min_primary_peak_ratio == 1.25
     assert config.processing.live_arc_window_minutes == 20
-    assert config.processing.live_analysis_interval_seconds == 20
+    assert config.processing.live_analysis_interval_seconds == 60
+    assert config.products.enable_dynamic_sea_level_correction is True
+    assert config.products.dynamic_sea_level_window_hours == 4.0
+    assert config.products.dynamic_sea_level_igg3_k0 == 0.5
+    assert config.products.dynamic_sea_level_igg3_k1 == 2.0
+    assert config.products.dynamic_sea_level_normalize_design is False
 
 
 def test_legacy_geometry_fields_are_migrated_to_reflection_zones(tmp_path):

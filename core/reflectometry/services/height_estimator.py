@@ -60,7 +60,10 @@ class HeightEstimator:
             quality_metrics=quality_metrics,
             spectrum_frequency=spectrum.frequencies.tolist(),
             spectrum_power=spectrum.power.tolist(),
-            metadata={"noise_floor": spectrum.noise_floor},
+            metadata={
+                **arc.metadata,
+                "noise_floor": spectrum.noise_floor,
+            },
         )
 
 

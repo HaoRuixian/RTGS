@@ -90,6 +90,16 @@ products:
   enable_sea_level: true
   enable_snow_depth: false
   sea_level_reference: 6.8
+  enable_dynamic_sea_level_correction: true
+  dynamic_sea_level_window_hours: 4.0
+  dynamic_sea_level_min_points: 6
+  dynamic_sea_level_max_iterations: 12
+  dynamic_sea_level_tolerance: 0.0001
+  dynamic_sea_level_igg3_k0: 0.5
+  dynamic_sea_level_igg3_k1: 2.0
+  dynamic_sea_level_min_weight: 1.0e-12
+  dynamic_sea_level_regularization: 1.0e-12
+  dynamic_sea_level_normalize_design: false
   snow_depth_reference_height:
 
 output:
@@ -244,7 +254,35 @@ class ProductsConfig:
     enable_sea_level: bool = False
     enable_snow_depth: bool = False
     sea_level_reference: float | None = None
+    enable_dynamic_sea_level_correction: bool = False
+    dynamic_sea_level_window_hours: float = 4.0
+    dynamic_sea_level_min_points: int = 6
+    dynamic_sea_level_max_iterations: int = 12
+    dynamic_sea_level_tolerance: float = 1e-4
+    dynamic_sea_level_igg3_k0: float = 0.5
+    dynamic_sea_level_igg3_k1: float = 2.0
+    dynamic_sea_level_min_weight: float = 1e-12
+    dynamic_sea_level_regularization: float = 1e-12
+    dynamic_sea_level_normalize_design: bool = False
     snow_depth_reference_height: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.dynamic_sea_level_window_hours <= 0:
+            raise ValueError("products.dynamic_sea_level_window_hours must be > 0")
+        if self.dynamic_sea_level_min_points < 3:
+            raise ValueError("products.dynamic_sea_level_min_points must be >= 3")
+        if self.dynamic_sea_level_max_iterations <= 0:
+            raise ValueError("products.dynamic_sea_level_max_iterations must be > 0")
+        if self.dynamic_sea_level_tolerance <= 0:
+            raise ValueError("products.dynamic_sea_level_tolerance must be > 0")
+        if self.dynamic_sea_level_igg3_k0 <= 0:
+            raise ValueError("products.dynamic_sea_level_igg3_k0 must be > 0")
+        if self.dynamic_sea_level_igg3_k1 <= self.dynamic_sea_level_igg3_k0:
+            raise ValueError("products.dynamic_sea_level_igg3_k1 must be > dynamic_sea_level_igg3_k0")
+        if self.dynamic_sea_level_min_weight <= 0:
+            raise ValueError("products.dynamic_sea_level_min_weight must be > 0")
+        if self.dynamic_sea_level_regularization < 0:
+            raise ValueError("products.dynamic_sea_level_regularization must be >= 0")
 
 
 @dataclass(slots=True)
@@ -459,6 +497,18 @@ def load_config(path: str | Path) -> ReflectorConfig:
             enable_sea_level=bool(products_raw.get("enable_sea_level", False)),
             enable_snow_depth=bool(products_raw.get("enable_snow_depth", False)),
             sea_level_reference=products_raw.get("sea_level_reference"),
+            enable_dynamic_sea_level_correction=bool(
+                products_raw.get("enable_dynamic_sea_level_correction", False)
+            ),
+            dynamic_sea_level_window_hours=float(products_raw.get("dynamic_sea_level_window_hours", 4.0)),
+            dynamic_sea_level_min_points=int(products_raw.get("dynamic_sea_level_min_points", 6)),
+            dynamic_sea_level_max_iterations=int(products_raw.get("dynamic_sea_level_max_iterations", 12)),
+            dynamic_sea_level_tolerance=float(products_raw.get("dynamic_sea_level_tolerance", 1e-4)),
+            dynamic_sea_level_igg3_k0=float(products_raw.get("dynamic_sea_level_igg3_k0", 0.5)),
+            dynamic_sea_level_igg3_k1=float(products_raw.get("dynamic_sea_level_igg3_k1", 2.0)),
+            dynamic_sea_level_min_weight=float(products_raw.get("dynamic_sea_level_min_weight", 1e-12)),
+            dynamic_sea_level_regularization=float(products_raw.get("dynamic_sea_level_regularization", 1e-12)),
+            dynamic_sea_level_normalize_design=bool(products_raw.get("dynamic_sea_level_normalize_design", False)),
             snow_depth_reference_height=products_raw.get("snow_depth_reference_height"),
         ),
         output=OutputConfig(

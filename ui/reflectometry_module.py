@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import deque
+from collections import defaultdict, deque
 from copy import deepcopy
 from datetime import datetime
 import logging
@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -106,11 +107,33 @@ class ToolbarCanvasPanel(QWidget):
         layout.addWidget(self.canvas)
 
 
+class SortableTableWidgetItem(QTableWidgetItem):
+    """Table item with an explicit sort key for stable numeric and datetime sorting."""
+
+    def __init__(self, text: str, *, sort_value=None) -> None:
+        super().__init__(text)
+        self.sort_value = text if sort_value is None else sort_value
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        other_value = getattr(other, "sort_value", other.text())
+        try:
+            return self.sort_value < other_value
+        except Exception:
+            return super().__lt__(other)
+
+
 class ReflectometryModule(QMainWindow):
     """GNSS reflectometry workbench using the application's core reflectometry pipeline."""
 
     back_to_launcher = Signal()
     ALL_SYSTEMS = ("G", "R", "E", "C", "J", "S", "I")
+    PRODUCT_VIEW_LABELS = {
+        "by_system": "By System",
+        "by_direction": "By Arc Direction",
+        "by_signal": "By Signal / Frequency",
+        "by_pnr_band": "By P/N Band",
+        "pnr_weighted_epoch": "PNR-Weighted Epoch",
+    }
 
     def __init__(self) -> None:
         super().__init__()
@@ -141,6 +164,7 @@ class ReflectometryModule(QMainWindow):
         self.live_product_history: dict[tuple[str, str, str], ProductResult] = {}
         self.processed_observation_count = 0
         self.selected_product_type: str | None = None
+        self.selected_product_view_mode = "by_system"
         self.product_system_checks: dict[str, QCheckBox] = {}
         self.tracking_context_by_arc: dict[str, TrackingArcContext] = {}
         self.solution_arc_key_map: dict[str, str] = {}
@@ -245,14 +269,6 @@ class ReflectometryModule(QMainWindow):
         top_bar.addWidget(self.btn_export)
 
         top_bar.addWidget(self._make_separator())
-
-        self.lbl_mode = QLabel("Mode:")
-        top_bar.addWidget(self.lbl_mode)
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItem("Realtime Stream")
-        self.mode_combo.setEnabled(False)
-        self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
-        top_bar.addWidget(self.mode_combo)
 
         self.lbl_window = QLabel("Arc Window (min):")
         top_bar.addWidget(self.lbl_window)
@@ -587,7 +603,6 @@ class ReflectometryModule(QMainWindow):
             ("Mean Az", "mean_az"),
             ("Reflector Height", "height"),
             ("Peak P/N", "peak_pnr"),
-            ("Confidence", "confidence"),
         ]
         for row_index, (title, key) in enumerate(detail_rows):
             title_label = QLabel(title)
@@ -660,6 +675,16 @@ class ReflectometryModule(QMainWindow):
         self.product_selector.currentIndexChanged.connect(self._on_product_selection_changed)
         controls_layout.addWidget(self.product_selector)
         controls_layout.addSpacing(12)
+        controls_layout.addWidget(QLabel("Display:"))
+        self.product_view_mode_combo = QComboBox()
+        self.product_view_mode_combo.addItem("By System", "by_system")
+        self.product_view_mode_combo.addItem("By Arc Direction", "by_direction")
+        self.product_view_mode_combo.addItem("By Signal / Frequency", "by_signal")
+        self.product_view_mode_combo.addItem("By P/N Band", "by_pnr_band")
+        self.product_view_mode_combo.addItem("PNR-Weighted Epoch", "pnr_weighted_epoch")
+        self.product_view_mode_combo.currentIndexChanged.connect(self._on_product_view_mode_changed)
+        controls_layout.addWidget(self.product_view_mode_combo)
+        controls_layout.addSpacing(12)
         controls_layout.addWidget(QLabel("Systems:"))
         for sys_char, label in [
             ("G", "GPS"),
@@ -685,12 +710,60 @@ class ReflectometryModule(QMainWindow):
         layout.addWidget(self.product_panel)
 
         self.product_table = QTableWidget()
-        self.product_table.setColumnCount(7)
+        self.product_table.setColumnCount(8)
         self.product_table.setHorizontalHeaderLabels(
-            ["System", "Satellite", "Signal", "Timestamp", "Value", "Unit", "Confidence"]
+            ["Timestamp", "System", "Direction", "Satellite", "Signal / Freq", "Value", "Unit", "P/N"]
         )
+        self.product_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.product_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.product_table.setAlternatingRowColors(True)
+        self.product_table.setShowGrid(False)
+        self.product_table.setWordWrap(False)
+        self.product_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.product_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.product_table.verticalHeader().setVisible(False)
-        self.product_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.product_table.verticalHeader().setDefaultSectionSize(32)
+        product_header = self.product_table.horizontalHeader()
+        product_header.setSectionsClickable(True)
+        product_header.setSortIndicatorShown(True)
+        product_header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        product_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        product_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        product_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        product_header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        product_header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        product_header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+        product_header.setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
+        product_header.setSortIndicator(0, Qt.SortOrder.DescendingOrder)
+        self.product_table.setSortingEnabled(True)
+        self.product_table.setStyleSheet(
+            """
+            QTableWidget {
+                background: #FFFFFF;
+                border: 1px solid #D7E0EA;
+                border-radius: 10px;
+                alternate-background-color: #F8FBFF;
+                gridline-color: transparent;
+                padding: 4px;
+            }
+            QTableWidget::item {
+                padding: 7px 10px;
+                border-bottom: 1px solid #EEF2F6;
+            }
+            QTableWidget::item:selected {
+                background: #E7F0FA;
+                color: #0F172A;
+            }
+            QHeaderView::section {
+                background: #EEF4FA;
+                color: #0F172A;
+                padding: 8px 10px;
+                border: 0;
+                border-bottom: 1px solid #D7E0EA;
+                font-weight: 700;
+            }
+            """
+        )
         layout.addWidget(self.product_table)
         self._populate_product_selector()
         self._clear_product_plot()
@@ -699,6 +772,65 @@ class ReflectometryModule(QMainWindow):
     def _build_config_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
+
+        runtime_card = QFrame()
+        runtime_card.setObjectName("Panel")
+        runtime_layout = QVBoxLayout(runtime_card)
+        runtime_layout.setContentsMargins(16, 16, 16, 16)
+        runtime_layout.setSpacing(10)
+
+        runtime_title = QLabel("Realtime Product Controls")
+        runtime_title.setStyleSheet("font-size: 16px; font-weight: 800; color: #0F172A;")
+        runtime_layout.addWidget(runtime_title)
+
+        runtime_description = QLabel(
+            "Adjust the in-memory IR config used by the current session. "
+            "Use the full IR Config editor if you also want to save these values back to YAML."
+        )
+        runtime_description.setWordWrap(True)
+        runtime_description.setStyleSheet("color: #475569;")
+        runtime_layout.addWidget(runtime_description)
+
+        runtime_grid = QGridLayout()
+        runtime_grid.setHorizontalSpacing(12)
+        runtime_grid.setVerticalSpacing(8)
+
+        self.runtime_dynamic_correction_chk = QCheckBox("Enable second-order dynamic sea-level correction")
+        self.runtime_dynamic_correction_chk.setToolTip(
+            "Apply the second-order dynamic correction from the current IR config to realtime sea-level products."
+        )
+        self.runtime_dynamic_correction_chk.stateChanged.connect(self._on_runtime_dynamic_controls_changed)
+        runtime_grid.addWidget(QLabel("Dynamic Correction"), 0, 0)
+        runtime_grid.addWidget(self.runtime_dynamic_correction_chk, 0, 1)
+
+        self.runtime_dynamic_window_spin = QDoubleSpinBox()
+        self.runtime_dynamic_window_spin.setRange(0.5, 48.0)
+        self.runtime_dynamic_window_spin.setDecimals(2)
+        self.runtime_dynamic_window_spin.setSingleStep(0.5)
+        self.runtime_dynamic_window_spin.setKeyboardTracking(False)
+        self.runtime_dynamic_window_spin.setSuffix(" h")
+        self.runtime_dynamic_window_spin.setToolTip(
+            "Trailing time window used to estimate sea-level rate and acceleration for the dynamic correction."
+        )
+        self.runtime_dynamic_window_spin.valueChanged.connect(self._on_runtime_dynamic_controls_changed)
+        runtime_grid.addWidget(QLabel("Window Length"), 1, 0)
+        runtime_grid.addWidget(self.runtime_dynamic_window_spin, 1, 1)
+
+        runtime_layout.addLayout(runtime_grid)
+
+        self.runtime_dynamic_status_label = QLabel()
+        self.runtime_dynamic_status_label.setWordWrap(True)
+        self.runtime_dynamic_status_label.setStyleSheet("color: #334155;")
+        runtime_layout.addWidget(self.runtime_dynamic_status_label)
+
+        runtime_button_row = QHBoxLayout()
+        runtime_button_row.addStretch()
+        runtime_editor_button = QPushButton("Open Full IR Config")
+        runtime_editor_button.clicked.connect(self.open_ir_config_dialog)
+        runtime_button_row.addWidget(runtime_editor_button)
+        runtime_layout.addLayout(runtime_button_row)
+
+        layout.addWidget(runtime_card)
 
         self.config_info_label = QLabel()
         self.config_info_label.setWordWrap(True)
@@ -799,16 +931,113 @@ class ReflectometryModule(QMainWindow):
             finally:
                 checkbox.blockSignals(False)
 
+        self._sync_runtime_dynamic_controls_from_config()
+
+    def _sync_runtime_dynamic_controls_from_config(self) -> None:
+        if not hasattr(self, "runtime_dynamic_correction_chk"):
+            return
+
+        self.runtime_dynamic_correction_chk.blockSignals(True)
+        self.runtime_dynamic_window_spin.blockSignals(True)
+        try:
+            self.runtime_dynamic_correction_chk.setChecked(
+                bool(self.ir_config.products.enable_dynamic_sea_level_correction)
+            )
+            self.runtime_dynamic_window_spin.setValue(float(self.ir_config.products.dynamic_sea_level_window_hours))
+        finally:
+            self.runtime_dynamic_correction_chk.blockSignals(False)
+            self.runtime_dynamic_window_spin.blockSignals(False)
+
+        self._update_runtime_dynamic_control_state()
+
+    def _update_runtime_dynamic_control_state(self) -> None:
+        if not hasattr(self, "runtime_dynamic_correction_chk"):
+            return
+
+        sea_level_enabled = bool(self.ir_config.products.enable_sea_level)
+        correction_enabled = bool(self.runtime_dynamic_correction_chk.isChecked())
+        window_hours = float(self.runtime_dynamic_window_spin.value())
+
+        self.runtime_dynamic_correction_chk.setEnabled(sea_level_enabled)
+        self.runtime_dynamic_window_spin.setEnabled(sea_level_enabled and correction_enabled)
+
+        if not sea_level_enabled:
+            self.runtime_dynamic_status_label.setText(
+                "Dynamic correction is currently unavailable because sea-level products are disabled in this IR config."
+            )
+            return
+
+        if correction_enabled:
+            self.runtime_dynamic_status_label.setText(
+                f"Realtime sea-level estimation is using the second-order trailing-window correction. "
+                f"Current window length: {window_hours:g} h."
+            )
+            return
+
+        self.runtime_dynamic_status_label.setText(
+            "Realtime sea-level estimation is currently showing the raw sea-level product without the second-order correction."
+        )
+
+    def _on_runtime_dynamic_controls_changed(self, _value=None) -> None:
+        if not hasattr(self, "runtime_dynamic_correction_chk"):
+            return
+
+        if not self.ir_config.products.enable_sea_level:
+            self._update_runtime_dynamic_control_state()
+            return
+
+        enabled = bool(self.runtime_dynamic_correction_chk.isChecked())
+        window_hours = float(self.runtime_dynamic_window_spin.value())
+        previous_enabled = bool(self.ir_config.products.enable_dynamic_sea_level_correction)
+        previous_window = float(self.ir_config.products.dynamic_sea_level_window_hours)
+
+        self.ir_config.products.enable_dynamic_sea_level_correction = enabled
+        self.ir_config.products.dynamic_sea_level_window_hours = window_hours
+        self._update_runtime_dynamic_control_state()
+        self._refresh_config_view()
+
+        if previous_enabled == enabled and abs(previous_window - window_hours) < 1e-9:
+            return
+
+        self.append_log(
+            "Realtime dynamic sea-level correction updated: "
+            f"{'enabled' if enabled else 'disabled'}, window {window_hours:g} h."
+        )
+
+        if self.analysis_running:
+            self.append_log("New dynamic-correction settings will be applied after the current analysis finishes.")
+            return
+
+        if self._is_headless_file_analysis_mode():
+            self.append_log("Re-run Start Analysis to regenerate fast file-analysis products with the new correction settings.")
+            return
+
+        if not self.observation_buffer:
+            return
+
+        self._clear_live_product_history()
+        self._reset_realtime_processing(reseed_from_buffer=True)
+        self.run_ir_analysis()
+
     def _use_fast_file_analysis(self) -> bool:
+        return self._is_headless_file_analysis_mode()
+
+    def _is_headless_file_analysis_mode(self) -> bool:
         obs_settings = self.settings.get("OBS", {}) or {}
         return (
             str(obs_settings.get("source", "")) == "RINEX File"
             and bool(obs_settings.get("final_results_only", False))
         )
 
+    def _is_rinex_replay_source(self) -> bool:
+        obs_settings = self.settings.get("OBS", {}) or {}
+        return str(obs_settings.get("source", "")) == "RINEX File"
+
     def _mode_label(self) -> str:
-        if self._use_fast_file_analysis():
-            return "File Batch (Products Only)"
+        if self._is_headless_file_analysis_mode():
+            return "File Fast Loop (Realtime Logic)"
+        if self._is_rinex_replay_source():
+            return "File Replay (Realtime Logic)"
         return "Realtime Stream"
 
     def _sync_mode_combo_label(self) -> None:
@@ -831,7 +1060,7 @@ class ReflectometryModule(QMainWindow):
         return None
 
     def toggle_analysis(self) -> None:
-        if self._use_fast_file_analysis():
+        if self._is_headless_file_analysis_mode():
             self.run_ir_analysis()
             return
         self._set_analysis_loop_enabled(
@@ -846,10 +1075,14 @@ class ReflectometryModule(QMainWindow):
         self.analysis_loop_enabled = enabled
 
         if announce:
+            if self._is_headless_file_analysis_mode():
+                mode_label = "fast file"
+            else:
+                mode_label = "replay" if self._is_rinex_replay_source() else "realtime"
             self.append_log(
-                "Automatic realtime reflectometry analysis started."
+                f"Automatic {mode_label} reflectometry analysis started."
                 if enabled
-                else "Automatic realtime reflectometry analysis stopped."
+                else f"Automatic {mode_label} reflectometry analysis stopped."
             )
 
         if not enabled and not self.analysis_running:
@@ -1063,7 +1296,15 @@ class ReflectometryModule(QMainWindow):
 
     def _set_run_button_state(self, state: str, tooltip: str | None = None) -> None:
         self.analysis_button_state = state
-        mode_prefix = "File Analysis" if self._use_fast_file_analysis() else "Realtime Analysis"
+        if self._is_headless_file_analysis_mode():
+            mode_prefix = "Fast File Analysis"
+            active_text = "Fast File Analysis Running"
+        elif self._is_rinex_replay_source():
+            mode_prefix = "Replay Analysis"
+            active_text = "Stop Replay Analysis"
+        else:
+            mode_prefix = "Realtime Analysis"
+            active_text = "Stop Realtime Analysis"
         button_states = {
             "idle": {
                 "text": f"Start {mode_prefix}",
@@ -1072,7 +1313,7 @@ class ReflectometryModule(QMainWindow):
                 "border": "#1D4ED8",
             },
             "active": {
-                "text": "Stop Realtime Analysis",
+                "text": active_text,
                 "icon": QStyle.StandardPixmap.SP_MediaStop,
                 "color": "#0F766E",
                 "border": "#115E59",
@@ -1188,7 +1429,7 @@ class ReflectometryModule(QMainWindow):
 
     def _maybe_run_auto_analysis(self) -> None:
         """Trigger realtime analysis when enabled and enough time has passed."""
-        if self._use_fast_file_analysis():
+        if self._is_headless_file_analysis_mode():
             return
         if not self.analysis_loop_enabled:
             return
@@ -1207,16 +1448,17 @@ class ReflectometryModule(QMainWindow):
         """Run the reflectometry pipeline against the realtime observation buffer."""
         if self.analysis_running:
             return
-        if self._use_fast_file_analysis():
+        if self._is_headless_file_analysis_mode():
             self._start_file_batch_analysis()
             return
 
+        analysis_label = "replay" if self._is_rinex_replay_source() else "realtime"
         self.analysis_running = True
         self._set_run_button_state("running")
         QApplication.processEvents()
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            self.append_log("Running GNSS-IR realtime analysis...")
+            self.append_log(f"Running GNSS-IR {analysis_label} analysis...")
             processor, result = self._run_processing_cycle()
             if processor is None or result is None:
                 self._set_run_button_state("active" if self.analysis_loop_enabled else "idle")
@@ -1236,7 +1478,7 @@ class ReflectometryModule(QMainWindow):
             self._update_summary_cards()
             success_count = sum(item.success for item in result.arc_solutions)
             self.append_log(
-                f"Realtime IR analysis finished: {len(result.arc_solutions)} arcs, "
+                f"{analysis_label.title()} IR analysis finished: {len(result.arc_solutions)} arcs, "
                 f"{success_count} successful, {len(result.products)} products."
             )
             next_state = "active" if self.analysis_loop_enabled else "success"
@@ -1248,11 +1490,11 @@ class ReflectometryModule(QMainWindow):
                 ),
             )
         except Exception as exc:
-            self.append_log(f"Realtime IR analysis failed: {exc}")
+            self.append_log(f"{analysis_label.title()} IR analysis failed: {exc}")
             if self.analysis_loop_enabled:
                 self._set_analysis_loop_enabled(False, announce=False)
             self._set_run_button_state("failed", tooltip=str(exc))
-            QMessageBox.warning(self, "Reflectometry", f"Realtime IR analysis failed:\n{exc}")
+            QMessageBox.warning(self, "Reflectometry", f"{analysis_label.title()} IR analysis failed:\n{exc}")
         finally:
             QApplication.restoreOverrideCursor()
             self.analysis_running = False
@@ -1280,8 +1522,12 @@ class ReflectometryModule(QMainWindow):
 
         self.analysis_running = True
         self.analysis_loop_enabled = False
-        self._set_run_button_state("running", tooltip="Running batch file analysis...")
-        self.append_log("Running GNSS-IR file batch analysis (products-only mode)...")
+        running_tooltip = "Running fast file analysis with realtime logic..." if self._is_headless_file_analysis_mode() else "Running batch file analysis..."
+        self._set_run_button_state("running", tooltip=running_tooltip)
+        if self._is_headless_file_analysis_mode():
+            self.append_log("Running GNSS-IR fast file analysis with realtime logic...")
+        else:
+            self.append_log("Running GNSS-IR file batch analysis (products-only mode)...")
 
         self.batch_analysis_thread = RinexBatchAnalysisThread(
             obs_settings=obs_settings,
@@ -1295,6 +1541,9 @@ class ReflectometryModule(QMainWindow):
             handler=self.handler,
             logger=self.analysis_logger,
             signals=self.batch_signals,
+            use_realtime_logic=self._is_headless_file_analysis_mode(),
+            live_window_seconds=self._live_window_seconds() if self._is_headless_file_analysis_mode() else None,
+            analysis_interval_seconds=float(self.auto_interval_spin.value()) if self._is_headless_file_analysis_mode() else None,
         )
         self.batch_analysis_thread.start()
 
@@ -1304,6 +1553,7 @@ class ReflectometryModule(QMainWindow):
         self.analysis_running = False
         result = payload["result"]
         processor = payload["processor"]
+        used_realtime_logic = bool(payload.get("used_realtime_logic", False))
         self.latest_result = result
         self.latest_series_by_arc = dict(payload.get("series_by_arc", {}))
         self.last_processor = processor
@@ -1318,11 +1568,18 @@ class ReflectometryModule(QMainWindow):
         self._ensure_selected_arc_visible()
         self._update_summary_cards()
         success_count = sum(item.success for item in result.arc_solutions)
-        self.append_log(
-            f"File batch analysis finished: {len(result.arc_solutions)} arcs, "
-            f"{success_count} successful, {len(result.products)} products, "
-            f"{self.processed_observation_count} observations processed."
-        )
+        if used_realtime_logic:
+            self.append_log(
+                f"Fast file analysis finished: {len(result.arc_solutions)} arcs, "
+                f"{success_count} successful, {len(result.products)} products, "
+                f"{self.processed_observation_count} observations processed."
+            )
+        else:
+            self.append_log(
+                f"File batch analysis finished: {len(result.arc_solutions)} arcs, "
+                f"{success_count} successful, {len(result.products)} products, "
+                f"{self.processed_observation_count} observations processed."
+            )
         self._set_run_button_state(
             "success",
             tooltip=(
@@ -1335,30 +1592,25 @@ class ReflectometryModule(QMainWindow):
     def _on_batch_analysis_failed(self, message: str) -> None:
         self.batch_analysis_thread = None
         self.analysis_running = False
-        self.append_log(f"File batch analysis failed: {message}")
+        prefix = "Fast file analysis" if self._is_headless_file_analysis_mode() else "File batch analysis"
+        self.append_log(f"{prefix} failed: {message}")
         self._set_run_button_state("failed", tooltip=message)
-        QMessageBox.warning(self, "Reflectometry", f"File batch analysis failed:\n{message}")
+        QMessageBox.warning(self, "Reflectometry", f"{prefix} failed:\n{message}")
 
     @Slot()
     def _on_batch_analysis_cancelled(self) -> None:
         self.batch_analysis_thread = None
         self.analysis_running = False
-        self.append_log("File batch analysis cancelled.")
+        if self._is_headless_file_analysis_mode():
+            self.append_log("Fast file analysis cancelled.")
+        else:
+            self.append_log("File batch analysis cancelled.")
         self._set_run_button_state("idle")
 
     def _run_processing_cycle(self) -> tuple[RealtimeProcessor | None, ProcessingRunResult | None]:
         return self._run_live_realtime_analysis()
 
-    def _run_live_realtime_analysis(self) -> tuple[RealtimeProcessor | None, ProcessingRunResult | None]:
-        observations = [item for item in self.observation_buffer if item.constellation in self.active_systems]
-        if not observations:
-            QMessageBox.information(
-                self,
-                "Reflectometry",
-                "No realtime observations are available yet. Connect OBS/EPH streams first.",
-            )
-            return None, None
-
+    def _ensure_live_realtime_processor(self) -> RealtimeProcessor:
         self._sync_runtime_ir_defaults()
         if self.live_realtime_processor is None:
             runtime_config = deepcopy(self.ir_config)
@@ -1366,27 +1618,103 @@ class ReflectometryModule(QMainWindow):
             runtime_config.logging.rotating_file = False
             runtime_config.station.receiver_position = self._current_receiver_position(runtime_config.station.receiver_position)
             self.live_realtime_processor = RealtimeProcessor(runtime_config, logger=self.analysis_logger)
-            if not self.pending_live_records:
-                self.pending_live_records = list(observations)
+        return self.live_realtime_processor
+
+    def _run_live_realtime_analysis(self) -> tuple[RealtimeProcessor | None, ProcessingRunResult | None]:
+        observations = [item for item in self.observation_buffer if item.constellation in self.active_systems]
+        if not observations:
+            QMessageBox.information(
+                self,
+                "Reflectometry",
+                "No reflectometry observations are available yet. Start the OBS/EPH source first.",
+            )
+            return None, None
+
+        created_processor = self.live_realtime_processor is None
+        processor = self._ensure_live_realtime_processor()
+        if created_processor and not self.pending_live_records:
+            self.pending_live_records = list(observations)
 
         reference_time = observations[-1].timestamp
         self._trim_pending_live_records(reference_time)
         pending_records = list(self.pending_live_records)
         self.pending_live_records.clear()
         if pending_records:
-            result = self.live_realtime_processor.ingest(
+            result = processor.ingest(
                 pending_records,
                 reference_time=reference_time,
                 window_seconds=self._live_window_seconds(),
                 include_open_preview=True,
             )
         else:
-            result = self.live_realtime_processor.snapshot(
+            result = processor.snapshot(
                 reference_time=reference_time,
                 window_seconds=self._live_window_seconds(),
                 include_open_preview=True,
             )
-        return self.live_realtime_processor, result
+        return processor, result
+
+    def _finalize_rinex_replay_analysis(self) -> None:
+        if not self._is_rinex_replay_source():
+            return
+        if not self.analysis_loop_enabled:
+            return
+        if self.analysis_running:
+            QTimer.singleShot(200, self._finalize_rinex_replay_analysis)
+            return
+        if self.live_realtime_processor is None and not self.pending_live_records:
+            self.analysis_loop_enabled = False
+            self._set_run_button_state("success", tooltip="RINEX replay completed.")
+            return
+
+        self.analysis_running = True
+        self._set_run_button_state("running", tooltip="Finalizing replay analysis...")
+        try:
+            processor = self._ensure_live_realtime_processor()
+            if self.pending_live_records:
+                reference_time = self.pending_live_records[-1].timestamp
+                self._trim_pending_live_records(reference_time)
+                pending_records = list(self.pending_live_records)
+                self.pending_live_records.clear()
+                if pending_records:
+                    processor.ingest(
+                        pending_records,
+                        reference_time=reference_time,
+                        window_seconds=self._live_window_seconds(),
+                        include_open_preview=True,
+                    )
+
+            result = processor.flush()
+            self.latest_result = result
+            self._merge_live_product_history(result)
+            self.latest_series_by_arc = processor.get_intermediate_series()
+            self.last_processor = processor
+            self.last_analysis_timestamp = datetime.utcnow()
+            self._populate_arc_table()
+            self._populate_product_selector()
+            self._populate_product_table()
+            self._refresh_product_plot()
+            self._ensure_selected_arc_visible()
+            self._update_summary_cards()
+            success_count = sum(item.success for item in result.arc_solutions)
+            self.append_log(
+                f"RINEX replay finalized: {len(result.arc_solutions)} arcs, "
+                f"{success_count} successful, {len(result.products)} products."
+            )
+            self.analysis_loop_enabled = False
+            self._set_run_button_state(
+                "success",
+                tooltip=(
+                    f"Replay finalized: {len(result.arc_solutions)} arcs, "
+                    f"{success_count} successful, {len(result.products)} products."
+                ),
+            )
+        except Exception as exc:
+            self.analysis_loop_enabled = False
+            self.append_log(f"RINEX replay finalization failed: {exc}")
+            self._set_run_button_state("failed", tooltip=str(exc))
+        finally:
+            self.analysis_running = False
 
     def _ensure_selected_arc_visible(self) -> None:
         if self.arc_table.rowCount() == 0:
@@ -1539,38 +1867,81 @@ class ReflectometryModule(QMainWindow):
         return max(float(self.ir_config.qc.min_arc_duration), self._live_window_seconds())
 
     def _populate_product_table(self) -> None:
+        header = self.product_table.horizontalHeader()
+        sort_column = header.sortIndicatorSection()
+        sort_order = header.sortIndicatorOrder()
+        if sort_column < 0:
+            sort_column = 0
+            sort_order = Qt.SortOrder.DescendingOrder
+
+        self.product_table.setSortingEnabled(False)
         self.product_table.setRowCount(0)
         products = self._selected_products_for_display()
         if not products:
+            self.product_table.setSortingEnabled(True)
             return
 
         ordered_products = sorted(
             products,
             key=lambda item: (
                 item.timestamp,
-                str(item.metadata.get("constellation", "")),
-                str(item.metadata.get("signal", "")),
+                self._product_constellation(item),
+                self._product_signal(item),
                 item.value,
             ),
             reverse=True,
         )
         for row_index, product in enumerate(ordered_products):
             self.product_table.insertRow(row_index)
-            row_values = [
-                str(product.metadata.get("constellation", "--")),
-                str(product.metadata.get("satellite", "--")),
-                str(product.metadata.get("signal", "--")),
-                product.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
-                f"{product.value:.3f}",
-                product.unit,
-                f"{product.confidence:.2f}",
+            constellation = self._product_constellation(product)
+            system_label = self._system_display_name(constellation)
+            direction_key = self._product_direction(product)
+            direction_label = self._direction_display_name(direction_key)
+            peak_to_noise_ratio = self._product_peak_to_noise_ratio(product)
+            pnr_band = self._pnr_band_key(peak_to_noise_ratio)
+            row_items = [
+                self._make_product_table_item(
+                    product.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+                    sort_value=product.timestamp,
+                    alignment=Qt.AlignmentFlag.AlignCenter,
+                ),
+                self._make_product_table_item(
+                    system_label,
+                    sort_value=system_label,
+                    foreground=get_sys_color(constellation) if constellation != "--" else None,
+                    bold=True,
+                ),
+                self._make_product_table_item(
+                    direction_label,
+                    sort_value=self._direction_sort_order(direction_key),
+                    foreground=self._product_group_color("by_direction", direction_key, 0),
+                ),
+                self._make_product_table_item(self._product_satellite(product)),
+                self._make_product_table_item(self._product_signal(product)),
+                self._make_product_table_item(
+                    f"{product.value:.3f}",
+                    sort_value=float(product.value),
+                    alignment=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                    bold=True,
+                ),
+                self._make_product_table_item(
+                    product.unit,
+                    alignment=Qt.AlignmentFlag.AlignCenter,
+                ),
+                self._make_product_table_item(
+                    f"{peak_to_noise_ratio:.2f}" if peak_to_noise_ratio is not None else "--",
+                    sort_value=float(peak_to_noise_ratio) if peak_to_noise_ratio is not None else -1.0,
+                    alignment=Qt.AlignmentFlag.AlignCenter,
+                    foreground=self._pnr_band_text_color(pnr_band),
+                    background=self._pnr_band_background_color(pnr_band),
+                    bold=peak_to_noise_ratio is not None,
+                ),
             ]
-            for column, value in enumerate(row_values):
-                item = QTableWidgetItem(value)
-                if column == 0:
-                    item.setForeground(QColor(get_sys_color(value)))
+            for column, item in enumerate(row_items):
                 self.product_table.setItem(row_index, column, item)
         self.product_table.resizeRowsToContents()
+        self.product_table.setSortingEnabled(True)
+        self.product_table.sortItems(sort_column, sort_order)
 
     def _populate_product_selector(self) -> None:
         if not hasattr(self, "product_selector"):
@@ -1609,6 +1980,12 @@ class ReflectometryModule(QMainWindow):
             return
         self.selected_product_type = self.product_selector.itemData(index)
         self._populate_product_table()
+        self._refresh_product_plot()
+
+    def _on_product_view_mode_changed(self, index: int) -> None:
+        if index < 0 or not hasattr(self, "product_view_mode_combo"):
+            return
+        self.selected_product_view_mode = str(self.product_view_mode_combo.itemData(index) or "by_system")
         self._refresh_product_plot()
 
     def _on_product_system_filter_changed(self, _: int) -> None:
@@ -1803,8 +2180,6 @@ class ReflectometryModule(QMainWindow):
         self.arc_detail_labels["peak_pnr"].setText(
             f"{solution.peak_to_noise_ratio:.2f}" if solution.peak_to_noise_ratio is not None else "--"
         )
-        confidence = solution.quality_metrics.confidence if solution.quality_metrics is not None else None
-        self.arc_detail_labels["confidence"].setText(f"{confidence:.2f}" if confidence is not None else "--")
 
     def _clear_arc_detail_summary(self) -> None:
         if not hasattr(self, "arc_detail_labels"):
@@ -1913,7 +2288,6 @@ class ReflectometryModule(QMainWindow):
         self.arc_detail_labels["mean_az"].setText(f"{context.mean_az} deg" if context.mean_az != "--" else "--")
         self.arc_detail_labels["height"].setText("--")
         self.arc_detail_labels["peak_pnr"].setText("--")
-        self.arc_detail_labels["confidence"].setText("--")
 
     def _refresh_tracking_series_plot(self, context: TrackingArcContext) -> None:
         series = context.series
@@ -2033,31 +2407,84 @@ class ReflectometryModule(QMainWindow):
             self._clear_product_plot()
             return
 
-        grouped: dict[str, list[tuple[datetime, float]]] = {}
-        for product in products:
-            constellation = str(product.metadata.get("constellation", "U") or "U")
-            grouped.setdefault(constellation, []).append((product.timestamp, product.value))
-
-        for constellation, points in grouped.items():
-            points = sorted(points, key=lambda item: item[0])
+        view_mode = self._current_product_view_mode()
+        if view_mode == "pnr_weighted_epoch":
+            ordered_products = sorted(products, key=lambda item: item.timestamp)
             self.product_ax.scatter(
-                [item[0] for item in points],
-                [item[1] for item in points],
-                label=self._system_display_name(constellation),
-                s=28,
-                color=get_sys_color(constellation),
-                alpha=0.85,
+                [item.timestamp for item in ordered_products],
+                [item.value for item in ordered_products],
+                label="Raw inversions",
+                s=26,
+                color="#CBD5E1",
+                alpha=0.38,
                 edgecolors="none",
+                zorder=1,
             )
+
+            weighted_epochs = self._weighted_product_epochs(products)
+            if weighted_epochs:
+                timestamps = [item["timestamp"] for item in weighted_epochs]
+                values = [item["value"] for item in weighted_epochs]
+                self.product_ax.plot(
+                    timestamps,
+                    values,
+                    color="#C2410C",
+                    linewidth=2.2,
+                    alpha=0.96,
+                    label="PNR-weighted epoch value",
+                    zorder=3,
+                )
+                self.product_ax.scatter(
+                    timestamps,
+                    values,
+                    s=54,
+                    color="#EA580C",
+                    alpha=0.98,
+                    edgecolors="#FFF7ED",
+                    linewidths=0.8,
+                    label="_nolegend_",
+                    zorder=4,
+                )
+        else:
+            grouped = self._group_products_for_view(products, view_mode)
+            for index, (group_key, group_products) in enumerate(grouped.items()):
+                points = sorted(group_products, key=lambda item: item.timestamp)
+                color = self._product_group_color(view_mode, group_key, index)
+                timestamps = [item.timestamp for item in points]
+                values = [item.value for item in points]
+                self.product_ax.plot(
+                    timestamps,
+                    values,
+                    color=color,
+                    linewidth=1.6,
+                    alpha=0.45,
+                    zorder=2,
+                )
+                self.product_ax.scatter(
+                    timestamps,
+                    values,
+                    label=self._product_group_label(view_mode, group_key),
+                    s=42,
+                    color=color,
+                    alpha=0.92,
+                    edgecolors="#FFFFFF",
+                    linewidths=0.6,
+                    zorder=3,
+                )
 
         self.product_ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
         self.product_ax.tick_params(axis="x", labelrotation=20)
         selected_type = self.selected_product_type or products[0].product_type.value
-        self.product_ax.set_title(f"{self._format_product_type_label(selected_type)} Trend")
+        self.product_ax.set_title(
+            f"{self._format_product_type_label(selected_type)} Trend | {self._product_view_label(view_mode)}"
+        )
         self.product_ax.set_xlabel("Time")
-        self.product_ax.set_ylabel("Value")
+        unit = str(products[0].unit or "").strip()
+        self.product_ax.set_ylabel(f"Value ({unit})" if unit else "Value")
         self.product_ax.grid(True, alpha=0.3)
-        self.product_ax.legend(loc="best")
+        handles, labels = self.product_ax.get_legend_handles_labels()
+        if handles:
+            self.product_ax.legend(loc="best")
         self.product_panel.canvas.draw_idle()
 
     def _clear_series_plot(self) -> None:
@@ -2122,11 +2549,272 @@ class ReflectometryModule(QMainWindow):
             item
             for item in products
             if item.product_type.value == selected_type
-            and str(item.metadata.get("constellation", "")) in active_systems
+            and (
+                self._product_constellation(item) in active_systems
+                or self._product_constellation(item) not in self.ALL_SYSTEMS
+            )
         ]
+
+    def _current_product_view_mode(self) -> str:
+        if hasattr(self, "product_view_mode_combo"):
+            current_mode = self.product_view_mode_combo.currentData()
+            if current_mode:
+                self.selected_product_view_mode = str(current_mode)
+        return self.selected_product_view_mode or "by_system"
+
+    def _product_solution(self, product: ProductResult) -> ArcSolution | None:
+        arc_id = str(product.metadata.get("arc_id", "")).strip()
+        if not arc_id:
+            return None
+        return self._find_solution_by_arc_id(arc_id)
+
+    def _product_constellation(self, product: ProductResult) -> str:
+        value = product.metadata.get("constellation")
+        if value not in (None, ""):
+            return str(value)
+        solution = self._product_solution(product)
+        return solution.constellation if solution is not None else "--"
+
+    def _product_satellite(self, product: ProductResult) -> str:
+        value = product.metadata.get("satellite")
+        if value not in (None, ""):
+            return str(value)
+        solution = self._product_solution(product)
+        return solution.satellite if solution is not None else "--"
+
+    def _product_signal(self, product: ProductResult) -> str:
+        value = product.metadata.get("signal")
+        if value not in (None, ""):
+            return str(value)
+        solution = self._product_solution(product)
+        return solution.signal if solution is not None else "--"
+
+    def _product_peak_to_noise_ratio(self, product: ProductResult) -> float | None:
+        value = product.metadata.get("peak_to_noise_ratio")
+        if value not in (None, ""):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+        solution = self._product_solution(product)
+        if solution is None or solution.peak_to_noise_ratio is None:
+            return None
+        return float(solution.peak_to_noise_ratio)
+
+    def _product_direction(self, product: ProductResult) -> str:
+        value = product.metadata.get("arc_direction")
+        if value not in (None, ""):
+            return str(value)
+        solution = self._product_solution(product)
+        if solution is None or solution.arc_direction is None:
+            return "unknown"
+        return str(solution.arc_direction.value)
+
+    def _direction_display_name(self, direction: str) -> str:
+        return {
+            "rising": "Rising",
+            "setting": "Setting",
+            "combined": "Combined",
+            "unknown": "Unknown",
+        }.get(direction, direction.title())
+
+    @staticmethod
+    def _direction_sort_order(direction: str) -> int:
+        return {
+            "rising": 0,
+            "setting": 1,
+            "combined": 2,
+            "unknown": 3,
+        }.get(direction, 99)
+
+    def _pnr_band_key(self, peak_to_noise_ratio: float | None) -> str:
+        if peak_to_noise_ratio is None:
+            return "pnr_unknown"
+        if peak_to_noise_ratio < 3.0:
+            return "pnr_lt_3"
+        if peak_to_noise_ratio < 6.0:
+            return "pnr_3_6"
+        if peak_to_noise_ratio < 10.0:
+            return "pnr_6_10"
+        return "pnr_gte_10"
+
+    @staticmethod
+    def _pnr_band_label(band: str) -> str:
+        return {
+            "pnr_lt_3": "P/N < 3",
+            "pnr_3_6": "P/N 3-6",
+            "pnr_6_10": "P/N 6-10",
+            "pnr_gte_10": "P/N >= 10",
+            "pnr_unknown": "P/N Unknown",
+        }.get(band, band)
+
+    @staticmethod
+    def _pnr_band_sort_order(band: str) -> int:
+        return {
+            "pnr_lt_3": 0,
+            "pnr_3_6": 1,
+            "pnr_6_10": 2,
+            "pnr_gte_10": 3,
+            "pnr_unknown": 4,
+        }.get(band, 99)
+
+    @staticmethod
+    def _pnr_band_background_color(band: str) -> str:
+        return {
+            "pnr_lt_3": "#FEE2E2",
+            "pnr_3_6": "#FFEDD5",
+            "pnr_6_10": "#DCFCE7",
+            "pnr_gte_10": "#BBF7D0",
+            "pnr_unknown": "#E5E7EB",
+        }.get(band, "#E5E7EB")
+
+    @staticmethod
+    def _pnr_band_text_color(band: str) -> str:
+        return {
+            "pnr_lt_3": "#B42318",
+            "pnr_3_6": "#C2410C",
+            "pnr_6_10": "#166534",
+            "pnr_gte_10": "#166534",
+            "pnr_unknown": "#475569",
+        }.get(band, "#475569")
+
+    def _product_view_label(self, view_mode: str | None = None) -> str:
+        return self.PRODUCT_VIEW_LABELS.get(view_mode or self._current_product_view_mode(), "By System")
+
+    def _group_products_for_view(
+        self,
+        products: list[ProductResult],
+        view_mode: str,
+    ) -> dict[str, list[ProductResult]]:
+        grouped: dict[str, list[ProductResult]] = defaultdict(list)
+        for product in products:
+            grouped[self._product_group_key(product, view_mode)].append(product)
+        return dict(sorted(grouped.items(), key=lambda item: self._product_group_sort_key(view_mode, item[0])))
+
+    def _product_group_key(self, product: ProductResult, view_mode: str) -> str:
+        if view_mode == "by_direction":
+            return self._product_direction(product)
+        if view_mode == "by_signal":
+            return self._product_signal(product) or "--"
+        if view_mode == "by_pnr_band":
+            return self._pnr_band_key(self._product_peak_to_noise_ratio(product))
+        return self._product_constellation(product)
+
+    def _product_group_sort_key(self, view_mode: str, group_key: str) -> tuple[object, str]:
+        if view_mode == "by_system":
+            try:
+                return (self.ALL_SYSTEMS.index(group_key), group_key)
+            except ValueError:
+                return (len(self.ALL_SYSTEMS), group_key)
+        if view_mode == "by_direction":
+            return (self._direction_sort_order(group_key), group_key)
+        if view_mode == "by_pnr_band":
+            return (self._pnr_band_sort_order(group_key), group_key)
+        return (group_key, group_key)
+
+    def _product_group_label(self, view_mode: str, group_key: str) -> str:
+        if view_mode == "by_direction":
+            return self._direction_display_name(group_key)
+        if view_mode == "by_signal":
+            return group_key
+        if view_mode == "by_pnr_band":
+            return self._pnr_band_label(group_key)
+        return self._system_display_name(group_key)
+
+    def _product_group_color(self, view_mode: str, group_key: str, index: int) -> str:
+        signal_palette = [
+            "#2563EB",
+            "#EA580C",
+            "#0F766E",
+            "#7C3AED",
+            "#D97706",
+            "#DC2626",
+            "#0891B2",
+            "#4F46E5",
+        ]
+        if view_mode == "by_system":
+            return get_sys_color(group_key) if group_key in self.ALL_SYSTEMS else "#64748B"
+        if view_mode == "by_direction":
+            return {
+                "rising": "#2563EB",
+                "setting": "#EA580C",
+                "unknown": "#94A3B8",
+            }.get(group_key, "#64748B")
+        if view_mode == "by_pnr_band":
+            return {
+                "pnr_lt_3": "#DC2626",
+                "pnr_3_6": "#EA580C",
+                "pnr_6_10": "#16A34A",
+                "pnr_gte_10": "#047857",
+                "pnr_unknown": "#94A3B8",
+            }.get(group_key, "#64748B")
+        return signal_palette[index % len(signal_palette)]
+
+    def _make_product_table_item(
+        self,
+        text: str,
+        *,
+        sort_value=None,
+        alignment: Qt.AlignmentFlag | None = None,
+        foreground: str | QColor | None = None,
+        background: str | QColor | None = None,
+        bold: bool = False,
+    ) -> QTableWidgetItem:
+        item = SortableTableWidgetItem(text, sort_value=sort_value)
+        if alignment is not None:
+            item.setTextAlignment(int(alignment))
+        if foreground is not None:
+            item.setForeground(QColor(foreground) if isinstance(foreground, str) else foreground)
+        if background is not None:
+            item.setBackground(QColor(background) if isinstance(background, str) else background)
+        if bold:
+            font = item.font()
+            font.setBold(True)
+            item.setFont(font)
+        return item
+
+    def _product_weight(self, product: ProductResult) -> float:
+        peak_to_noise_ratio = self._product_peak_to_noise_ratio(product)
+        if peak_to_noise_ratio is None:
+            return 1.0
+        return max(peak_to_noise_ratio, 1e-6)
+
+    def _weighted_product_epochs(self, products: list[ProductResult]) -> list[dict[str, object]]:
+        grouped: dict[datetime, list[ProductResult]] = defaultdict(list)
+        for product in products:
+            grouped[self._normalize_product_timestamp(product.timestamp)].append(product)
+
+        weighted_epochs: list[dict[str, object]] = []
+        for timestamp, items in sorted(grouped.items(), key=lambda entry: entry[0]):
+            weights = [self._product_weight(item) for item in items]
+            total_weight = sum(weights)
+            if total_weight <= 0.0:
+                weights = [1.0 for _ in items]
+                total_weight = float(len(items))
+            weighted_value = sum(item.value * weight for item, weight in zip(items, weights)) / total_weight
+            weighted_epochs.append(
+                {
+                    "timestamp": timestamp,
+                    "value": weighted_value,
+                    "source_count": len(items),
+                    "weight_sum": total_weight,
+                }
+            )
+        return weighted_epochs
+
+    @staticmethod
+    def _normalize_product_timestamp(timestamp: datetime) -> datetime:
+        return timestamp.replace(microsecond=0)
 
     @staticmethod
     def _format_product_type_label(product_type: str) -> str:
+        label_overrides = {
+            ProductType.SEA_LEVEL_DYNAMIC_CORRECTED.value: "Sea Level (Dynamic Corrected)",
+            ProductType.SEA_LEVEL_RATE.value: "Sea Level Rate",
+            ProductType.SEA_LEVEL_ACCELERATION.value: "Sea Level Acceleration",
+        }
+        if product_type in label_overrides:
+            return label_overrides[product_type]
         return product_type.replace("_", " ").title()
 
     def _selected_product_systems(self) -> set[str]:
@@ -2142,18 +2830,25 @@ class ReflectometryModule(QMainWindow):
             "J": "QZSS",
             "S": "SBAS",
             "I": "IRNSS",
+            "M": "Combined",
         }.get(system, system)
 
     def _refresh_config_view(self) -> None:
+        dynamic_status = "On" if self.ir_config.products.enable_dynamic_sea_level_correction else "Off"
+        sea_level_status = "On" if self.ir_config.products.enable_sea_level else "Off"
+        dynamic_window_hours = float(self.ir_config.products.dynamic_sea_level_window_hours)
         self.config_info_label.setText(
             f"Current IR YAML: {self.ir_config_path}\n"
             f"Station: {self.ir_config.station.station_id} | "
+            f"Sea Level: {sea_level_status} | Dynamic Correction: {dynamic_status} | "
+            f"Window: {dynamic_window_hours:g} h\n"
             "Realtime stream defaults are applied in memory."
         )
         try:
             self.config_text.setPlainText(self._serialize_ir_config())
         except Exception as exc:
             self.config_text.setPlainText(f"Failed to read config file:\n{exc}")
+        self._update_runtime_dynamic_control_state()
 
     def _update_summary_cards(self) -> None:
         tracked_satellites = len([key for key in self.merged_satellites if key[0] in self.active_systems])
@@ -2163,7 +2858,7 @@ class ReflectometryModule(QMainWindow):
             buffered_samples = self.processed_observation_count
         self.mountpoint_label.setText(mountpoint_text)
         self.summary_labels["ir_config"].setText(self.ir_config_path.name)
-        self.summary_labels["analysis_mode"].setText(self.mode_combo.currentText())
+        self.summary_labels["analysis_mode"].setText(self._mode_label())
         self.summary_labels["tracked_satellites"].setText(str(tracked_satellites))
         self.summary_labels["buffered_samples"].setText(str(buffered_samples))
         self.summary_labels["last_run"].setText(
@@ -2185,11 +2880,28 @@ class ReflectometryModule(QMainWindow):
         self.summary_labels["latest_snow_depth"].setText(self._latest_product_text(ProductType.SNOW_DEPTH.value))
 
     def _latest_product_text(self, product_type: str) -> str:
-        products = [item for item in self._products_for_display() if item.product_type.value == product_type]
+        if (
+            product_type == ProductType.SEA_LEVEL.value
+            and self.ir_config.products.enable_dynamic_sea_level_correction
+        ):
+            corrected_products = [
+                item
+                for item in self._products_for_display()
+                if item.product_type.value == ProductType.SEA_LEVEL_DYNAMIC_CORRECTED.value
+            ]
+            if corrected_products:
+                products = corrected_products
+            else:
+                products = [item for item in self._products_for_display() if item.product_type.value == product_type]
+        else:
+            products = [item for item in self._products_for_display() if item.product_type.value == product_type]
         if not products:
             return "--"
         product = sorted(products, key=lambda item: item.timestamp)[-1]
-        return f"{product.value:.3f} {product.unit} ({product.confidence:.2f})"
+        peak_to_noise_ratio = self._product_peak_to_noise_ratio(product)
+        if peak_to_noise_ratio is None:
+            return f"{product.value:.3f} {product.unit}"
+        return f"{product.value:.3f} {product.unit} | P/N {peak_to_noise_ratio:.2f}"
 
     def export_results(self) -> None:
         if self.last_processor is None or self.latest_result is None:
@@ -2334,7 +3046,7 @@ class ReflectometryModule(QMainWindow):
             )
             self._render_status_indicators()
             self.append_log(
-                "Fast RINEX file analysis mode ready. Live replay is disabled; click Start Analysis to compute final products."
+                "Fast RINEX file analysis mode ready. Click Start Analysis to run realtime logic without replay or live UI updates."
             )
             self.append_log(f"Active GNSS systems: {', '.join(sorted(self.active_systems))}")
             return
@@ -2418,6 +3130,8 @@ class ReflectometryModule(QMainWindow):
             return
         self.stream_status[name] = bool(connected)
         self._render_status_indicator(name)
+        if name == "OBS" and not connected and self._is_rinex_replay_source():
+            QTimer.singleShot(0, self._finalize_rinex_replay_analysis)
 
     def _reset_status_indicators(self) -> None:
         self.stream_status = {"OBS": False, "EPH": False}

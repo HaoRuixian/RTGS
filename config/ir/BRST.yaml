@@ -4,9 +4,9 @@ station:
     latitude_deg: 48.380491
     longitude_deg: -4.496598
     height_m: 67.837
-    x_m: -2171604.0201000003
-    y_m: 4385718.2204
-    z_m: 4076741.0261000004
+    x_m: 4231164.131800001
+    y_m: -332747.0293
+    z_m: 4745132.2087
   antenna_height: 21.0
   monument_height: 0.8
   environment_type: coastal
@@ -20,8 +20,8 @@ input:
 processing:
   min_elevation_deg: 5.0
   max_elevation_deg: 25.0
-  live_arc_window_minutes: 5
-  live_analysis_interval_seconds: 5
+  live_arc_window_minutes: 15
+  live_analysis_interval_seconds: 60
   elevation_rate_mode: monotonic
   min_arc_length: 300.0
   max_time_gap_seconds: 90.0
@@ -83,6 +83,16 @@ products:
   enable_sea_level: true
   enable_snow_depth: false
   sea_level_reference: 6.8
+  enable_dynamic_sea_level_correction: true
+  dynamic_sea_level_window_hours: 4.0
+  dynamic_sea_level_min_points: 6
+  dynamic_sea_level_max_iterations: 12
+  dynamic_sea_level_tolerance: 0.0001
+  dynamic_sea_level_igg3_k0: 0.5
+  dynamic_sea_level_igg3_k1: 2.0
+  dynamic_sea_level_min_weight: 1.0e-12
+  dynamic_sea_level_regularization: 1.0e-12
+  dynamic_sea_level_normalize_design: false
   snow_depth_reference_height: null
 output:
   output_dir: output/reflectometry

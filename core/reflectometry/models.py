@@ -22,6 +22,9 @@ class ArcDirection(str, Enum):
 class ProductType(str, Enum):
     REFLECTOR_HEIGHT = "reflector_height"
     SEA_LEVEL = "sea_level"
+    SEA_LEVEL_DYNAMIC_CORRECTED = "sea_level_dynamic_corrected"
+    SEA_LEVEL_RATE = "sea_level_rate"
+    SEA_LEVEL_ACCELERATION = "sea_level_acceleration"
     SNOW_DEPTH = "snow_depth"
 
 

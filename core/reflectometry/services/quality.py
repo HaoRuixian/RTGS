@@ -1,4 +1,4 @@
-﻿"""Quality control and scoring."""
+"""Quality control and scoring."""
 
 from __future__ import annotations
 

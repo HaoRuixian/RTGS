@@ -1,4 +1,4 @@
-﻿"""Geometry validation and normalization."""
+"""Geometry validation and normalization."""
 
 from __future__ import annotations
 

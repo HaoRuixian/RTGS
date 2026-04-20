@@ -1,3 +1,5 @@
+"""GNSS and UTC time conversion helpers shared across decoders and replay flows."""
+
 from datetime import datetime, timedelta, timezone
 
 

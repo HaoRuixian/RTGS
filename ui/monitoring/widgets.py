@@ -1,4 +1,6 @@
 # ui/widgets.py
+"""Monitoring plots and tables shared by the active PySide6 monitoring module."""
+
 import numpy as np
 import matplotlib
 matplotlib.use('QtAgg')
@@ -11,7 +13,7 @@ from PySide6.QtWidgets import QWidget, QVBoxLayout, QSizePolicy, QApplication
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 
 
-from ui.gnss_colordef import get_sys_color, get_signal_color
+from ui.shared.colors import get_sys_color, get_signal_color
 
 class SkyplotWidget(FigureCanvas):
     def __init__(self, parent=None):

@@ -1,3 +1,5 @@
+"""Broadcast-ephemeris orbit propagation helpers used by RTCM and RINEX positioning code."""
+
 import numpy as np
 import math
 from core.global_config import get_global_config

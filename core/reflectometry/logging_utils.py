@@ -1,4 +1,4 @@
-﻿"""Logging bootstrap for the reflector subsystem."""
+"""Logging bootstrap for the reflector subsystem."""
 
 from __future__ import annotations
 

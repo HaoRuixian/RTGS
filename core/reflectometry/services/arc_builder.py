@@ -1,4 +1,4 @@
-﻿"""Arc construction from raw observation records."""
+"""Arc construction from raw observation records."""
 
 from __future__ import annotations
 

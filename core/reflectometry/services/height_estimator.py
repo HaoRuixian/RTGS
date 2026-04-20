@@ -1,4 +1,4 @@
-﻿"""Reflector height estimation from spectral peaks."""
+"""Reflector height estimation from spectral peaks."""
 
 from __future__ import annotations
 

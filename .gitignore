@@ -20,5 +20,5 @@ Thumbs.db
 test/
 log/
 output/
-GMR_Water_lib/
-rtklib_src/
+GNSS_Data/
+Bridge/

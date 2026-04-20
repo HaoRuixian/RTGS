@@ -1,4 +1,4 @@
-﻿"""SNR preprocessing for GNSS-IR spectral analysis."""
+"""SNR preprocessing for GNSS-IR spectral analysis."""
 
 from __future__ import annotations
 

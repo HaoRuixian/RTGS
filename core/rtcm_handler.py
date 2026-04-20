@@ -20,13 +20,14 @@ import math
 _shared_rtcm_handler = None
 
 class RTCMHandler:
-    def __init__(self, reference_utc=None):
+    def __init__(self, reference_utc=None, compute_geometry=True):
         self.broadcast_eph = get_shared_broadcast_ephemeris()
         self.lock = threading.Lock()
         self.last_gps_week = None  # Track GPS week for continuity
         self.last_station_coords = None  # Store coordinates from 1005/1006 messages
         self.reference_utc = self._normalize_reference_utc(reference_utc)
         self.last_utc_by_system = {}
+        self.compute_geometry = bool(compute_geometry)
 
     @staticmethod
     def _normalize_reference_utc(reference_utc):
@@ -50,6 +51,31 @@ class RTCMHandler:
             key=lambda week: abs((GNSSTime.gps_to_utc_datetime(week, gps_seconds) - anchor).total_seconds()),
         )
         return best_week
+
+    def _reference_utc_for_glonass_day(self):
+        """Prefer a recent non-GLONASS epoch when resolving GLONASS day-of-week offline."""
+        for sys_id in ("G", "E", "C", "J", "I", "S"):
+            anchor = self.last_utc_by_system.get(sys_id)
+            if anchor is not None:
+                return anchor
+
+        for sys_id, anchor in self.last_utc_by_system.items():
+            if sys_id != "R" and anchor is not None:
+                return anchor
+
+        return self.reference_utc
+
+    @staticmethod
+    def _utc_day_of_week(utc_dt):
+        """Return UTC day-of-week with GPS-style numbering (0=Sunday..6=Saturday)."""
+        anchor = utc_dt
+        if anchor is None:
+            anchor = datetime.utcnow().replace(tzinfo=timezone.utc)
+        elif anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=timezone.utc)
+        else:
+            anchor = anchor.astimezone(timezone.utc)
+        return anchor.isoweekday() % 7
 
     @staticmethod
     def _normalize_satellite_number(sys_id: str, prn: int) -> int:
@@ -283,6 +309,7 @@ class RTCMHandler:
             cfg = sys_config[sys_prefix]
             sys_id = cfg["sys"]
             sys_type = cfg["type"] # Used for BE2pos
+            msm_variant = int(str(msg_id)[-1]) if str(msg_id)[-1].isdigit() else 7
 
             config = get_global_config()
             if sys_id not in config.target_systems:
@@ -316,8 +343,11 @@ class RTCMHandler:
 
             elif sys_id == 'R':
                 # GLONASS: DF034 gives milliseconds of day (0..86400e3). Defined as UTC(SU)+3h
-                # Convert to seconds-of-week by using current GPS day-of-week as reference
-                day_index = GNSSTime.gps_day_of_week(self.reference_utc)
+                # Convert to seconds-of-week by using the latest non-GLONASS epoch as the
+                # day anchor. This keeps offline file conversion coherent across UTC day
+                # boundaries where GPS-like systems may already have advanced the timeline.
+                day_anchor = self._reference_utc_for_glonass_day()
+                day_index = self._utc_day_of_week(day_anchor)
                 # Subtract 3 hours to convert UTC(SU)+3h -> UTC seconds-of-day
                 seconds_of_day = (epoch_time_s) - 3 * 3600.0
                 # Ensure within 0..86400 range
@@ -411,7 +441,7 @@ class RTCMHandler:
                         r_sat = rng_int * RANGE_MS + rng_mod  * RANGE_MS
 
                     rr_sat = 0.0
-                    if rate_rough is not None and rate_rough != -8192:
+                    if msm_variant in (5, 7) and rate_rough is not None and rate_rough != -8192:
                         rr_sat = rate_rough
 
                     sat_data_cache[raw_prn] = {"r": r_sat, "rr": rr_sat}
@@ -419,30 +449,47 @@ class RTCMHandler:
                 rough_range = sat_data_cache[raw_prn]["r"]
                 rough_rate = sat_data_cache[raw_prn]["rr"]
 
-                pr_fine = getattr(msg, f"DF405_{idx}", None)
+                uses_extended_signal_fields = msm_variant in (6, 7)
+                pr_attr = "DF405" if uses_extended_signal_fields else "DF400"
+                cp_attr = "DF406" if uses_extended_signal_fields else "DF401"
+                lock_attr = "DF407" if uses_extended_signal_fields else "DF402"
+                snr_attr = "DF408" if uses_extended_signal_fields else "DF403"
+
+                pr_fine = getattr(msg, f"{pr_attr}_{idx}", None)
                 pseudorange = 0.0
-                if rough_range != 0.0 and pr_fine is not None and pr_fine != -524288:
+                if rough_range != 0.0 and pr_fine is not None:
+                    if uses_extended_signal_fields and pr_fine == -524288:
+                        pr_fine = None
+                if rough_range != 0.0 and pr_fine is not None:
                     pseudorange = rough_range + pr_fine  * RANGE_MS
 
-                cp_fine = getattr(msg, f"DF406_{idx}", None)
+                cp_fine = getattr(msg, f"{cp_attr}_{idx}", None)
                 carrier_phase = 0.0
-                if rough_range != 0.0 and cp_fine is not None and cp_fine != -8388608:
+                if rough_range != 0.0 and cp_fine is not None:
+                    if uses_extended_signal_fields and cp_fine == -8388608:
+                        cp_fine = None
+                if rough_range != 0.0 and cp_fine is not None:
                     ph_m = rough_range + cp_fine  * RANGE_MS
                     if freq > 0:
                         carrier_phase = ph_m * freq / CLIGHT
 
                 rr_fine = getattr(msg, f"DF404_{idx}", None)
                 doppler = 0.0
-                if rough_rate != -8192 and rr_fine is not None and rr_fine != -16384:
+                if (
+                    msm_variant in (5, 7)
+                    and rough_rate != -8192
+                    and rr_fine is not None
+                    and rr_fine != -16384
+                ):
                     total_rate = rough_rate + rr_fine * 0.0001
                     if freq > 0:
                         doppler = -total_rate * freq / CLIGHT
 
-                snr = getattr(msg, f"DF408_{idx}", 0)
-                lock_time = getattr(msg, f"DF407_{idx}", 0)
+                snr = getattr(msg, f"{snr_attr}_{idx}", 0)
+                lock_time = getattr(msg, f"{lock_attr}_{idx}", 0)
                 half_cycle = getattr(msg, f"DF420_{idx}", 0)
 
-                if snr > 0 or carrier_phase != 0:
+                if pseudorange != 0 or carrier_phase != 0 or snr > 0:
                     obs = SignalData(
                         signal_id=sig_id,
                         pseudorange=float(pseudorange),
@@ -453,6 +500,9 @@ class RTCMHandler:
                         doppler=float(doppler),
                     )
                     sat_state.signals[sig_id] = obs
+
+            if not self.compute_geometry:
+                return epoch_data
 
 
             # ================================================================

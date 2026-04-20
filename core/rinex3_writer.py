@@ -1,4 +1,4 @@
-﻿"""
+"""
 RINEX Version 3.04 file writer for GNSS observation data.
 
 This module provides functionality to write observation data in the RINEX 3.04 format
@@ -62,6 +62,9 @@ class RINEX3Writer:
         datatype: str = "MO",
         filename_template: Optional[str] = None,
         file_time: Optional[datetime] = None,
+        header_interval_seconds: Optional[float] = None,
+        time_system: str = "GPS",
+        antenna_number: str = "",
     ):
         """
         Initialize RINEX3 writer.
@@ -94,6 +97,13 @@ class RINEX3Writer:
         self.datatype = str(datatype)[:2].upper() or "MO"
         self.filename_template = filename_template
         self.file_time = file_time or datetime.utcnow()
+        self.header_interval_seconds = (
+            float(header_interval_seconds)
+            if header_interval_seconds is not None
+            else None
+        )
+        self.time_system = str(time_system or "GPS").strip().upper() or "GPS"
+        self.antenna_number = str(antenna_number or "")[:20]
 
         self.output_directory = "."
         if filename.lower().endswith(".rnx"):
@@ -216,6 +226,9 @@ class RINEX3Writer:
 
     def _parse_interval_seconds(self) -> float:
         """Parse the filename/header interval code to seconds."""
+        if self.header_interval_seconds is not None and self.header_interval_seconds > 0:
+            return float(self.header_interval_seconds)
+
         text = str(self.interval or "").strip().upper()
         match = re.match(r"^(\d+(?:\.\d+)?)\s*([SMHD])$", text)
         if not match:
@@ -236,7 +249,7 @@ class RINEX3Writer:
         return (
             f"  {obs_time.year:04d}    {obs_time.month:02d}    {obs_time.day:02d}"
             f"    {obs_time.hour:02d}    {obs_time.minute:02d}   {second_total:010.7f}"
-            f"     {'GPS':<12}"
+            f"     {self.time_system[:12]:<12}"
         )
 
     def _write_header_block(self) -> None:
@@ -262,7 +275,7 @@ class RINEX3Writer:
             "REC # / TYPE / VERS",
         )
         self._write_header_line(
-            f"{'':<20}{self.antenna_type[:40]:<40}",
+            f"{self.antenna_number[:20]:<20}{self.antenna_type[:40]:<40}",
             "ANT # / TYPE",
         )
         self._write_header_line(
@@ -315,6 +328,7 @@ class RINEX3Writer:
         marker_alt: Optional[float] = None,
         receiver_type: str = "UNKNOWN",
         antenna_type: str = "UNKNOWN",
+        antenna_number: str = "",
     ) -> bool:
         """
         Write the initial header block.
@@ -342,6 +356,7 @@ class RINEX3Writer:
 
         self.receiver_type = str(receiver_type or self.receiver_type)
         self.antenna_type = str(antenna_type or self.antenna_type)
+        self.antenna_number = str(antenna_number or self.antenna_number)[:20]
 
         if marker_lon is not None and marker_lat is not None and marker_alt is not None:
             self.set_approx_position([marker_lon, marker_lat, marker_alt])

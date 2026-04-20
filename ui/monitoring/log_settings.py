@@ -1,3 +1,5 @@
+"""Dialog for configuring live observation logging output and file rotation."""
+
 from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QPushButton,
                                  QCheckBox, QLabel, QHBoxLayout, QDialogButtonBox,
                                  QSpinBox, QListWidget, QGroupBox, QVBoxLayout, QRadioButton,

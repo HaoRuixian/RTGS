@@ -1,4 +1,5 @@
-# process_utils.py
+"""Small console pipeline for printing a fully parsed epoch to stdout."""
+
 from core.display_info import (
     print_epoch_header,
     group_satellites_by_system,

@@ -1,4 +1,4 @@
-﻿"""Reflectometry skyplot dialog with highlighted reflection zones."""
+"""Reflectometry skyplot dialog with highlighted reflection zones."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QPushB
 
 from core.reflectometry.config import GeometryConfig, ProcessingConfig
 from core.reflectometry.services.geometry import effective_reflection_zones, matches_reflection_zones
-from ui.gnss_colordef import get_sys_color
+from ui.shared.colors import get_sys_color
 from ui.responsive import adaptive_window_size
 
 

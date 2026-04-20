@@ -182,6 +182,28 @@ def _build_sys_obs_types(signal_ids_by_system: Dict[str, set[str]]) -> Dict[str,
     return sys_obs_types or _copy_default_sys_obs_types()
 
 
+def _round_epoch_time(epoch_time: datetime, interval_seconds: float) -> datetime:
+    normalized = _normalize_utc_datetime(epoch_time)
+    interval_ms = max(1, int(round(float(interval_seconds) * 1000.0)))
+    anchor = datetime(1980, 1, 6)
+    total_ms = int(round((normalized - anchor).total_seconds() * 1000.0))
+    rounded_ms = round(total_ms / interval_ms) * interval_ms
+    return anchor + timedelta(milliseconds=rounded_ms)
+
+
+def _select_aligned_epoch_time(
+    epoch_time: datetime,
+    target_interval_seconds: float,
+    *,
+    tolerance_seconds: float = 0.01,
+) -> datetime | None:
+    normalized = _normalize_utc_datetime(epoch_time)
+    rounded = _round_epoch_time(normalized, target_interval_seconds)
+    if abs((normalized - rounded).total_seconds()) > max(0.001, float(tolerance_seconds)):
+        return None
+    return rounded
+
+
 def _resolve_output_target(input_path: Path, output_path: Optional[Path]) -> Path:
     if output_path is None:
         return input_path.parent
@@ -192,9 +214,12 @@ def _build_handler(handler_factory, reference_utc: Optional[datetime]) -> RTCMHa
     factory = handler_factory or RTCMHandler
 
     try:
-        return factory(reference_utc=reference_utc)
+        return factory(reference_utc=reference_utc, compute_geometry=False)
     except TypeError:
-        return factory()
+        try:
+            return factory(reference_utc=reference_utc)
+        except TypeError:
+            return factory()
 
 
 def _infer_reference_utc(input_path: Path) -> Optional[datetime]:
@@ -203,6 +228,16 @@ def _infer_reference_utc(input_path: Path) -> Optional[datetime]:
     match = re.search(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)", stem)
     if match:
         year = int(match.group(1))
+        month = int(match.group(2))
+        day = int(match.group(3))
+        try:
+            return datetime(year, month, day, tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    match = re.search(r"(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)", stem)
+    if match:
+        year = 2000 + int(match.group(1))
         month = int(match.group(2))
         day = int(match.group(3))
         try:
@@ -219,6 +254,10 @@ def scan_rtcm_file(
     reference_utc: Optional[datetime] = None,
     reader_factory=None,
     handler_factory=None,
+    max_epochs: Optional[int] = None,
+    stop_when_stable: bool = False,
+    stable_epoch_threshold: int = 100,
+    require_approx_position: bool = True,
 ) -> ScanSummary:
     """Scan an RTCM file to discover observation metadata before writing RINEX."""
 
@@ -229,7 +268,9 @@ def scan_rtcm_file(
     summary = ScanSummary(input_path=input_path)
     previous_epoch_ms: Optional[int] = None
     delta_counter: Counter[int] = Counter()
+    reasonable_delta_counter: Counter[int] = Counter()
     signal_ids_by_system: Dict[str, set[str]] = {}
+    stable_epoch_count = 0
 
     with input_path.open("rb") as stream:
         reader = reader_factory(stream)
@@ -249,8 +290,11 @@ def scan_rtcm_file(
                 delta_ms = epoch_ms - previous_epoch_ms
                 if delta_ms > 0:
                     delta_counter[delta_ms] += 1
+                    if delta_ms <= 600_000:
+                        reasonable_delta_counter[delta_ms] += 1
             previous_epoch_ms = epoch_ms
 
+            signal_changed = False
             for sat_id, sat_state in getattr(epoch, "satellites", {}).items():
                 if not sat_id:
                     continue
@@ -258,20 +302,47 @@ def scan_rtcm_file(
                 for signal_id in getattr(sat_state, "signals", {}).keys():
                     normalized_signal = str(signal_id).strip().upper()
                     if normalized_signal:
-                        signal_ids_by_system.setdefault(system, set()).add(normalized_signal)
+                        known_signals = signal_ids_by_system.setdefault(system, set())
+                        if normalized_signal not in known_signals:
+                            known_signals.add(normalized_signal)
+                            signal_changed = True
+
+            approx_position = getattr(handler, "last_station_coords", None)
+            if approx_position:
+                try:
+                    summary.approx_position = [float(value) for value in approx_position[:3]]
+                except (TypeError, ValueError):
+                    summary.approx_position = None
+
+            if signal_changed:
+                stable_epoch_count = 0
+            else:
+                stable_epoch_count += 1
+
+            if max_epochs is not None and summary.epoch_count >= max(1, int(max_epochs)):
+                break
+
+            if stop_when_stable:
+                has_position = (summary.approx_position is not None) or (not require_approx_position)
+                if (
+                    summary.epoch_count >= max(10, int(stable_epoch_threshold))
+                    and stable_epoch_count >= max(1, int(stable_epoch_threshold))
+                    and has_position
+                ):
+                    break
 
     summary.sys_obs_types = _build_sys_obs_types(signal_ids_by_system)
 
-    if delta_counter:
-        most_common_delta_ms, _ = delta_counter.most_common(1)[0]
+    selected_counter = reasonable_delta_counter or delta_counter
+    if selected_counter:
+        most_common_delta_ms, _ = selected_counter.most_common(1)[0]
         summary.interval_seconds = max(0.001, most_common_delta_ms / 1000.0)
 
-    approx_position = getattr(handler, "last_station_coords", None)
-    if approx_position:
-        try:
-            summary.approx_position = [float(value) for value in approx_position[:3]]
-        except (TypeError, ValueError):
-            summary.approx_position = None
+    if summary.epoch_count > 1 and summary.first_epoch is not None and summary.last_epoch is not None:
+        span_seconds = max(0.0, (summary.last_epoch - summary.first_epoch).total_seconds())
+        average_interval = span_seconds / max(1, summary.epoch_count - 1)
+        if 0.0 < average_interval <= 600.0 and summary.interval_seconds > 600.0:
+            summary.interval_seconds = average_interval
 
     return summary
 
@@ -296,7 +367,11 @@ def convert_rtcm_file_to_rinex(
     handler_factory=None,
     summary: Optional[ScanSummary] = None,
 ) -> ConversionResult:
-    """Convert one RTCM file into a RINEX observation file."""
+    """Convert one RTCM file into a RINEX observation file.
+
+    When ``interval_seconds`` is larger than the detected source cadence, only epochs
+    aligned to that interval are written so the output file is truly decimated.
+    """
 
     input_path = Path(input_path)
     output_target = _resolve_output_target(input_path, Path(output_path) if output_path is not None else None)
@@ -314,17 +389,23 @@ def convert_rtcm_file_to_rinex(
     if summary.epoch_count == 0:
         raise ValueError(f"No observation epochs found in RTCM file: {input_path}")
 
-    interval_seconds = float(interval_seconds or summary.interval_seconds or 1.0)
-    interval_seconds = max(0.001, interval_seconds)
-    summary.interval_seconds = interval_seconds
+    target_interval_seconds = float(interval_seconds or summary.interval_seconds or 1.0)
+    target_interval_seconds = max(0.001, target_interval_seconds)
+    source_interval_seconds = max(0.001, float(summary.interval_seconds or target_interval_seconds))
+    summary.interval_seconds = target_interval_seconds
 
     effective_first_epoch = summary.first_epoch or _normalize_utc_datetime(datetime.utcnow())
     effective_last_epoch = summary.last_epoch or effective_first_epoch
     file_span_seconds = max(
-        interval_seconds,
-        (effective_last_epoch - effective_first_epoch).total_seconds() + interval_seconds,
+        target_interval_seconds,
+        (effective_last_epoch - effective_first_epoch).total_seconds() + target_interval_seconds,
     )
     effective_period_code = period_code or RINEX3Writer.format_period_code(file_span_seconds, fallback="01D")
+    daily_file_start_time: Optional[datetime] = None
+    if effective_period_code == "01D" and resolved_reference_utc is not None:
+        daily_file_start_time = _normalize_utc_datetime(resolved_reference_utc)
+    align_in_output_time = daily_file_start_time is not None
+    writer_file_time = daily_file_start_time or _utc_to_gps_file_datetime(effective_first_epoch)
 
     writer = RINEX3Writer(
         str(output_target),
@@ -334,9 +415,10 @@ def convert_rtcm_file_to_rinex(
         receiver_number=receiver_number,
         country_code=country_code,
         period=effective_period_code,
-        interval=RINEX3Writer.format_interval_code(interval_seconds),
+        interval=RINEX3Writer.format_interval_code(target_interval_seconds),
         datatype=datatype,
-        file_time=_utc_to_gps_file_datetime(effective_first_epoch),
+        file_time=writer_file_time,
+        header_interval_seconds=target_interval_seconds,
     )
 
     if not writer.open():
@@ -356,6 +438,7 @@ def convert_rtcm_file_to_rinex(
             raise OSError(f"Failed to write RINEX header: {writer.filename}")
 
         handler = _build_handler(handler_factory, resolved_reference_utc)
+        last_written_time: Optional[datetime] = None
         with input_path.open("rb") as stream:
             reader = reader_factory(stream)
             for epoch in _iter_merged_epochs(reader, handler):
@@ -363,9 +446,31 @@ def convert_rtcm_file_to_rinex(
                 if epoch_time is None:
                     continue
                 normalized_time = _normalize_utc_datetime(epoch_time)
-                rinex_epoch_time = _utc_to_gps_file_datetime(normalized_time)
-                if not writer.write_observation(rinex_epoch_time, getattr(epoch, "satellites", {})):
-                    raise OSError(f"Failed to write RINEX observation epoch at {rinex_epoch_time.isoformat()}")
+                output_time = (
+                    _utc_to_gps_file_datetime(normalized_time)
+                    if align_in_output_time
+                    else normalized_time
+                )
+
+                if target_interval_seconds > source_interval_seconds + 1e-6:
+                    selected_time = _select_aligned_epoch_time(output_time, target_interval_seconds)
+                    if selected_time is None:
+                        continue
+                    if last_written_time is not None and selected_time == last_written_time:
+                        continue
+                    output_time = selected_time
+
+                if daily_file_start_time is not None:
+                    daily_file_end_time = daily_file_start_time + timedelta(days=1)
+                    if output_time < daily_file_start_time or output_time >= daily_file_end_time:
+                        continue
+
+                if not align_in_output_time:
+                    output_time = _utc_to_gps_file_datetime(output_time)
+
+                if not writer.write_observation(output_time, getattr(epoch, "satellites", {})):
+                    raise OSError(f"Failed to write RINEX observation epoch at {output_time.isoformat()}")
+                last_written_time = output_time
     finally:
         writer.close()
 
@@ -396,7 +501,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--interval",
         type=float,
         default=None,
-        help="Sampling interval in seconds. Defaults to the most common epoch delta detected from the file.",
+        help="Sampling interval in seconds. When larger than the source cadence, only aligned epochs are written.",
     )
     parser.add_argument(
         "--period",

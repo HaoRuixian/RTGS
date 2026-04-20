@@ -1,4 +1,4 @@
-﻿"""Tests for reflectometry Arc Status helper utilities."""
+"""Tests for reflectometry Arc Status helper utilities."""
 
 from __future__ import annotations
 
@@ -64,4 +64,4 @@ def test_build_tracking_context_uses_stable_arc_id_and_solving_status():
     assert context.status == "solving"
     assert context.reason == "Arc window ready; solving..."
     assert context.series.metadata["tracking"] is True
-
+

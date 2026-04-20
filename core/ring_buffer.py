@@ -1,3 +1,5 @@
+"""Thread-safe ring buffer used between acquisition, processing, and logging threads."""
+
 import threading
 from collections import deque
 from typing import Optional, Any

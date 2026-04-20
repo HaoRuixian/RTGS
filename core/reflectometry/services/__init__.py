@@ -1,2 +1,1 @@
-﻿"""Business services for the reflector subsystem."""
-
+"""Business services that implement the reflectometry processing pipeline."""

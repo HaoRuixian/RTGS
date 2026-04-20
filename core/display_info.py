@@ -1,4 +1,6 @@
 
+"""Console formatting helpers for printing parsed epoch and satellite summaries."""
+
 def print_epoch_header(epoch_data):
     print("=" * 68)
     print(f" EPOCH TIME : {epoch_data.gps_time}")

@@ -1,6 +1,3 @@
-"""Reflectometry UI helpers."""
+"""Reflectometry UI package with the active workbench window and helper widgets."""
 
-from ui.reflectometry.arc_status import TrackingArcContext
-from ui.reflectometry.ir_config_dialog import ReflectometryConfigDialog
-
-__all__ = ["ReflectometryConfigDialog", "TrackingArcContext"]
+__all__ = ["arc_status", "ir_config_dialog", "module", "skyplot_dialog", "workers"]

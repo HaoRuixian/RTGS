@@ -1,3 +1,5 @@
+"""Shared Qt stylesheet helpers for keeping module visuals consistent."""
+
 from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QPalette
 from ui.responsive import compute_ui_scale

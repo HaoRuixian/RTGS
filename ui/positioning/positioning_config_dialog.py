@@ -1,3 +1,5 @@
+"""Dialog for tuning positioning parameters such as masks and weighting."""
+
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QHBoxLayout, QLabel,
     QDoubleSpinBox, QComboBox, QSpinBox, QPushButton, QSizePolicy,

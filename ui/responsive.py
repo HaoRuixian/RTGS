@@ -1,3 +1,5 @@
+"""Responsive sizing helpers used by RTGS desktop windows and dialogs."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

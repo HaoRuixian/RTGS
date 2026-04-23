@@ -260,6 +260,24 @@ def test_utc_to_gps_file_datetime_adds_gps_offset():
     assert rtcm_to_rinex._utc_to_gps_file_datetime(utc_epoch) == datetime(2025, 10, 25, 0, 0, 30)
 
 
+def test_select_aligned_epoch_time_uses_gps_time_scale():
+    aligned = rtcm_to_rinex._select_aligned_epoch_time(
+        datetime(2026, 3, 26, 0, 0, 12),
+        5.0,
+        alignment_time_system="GPS",
+        return_time_system="GPS",
+    )
+    not_aligned = rtcm_to_rinex._select_aligned_epoch_time(
+        datetime(2026, 3, 26, 0, 0, 10),
+        5.0,
+        alignment_time_system="GPS",
+        return_time_system="GPS",
+    )
+
+    assert aligned == datetime(2026, 3, 26, 0, 0, 30)
+    assert not_aligned is None
+
+
 def test_rinex_writer_uses_header_interval_override():
     writer = RINEX3Writer("dummy.rnx", interval="01S", header_interval_seconds=0.5)
 
@@ -274,7 +292,7 @@ def test_convert_rtcm_file_to_rinex_decimates_to_requested_interval(tmp_path):
     epoch0 = datetime(2026, 3, 26, 0, 0, 0, tzinfo=timezone.utc)
     epochs = [
         _epoch(epoch0 + timedelta(seconds=offset), {"G01": {"1C": _signal("1C", 21000000.0 + offset, 110000.0, 45.0)}})
-        for offset in (0, 5, 10, 15)
+        for offset in (12, 17, 27, 32)
     ]
     mapping = {f"m{idx}": epoch for idx, epoch in enumerate(epochs)}
     messages = [(b"", key) for key in mapping.keys()]
@@ -302,8 +320,97 @@ def test_convert_rtcm_file_to_rinex_decimates_to_requested_interval(tmp_path):
     )
 
     assert result.output_path.exists()
+    assert result.written_epoch_count == 2
 
     text = result.output_path.read_text(encoding="utf-8")
     assert text.count("\n> ") == 2
-    assert "> 2026 03 26 00 00 18.0000000  0  1" in text
-    assert "> 2026 03 26 00 00 33.0000000  0  1" in text
+    assert "> 2026 03 26 00 00 30.0000000  0  1" in text
+    assert "> 2026 03 26 00 00 45.0000000  0  1" in text
+
+
+def test_build_arg_parser_help_contains_simple_examples(monkeypatch):
+    monkeypatch.setattr(rtcm_to_rinex.sys, "argv", ["rtcm_to_rinex"])
+    help_text = rtcm_to_rinex.build_arg_parser().format_help()
+
+    assert "usage: rtcm_to_rinex" in help_text
+    assert "Examples:" in help_text
+    assert "rtcm_to_rinex sample.rtcm3 -o output" in help_text
+    assert "-d YYYY-MM-DD" in help_text
+    assert "-s SITE" in help_text
+    assert "--station-code" not in help_text
+
+
+def test_build_arg_parser_accepts_new_and_legacy_option_names():
+    original_argv = list(rtcm_to_rinex.sys.argv)
+    rtcm_to_rinex.sys.argv = ["rtcm_to_rinex"]
+    try:
+        parser = rtcm_to_rinex.build_arg_parser()
+    finally:
+        rtcm_to_rinex.sys.argv = original_argv
+
+    new_args = parser.parse_args(
+        [
+            "sample.rtcm3",
+            "-s",
+            "F9P0",
+            "-n",
+            "F9P",
+            "-r",
+            "F9P",
+            "-a",
+            "HXCM",
+            "-i",
+            "15",
+            "-p",
+            "01D",
+            "-d",
+            "2025-10-25",
+            "--xyz",
+            "1",
+            "2",
+            "3",
+            "--num",
+            "01",
+            "--country",
+            "CHN",
+        ]
+    )
+
+    legacy_args = parser.parse_args(
+        [
+            "sample.rtcm3",
+            "--station-code",
+            "F9P0",
+            "--marker-name",
+            "F9P",
+            "--receiver-type",
+            "F9P",
+            "--antenna-type",
+            "HXCM",
+            "--interval",
+            "15",
+            "--period",
+            "01D",
+            "--reference-date",
+            "2025-10-25",
+            "--approx-position",
+            "1",
+            "2",
+            "3",
+            "--receiver-number",
+            "01",
+            "--country-code",
+            "CHN",
+        ]
+    )
+
+    assert new_args.station_code == legacy_args.station_code == "F9P0"
+    assert new_args.marker_name == legacy_args.marker_name == "F9P"
+    assert new_args.receiver_type == legacy_args.receiver_type == "F9P"
+    assert new_args.antenna_type == legacy_args.antenna_type == "HXCM"
+    assert new_args.interval == legacy_args.interval == 15.0
+    assert new_args.period == legacy_args.period == "01D"
+    assert new_args.reference_date == legacy_args.reference_date == "2025-10-25"
+    assert new_args.approx_position == legacy_args.approx_position == [1.0, 2.0, 3.0]
+    assert new_args.receiver_number == legacy_args.receiver_number == "01"
+    assert new_args.country_code == legacy_args.country_code == "CHN"

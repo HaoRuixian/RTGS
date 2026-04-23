@@ -70,13 +70,23 @@ def _select_aligned_epoch_time(
     epoch_time: datetime,
     target_interval_seconds: float,
     *,
+    alignment_time_system: str = "UTC",
+    return_time_system: Optional[str] = None,
     tolerance_seconds: float = 0.01,
 ) -> datetime | None:
-    normalized = _normalize_utc_datetime(epoch_time)
-    rounded = _round_epoch_time(normalized, target_interval_seconds)
-    if abs((normalized - rounded).total_seconds()) > max(0.001, float(tolerance_seconds)):
+    alignment_epoch = _convert_output_time(epoch_time, alignment_time_system)
+    rounded = _round_epoch_time(alignment_epoch, target_interval_seconds)
+    if abs((alignment_epoch - rounded).total_seconds()) > max(0.001, float(tolerance_seconds)):
         return None
-    return rounded
+
+    result_time_system = str(return_time_system or alignment_time_system).strip().upper() or alignment_time_system
+    if result_time_system == str(alignment_time_system or "UTC").strip().upper():
+        return rounded
+
+    if result_time_system == "UTC":
+        return _convert_time_to_utc(rounded, alignment_time_system)
+    utc_time = _convert_time_to_utc(rounded, alignment_time_system)
+    return _convert_output_time(utc_time, result_time_system)
 
 
 def _convert_output_time(epoch_time: datetime, time_system: str) -> datetime:
@@ -86,6 +96,15 @@ def _convert_output_time(epoch_time: datetime, time_system: str) -> datetime:
         return normalized
     if system == "GPS":
         return normalized + timedelta(seconds=GNSSTime.LEAP_SECONDS)
+    raise ValueError(f"Unsupported output time system: {time_system}")
+
+
+def _convert_time_to_utc(epoch_time: datetime, time_system: str) -> datetime:
+    system = str(time_system or "UTC").strip().upper() or "UTC"
+    if system == "UTC":
+        return epoch_time
+    if system == "GPS":
+        return epoch_time - timedelta(seconds=GNSSTime.LEAP_SECONDS)
     raise ValueError(f"Unsupported output time system: {time_system}")
 
 
@@ -158,6 +177,7 @@ def merge_rinex_daily_files(
     writer: Optional[RINEX3Writer] = None
     current_bucket: Optional[datetime] = None
     last_written_time: Optional[datetime] = None
+    alignment_time_system = "GPS" if str(time_system or "UTC").strip().upper() == "GPS" else "UTC"
 
     def open_writer(bucket_start: datetime) -> RINEX3Writer:
         file_time = _convert_output_time(bucket_start, time_system)
@@ -195,7 +215,12 @@ def merge_rinex_daily_files(
             if epoch.utc_datetime is None or not epoch.satellites:
                 continue
 
-            selected_time = _select_aligned_epoch_time(epoch.utc_datetime, target_interval_seconds)
+            selected_time = _select_aligned_epoch_time(
+                epoch.utc_datetime,
+                target_interval_seconds,
+                alignment_time_system=alignment_time_system,
+                return_time_system="UTC",
+            )
             if selected_time is None:
                 continue
             if last_written_time is not None and selected_time == last_written_time:

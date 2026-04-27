@@ -89,6 +89,16 @@ class RTCMHandler:
             return prn - 192
         return prn
 
+    @staticmethod
+    def _is_scaled_msm_sentinel(value, sentinel_value: float) -> bool:
+        """Return True when a pyrtcm-scaled MSM field carries its invalid value."""
+        if value is None:
+            return True
+        try:
+            return math.isclose(float(value), sentinel_value, rel_tol=0.0, abs_tol=1e-12)
+        except (TypeError, ValueError):
+            return True
+
     # Time conversions delegated to core.gnss_time.GNSSTime
 
     def process_message(self, msg, epoch_data=None):
@@ -283,12 +293,15 @@ class RTCMHandler:
 
     def _handle_msm_obs(self, msg, epoch_data=None):
             """
-            Parse RTCM 3.2 MSM7 observation message.
+            Parse RTCM 3.2 MSM observation messages.
             If epoch_data is provided, adds observations to it; otherwise creates new one.
             """
             # Constants
             CLIGHT = 299792458.0
             RANGE_MS = CLIGHT / 1000.0
+            FINE_CODE_INVALID_MS = -(2 ** -10)
+            FINE_PHASE_INVALID_MS = -(2 ** -8)
+            FINE_RATE_INVALID_MPS = -16384 * 0.0001
 
             msg_id = msg.identity
             sys_prefix = msg_id[:3]
@@ -310,6 +323,14 @@ class RTCMHandler:
             sys_id = cfg["sys"]
             sys_type = cfg["type"] # Used for BE2pos
             msm_variant = int(str(msg_id)[-1]) if str(msg_id)[-1].isdigit() else 7
+            if msm_variant not in (1, 2, 3, 4, 5, 6, 7):
+                return epoch_data
+
+            has_code = msm_variant in (1, 3, 4, 5, 6, 7)
+            has_phase = msm_variant in (2, 3, 4, 5, 6, 7)
+            has_snr = msm_variant in (4, 5, 6, 7)
+            has_doppler = msm_variant in (5, 7)
+            uses_extended_signal_fields = msm_variant in (6, 7)
 
             config = get_global_config()
             if sys_id not in config.target_systems:
@@ -377,8 +398,8 @@ class RTCMHandler:
             # ------------------------------ Cell Parsing -------------------------------
             cell_prn_map = {}
             unique_prns = set()
-            max_cells = 64
-            n_cell_found = 0
+            n_cell_found = int(getattr(msg, "NCell", 0) or 0)
+            max_cells = max(n_cell_found, 64)
 
             for i in range(1, max_cells + 1):
                 idx = f"{i:02d}"
@@ -388,14 +409,27 @@ class RTCMHandler:
                         prn = int(getattr(msg, attr))
                         cell_prn_map[i] = prn
                         unique_prns.add(prn)
-                        n_cell_found = i
-                    except ValueError: continue
-                else: break
+                        n_cell_found = max(n_cell_found, i)
+                    except ValueError:
+                        continue
+                elif i > n_cell_found:
+                    break
 
-            if n_cell_found == 0: return None
+            if n_cell_found == 0:
+                return None
 
-            sorted_prns = sorted(unique_prns)
-            prn_to_sat_idx = {prn: f"{k + 1:02d}" for k, prn in enumerate(sorted_prns)}
+            prn_to_sat_idx = {}
+            n_sat_found = int(getattr(msg, "NSat", 0) or 0)
+            for sat_num in range(1, n_sat_found + 1):
+                sat_idx = f"{sat_num:02d}"
+                try:
+                    prn_to_sat_idx[int(getattr(msg, f"PRN_{sat_idx}"))] = sat_idx
+                except (AttributeError, TypeError, ValueError):
+                    continue
+            if not prn_to_sat_idx:
+                sorted_prns = sorted(unique_prns)
+                prn_to_sat_idx = {prn: f"{k + 1:02d}" for k, prn in enumerate(sorted_prns)}
+
             sat_data_cache = {}
 
             # ------------------------------ Process Satellites (Parse Observations) -------
@@ -404,7 +438,9 @@ class RTCMHandler:
 
                 idx = f"{i:02d}"
                 raw_prn = cell_prn_map[i]
-                sat_idx = prn_to_sat_idx[raw_prn]
+                sat_idx = prn_to_sat_idx.get(raw_prn)
+                if sat_idx is None:
+                    continue
                 prn = self._normalize_satellite_number(sys_id, raw_prn)
                 sat_key = f"{sys_id}{prn:02d}"
 
@@ -415,41 +451,59 @@ class RTCMHandler:
                 else:
                     sat_state = epoch_data.satellites[sat_key]
 
+                # --- Extract satellite-level MSM data shared by all cells for this PRN ---
+                if raw_prn not in sat_data_cache:
+                    rng_int = getattr(msg, f"DF397_{sat_idx}", None)
+                    rng_mod = getattr(msg, f"DF398_{sat_idx}", 0.0)
+                    rate_rough = getattr(msg, f"DF399_{sat_idx}", None)
+
+                    rough_range = None
+                    if rng_int is not None and int(rng_int) != 255:
+                        rough_range = (float(rng_int) + float(rng_mod or 0.0)) * RANGE_MS
+
+                    rough_rate = None
+                    if has_doppler and rate_rough is not None and int(rate_rough) != -8192:
+                        rough_rate = float(rate_rough)
+
+                    glonass_fcn = None
+                    if sys_id == 'R' and hasattr(msg, f"DF419_{sat_idx}"):
+                        try:
+                            df419_value = int(getattr(msg, f"DF419_{sat_idx}"))
+                            if 0 <= df419_value <= 13:
+                                glonass_fcn = df419_value - 7
+                        except (TypeError, ValueError):
+                            glonass_fcn = None
+
+                    sat_data_cache[raw_prn] = {
+                        "r": rough_range,
+                        "rr": rough_rate,
+                        "fcn": glonass_fcn,
+                    }
+
+                rough_range = sat_data_cache[raw_prn]["r"]
+                rough_rate = sat_data_cache[raw_prn]["rr"]
+
                 # Parse Signal Data (Frequency lookup needs refining for GLONASS later)
                 try:
                     sig_id = str(getattr(msg, f"CELLSIG_{idx}"))
                 except AttributeError: continue
                 
-                # GLONASS FCN lookup from shared BroadcastEphemeris
-                fcn = 0
+                # GLONASS FCN lookup from MSM5/7 satellite data, then shared ephemeris.
+                fcn = sat_data_cache[raw_prn].get("fcn")
                 if sys_id == 'R':
-                    eph_for_fcn = self.broadcast_eph.get_ephemeris(sat_key)
-                    if eph_for_fcn:
-                        # prefer standardized key name, fallback to older variants if present
-                        fcn = eph_for_fcn.get('frequency_channel', eph_for_fcn.get('FreqChannel', 0))
+                    if fcn is None:
+                        eph_for_fcn = self.broadcast_eph.get_ephemeris(sat_key)
+                        if eph_for_fcn:
+                            # prefer standardized key name, fallback to older variants if present
+                            fcn = eph_for_fcn.get('frequency_channel', eph_for_fcn.get('FreqChannel', 0))
+                    if fcn is None:
+                        fcn = 0
+                else:
+                    fcn = 0
 
                 freq, _ = get_freq(sig_id, sat_key, fcn)
 
                 # --- Extract Observations (Range, Phase, Doppler, etc.) ---
-                if raw_prn not in sat_data_cache:
-                    rng_int = getattr(msg, f"DF397_{sat_idx}", None)
-                    rng_mod = getattr(msg, f"DF398_{sat_idx}", 0)
-                    rate_rough = getattr(msg, f"DF399_{sat_idx}", None)
-
-                    r_sat = 0.0
-                    if rng_int is not None and rng_int != 255:
-                        r_sat = rng_int * RANGE_MS + rng_mod  * RANGE_MS
-
-                    rr_sat = 0.0
-                    if msm_variant in (5, 7) and rate_rough is not None and rate_rough != -8192:
-                        rr_sat = rate_rough
-
-                    sat_data_cache[raw_prn] = {"r": r_sat, "rr": rr_sat}
-
-                rough_range = sat_data_cache[raw_prn]["r"]
-                rough_rate = sat_data_cache[raw_prn]["rr"]
-
-                uses_extended_signal_fields = msm_variant in (6, 7)
                 pr_attr = "DF405" if uses_extended_signal_fields else "DF400"
                 cp_attr = "DF406" if uses_extended_signal_fields else "DF401"
                 lock_attr = "DF407" if uses_extended_signal_fields else "DF402"
@@ -457,37 +511,38 @@ class RTCMHandler:
 
                 pr_fine = getattr(msg, f"{pr_attr}_{idx}", None)
                 pseudorange = 0.0
-                if rough_range != 0.0 and pr_fine is not None:
-                    if uses_extended_signal_fields and pr_fine == -524288:
-                        pr_fine = None
-                if rough_range != 0.0 and pr_fine is not None:
-                    pseudorange = rough_range + pr_fine  * RANGE_MS
+                if (
+                    has_code
+                    and rough_range is not None
+                    and not self._is_scaled_msm_sentinel(pr_fine, FINE_CODE_INVALID_MS)
+                ):
+                    pseudorange = rough_range + float(pr_fine) * RANGE_MS
 
                 cp_fine = getattr(msg, f"{cp_attr}_{idx}", None)
                 carrier_phase = 0.0
-                if rough_range != 0.0 and cp_fine is not None:
-                    if uses_extended_signal_fields and cp_fine == -8388608:
-                        cp_fine = None
-                if rough_range != 0.0 and cp_fine is not None:
-                    ph_m = rough_range + cp_fine  * RANGE_MS
+                if (
+                    has_phase
+                    and rough_range is not None
+                    and not self._is_scaled_msm_sentinel(cp_fine, FINE_PHASE_INVALID_MS)
+                ):
+                    ph_m = rough_range + float(cp_fine) * RANGE_MS
                     if freq > 0:
                         carrier_phase = ph_m * freq / CLIGHT
 
                 rr_fine = getattr(msg, f"DF404_{idx}", None)
                 doppler = 0.0
                 if (
-                    msm_variant in (5, 7)
-                    and rough_rate != -8192
-                    and rr_fine is not None
-                    and rr_fine != -16384
+                    has_doppler
+                    and rough_rate is not None
+                    and not self._is_scaled_msm_sentinel(rr_fine, FINE_RATE_INVALID_MPS)
                 ):
-                    total_rate = rough_rate + rr_fine * 0.0001
+                    total_rate = rough_rate + float(rr_fine)
                     if freq > 0:
                         doppler = -total_rate * freq / CLIGHT
 
-                snr = getattr(msg, f"{snr_attr}_{idx}", 0)
-                lock_time = getattr(msg, f"{lock_attr}_{idx}", 0)
-                half_cycle = getattr(msg, f"DF420_{idx}", 0)
+                snr = float(getattr(msg, f"{snr_attr}_{idx}", 0.0) or 0.0) if has_snr else 0.0
+                lock_time = int(getattr(msg, f"{lock_attr}_{idx}", 0) or 0) if has_phase else 0
+                half_cycle = int(getattr(msg, f"DF420_{idx}", 0) or 0) if has_phase else 0
 
                 if pseudorange != 0 or carrier_phase != 0 or snr > 0:
                     obs = SignalData(
@@ -495,8 +550,8 @@ class RTCMHandler:
                         pseudorange=float(pseudorange),
                         phase=float(carrier_phase),
                         snr=float(snr),
-                        lock_time=int(lock_time),
-                        half_cycle=int(half_cycle),
+                        lock_time=lock_time,
+                        half_cycle=half_cycle,
                         doppler=float(doppler),
                     )
                     sat_state.signals[sig_id] = obs

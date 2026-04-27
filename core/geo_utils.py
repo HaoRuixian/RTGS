@@ -212,7 +212,7 @@ def tropsphere_model(pos, azel, humi=0.7):
 
     # Validity check
     if h < -100.0 or h > 1e4 or el <= 0:
-        return 0.0
+        return 0.0, 0.0
 
     # -------------------------
     # Standard atmosphere

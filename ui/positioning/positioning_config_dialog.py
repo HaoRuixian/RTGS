@@ -85,14 +85,16 @@ class PositioningConfigDialog(QDialog):
         self.gnss_beidou = QCheckBox("BeiDou (C)")
         self.gnss_qzss = QCheckBox("QZSS (J)")
         self.gnss_irnss = QCheckBox("NavIC (I)")
+        self.prefer_gps_only = QCheckBox("Prefer GPS-only for basic SPP")
 
-        gnss_systems = self.settings.get("gnss_systems", ["G", "R", "E", "C", "J", "I"])
+        gnss_systems = self.settings.get("gnss_systems", ["G"])
         self.gnss_gps.setChecked("G" in gnss_systems)
         self.gnss_glonass.setChecked("R" in gnss_systems)
         self.gnss_galileo.setChecked("E" in gnss_systems)
         self.gnss_beidou.setChecked("C" in gnss_systems)
         self.gnss_qzss.setChecked("J" in gnss_systems)
         self.gnss_irnss.setChecked("I" in gnss_systems)
+        self.prefer_gps_only.setChecked(bool(self.settings.get("prefer_gps_only", True)))
 
         gnss_layout.addRow("Available Systems:", self.gnss_gps)
         gnss_layout.addRow("", self.gnss_glonass)
@@ -100,6 +102,7 @@ class PositioningConfigDialog(QDialog):
         gnss_layout.addRow("", self.gnss_beidou)
         gnss_layout.addRow("", self.gnss_qzss)
         gnss_layout.addRow("", self.gnss_irnss)
+        gnss_layout.addRow("", self.prefer_gps_only)
 
         gnss_group.setLayout(gnss_layout)
         layout.addWidget(gnss_group)
@@ -150,7 +153,7 @@ class PositioningConfigDialog(QDialog):
         self.uncertain_std.setValue(float(self.settings.get("uncertain_std_pos", 5.0)))
         self.uncertain_std.setSingleStep(0.1)
         self.uncertain_std.setSuffix(" m")
-        status_layout.addRow("Uncertain Std Dev Threshold:", self.uncertain_std)
+        status_layout.addRow("Unfixed Std Dev Threshold:", self.uncertain_std)
 
         self.fixed_std = QDoubleSpinBox()
         self.fixed_std.setRange(0.1, 100.0)
@@ -186,7 +189,8 @@ class PositioningConfigDialog(QDialog):
             "max_pdop": 10.0,
             "ionosphere_option": "IFLC",
             "troposphere_model": "Sastamoinen",
-            "gnss_systems": ["G", "R", "E", "C", "J", "I"],
+            "gnss_systems": ["G"],
+            "prefer_gps_only": True,
             "weight_mode": "elevation",
             "use_smoothing": False,
             "smoothing_window": 10,
@@ -206,6 +210,7 @@ class PositioningConfigDialog(QDialog):
         self.gnss_beidou.setChecked("C" in defaults["gnss_systems"])
         self.gnss_qzss.setChecked("J" in defaults["gnss_systems"])
         self.gnss_irnss.setChecked("I" in defaults["gnss_systems"])
+        self.prefer_gps_only.setChecked(defaults["prefer_gps_only"])
         self.weight_mode.setCurrentData(defaults["weight_mode"])
         self.use_smoothing.setChecked(defaults["use_smoothing"])
         self.smoothing_window.setValue(defaults["smoothing_window"])
@@ -240,6 +245,7 @@ class PositioningConfigDialog(QDialog):
             "ionosphere_option": self.iono_option.currentData(),
             "troposphere_model": self.tropo_model.currentData(),
             "gnss_systems": gnss_systems if gnss_systems else ["G"],
+            "prefer_gps_only": self.prefer_gps_only.isChecked(),
             "weight_mode": self.weight_mode.currentData(),
             "use_smoothing": self.use_smoothing.isChecked(),
             "smoothing_window": int(self.smoothing_window.value()),

@@ -100,3 +100,75 @@ def test_spp_positioner_solves_first_epoch_without_external_initial_guess():
     assert isinstance(result.residuals, list)
     assert np.linalg.norm(np.asarray(result.position_ecef) - receiver_ecef) < 20.0
     assert abs(result.clock_bias - receiver_clock_bias_m) < 20.0
+
+
+def test_spp_positioner_prefers_gps_when_other_system_biases_are_unmodelled():
+    receiver_ecef = np.array([3875000.0, 332500.0, 5029000.0], dtype=float)
+    receiver_clock_bias_m = 25000.0
+
+    epoch = EpochObservation(gps_time=100000.0)
+    gps_geometry = [
+        ("G01", 20.0, 65.0, 2.20e7),
+        ("G02", 120.0, 50.0, 2.18e7),
+        ("G03", 220.0, 55.0, 2.24e7),
+        ("G04", 310.0, 40.0, 2.16e7),
+        ("G05", 60.0, 30.0, 2.23e7),
+    ]
+    biased_geometry = [
+        ("C06", 80.0, 55.0, 2.28e7, 8000.0),
+        ("C07", 160.0, 45.0, 2.30e7, -6000.0),
+        ("R08", 260.0, 50.0, 2.19e7, 5000.0),
+    ]
+
+    for sat_id, az_deg, el_deg, slant_range_m in gps_geometry:
+        sat_pos = _satellite_position(receiver_ecef, az_deg, el_deg, slant_range_m)
+        geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
+        sagnac = EARTH_ROTATION_RATE * (
+            sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0]
+        ) / LIGHT_SPEED
+        sat = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))
+        sat.signals["1C"] = _signal(geometric_range + sagnac + receiver_clock_bias_m)
+        sat.sat_pos_ecef = sat_pos.tolist()
+        sat.sat_clk_corr = 0.0
+        sat.sat_var = 1.0
+        epoch.satellites[sat_id] = sat
+
+    for sat_id, az_deg, el_deg, slant_range_m, bias_m in biased_geometry:
+        sat_pos = _satellite_position(receiver_ecef, az_deg, el_deg, slant_range_m)
+        geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
+        sagnac = EARTH_ROTATION_RATE * (
+            sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0]
+        ) / LIGHT_SPEED
+        sat = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))
+        sat.signals["1C"] = _signal(geometric_range + sagnac + receiver_clock_bias_m + bias_m)
+        sat.sat_pos_ecef = sat_pos.tolist()
+        sat.sat_clk_corr = 0.0
+        sat.sat_var = 1.0
+        epoch.satellites[sat_id] = sat
+
+    positioner = SPPPositioner(
+        config={
+            "ionosphere_option": "SINGLE",
+            "troposphere_model": "None",
+            "gnss_systems": ["G", "C", "R"],
+            "prefer_gps_only": True,
+            "min_satellites": 4,
+            "cutoff_elevation_deg": 10.0,
+        }
+    )
+
+    result = positioner.process_epoch(epoch, approx_position=None)
+
+    assert result is not None
+    assert result.solution_status in {"Fixed", "Uncertain"}
+    assert result.num_satellites == len(gps_geometry)
+    assert np.linalg.norm(np.asarray(result.position_ecef) - receiver_ecef) < 20.0
+
+
+def test_spp_troposphere_wrapper_handles_out_of_model_height():
+    positioner = SPPPositioner(config={"troposphere_model": "Sastamoinen"})
+
+    delay, variance = positioner._calculate_tropospheric_delay((0.0, 0.0, -200.0), (0.0, math.radians(30.0)))
+
+    assert delay == 0.0
+    assert variance == 0.0

@@ -6,6 +6,7 @@ from bisect import bisect_left
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+import gzip
 import math
 from pathlib import Path
 from typing import Iterable
@@ -23,6 +24,13 @@ SECONDS_PER_WEEK = 7 * 24 * 3600.0
 LIGHT_SPEED = 299792458.0
 GPS_LIKE_TIME_SYSTEMS = {"GPS", "GAL", "GST", "QZS", "QZSS", "IRN", "IRNSS"}
 SATELLITE_SYSTEM_CODES = {"G", "R", "E", "J", "C", "I", "S"}
+
+
+def _open_text(path: str | Path):
+    source_path = Path(path)
+    if source_path.suffix.lower() == ".gz":
+        return gzip.open(source_path, "rt", encoding="utf-8", errors="ignore")
+    return source_path.open("r", encoding="utf-8", errors="ignore")
 
 
 @dataclass(slots=True)
@@ -157,7 +165,7 @@ def _parse_obs_header(handle) -> RinexObservationMetadata:
 def read_rinex_observation_header(path: str | Path) -> RinexObservationMetadata:
     """Read a RINEX observation file header without parsing the body."""
 
-    with Path(path).open("r", encoding="utf-8", errors="ignore") as handle:
+    with _open_text(path) as handle:
         metadata = _parse_obs_header(handle)
     metadata.path = str(path)
     return metadata
@@ -468,7 +476,7 @@ class FileEphemerisProvider:
         if Path(path).suffix.lower() == ".sp3":
             return "precise"
 
-        with Path(path).open("r", encoding="utf-8", errors="ignore") as handle:
+        with _open_text(path) as handle:
             first_line = handle.readline()
         if first_line.startswith("#"):
             return "precise"
@@ -476,7 +484,7 @@ class FileEphemerisProvider:
 
     @staticmethod
     def _load_broadcast_nav(path: str, eph_cache: BroadcastEphemeris) -> None:
-        with Path(path).open("r", encoding="utf-8", errors="ignore") as handle:
+        with _open_text(path) as handle:
             while True:
                 line = handle.readline()
                 if not line:
@@ -713,7 +721,7 @@ class FileEphemerisProvider:
         records: dict[str, list[tuple[float, np.ndarray, float | None]]] = defaultdict(list)
         current_abs_time: float | None = None
 
-        with Path(path).open("r", encoding="utf-8", errors="ignore") as handle:
+        with _open_text(path) as handle:
             for raw_line in handle:
                 line = raw_line.rstrip("\n")
                 if line.startswith("*"):
@@ -856,7 +864,7 @@ class RinexObservationReader:
         if receiver_position is not None and not np.any(np.abs(receiver_position[:3]) > 1e-6):
             receiver_position = None
 
-        with Path(self.path).open("r", encoding="utf-8", errors="ignore") as handle:
+        with _open_text(self.path) as handle:
             _parse_obs_header(handle)
 
             while True:

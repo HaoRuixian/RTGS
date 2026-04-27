@@ -75,8 +75,10 @@ class GlobalConfig:
         # Troposphere correction
         'troposphere_model': 'Sastamoinen',  # 'None', 'Sastamoinen', 'HMSL'
         
-        # GNSS systems used by positioning
-        'gnss_systems': ['G', 'R', 'E', 'C', 'J', 'I'],  # GPS, GLONASS, Galileo, BeiDou, QZSS, IRNSS
+        # GNSS systems used by positioning. Keep basic SPP GPS-first by default;
+        # multi-GNSS can be enabled from the positioning settings.
+        'gnss_systems': ['G'],
+        'prefer_gps_only': True,
         
         # Observation weighting
         'weight_mode': 'elevation',  # 'equal', 'elevation', 'snr'

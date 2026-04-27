@@ -16,7 +16,7 @@ class PositioningMode(Enum):
 class SolutionStatus(Enum):
     """Solution status indicators."""
     NO_FIX = "No Fix"
-    UNCERTAIN = "Uncertain"
+    UNCERTAIN = "Unfixed"
     FIXED = "Fixed"
 
 

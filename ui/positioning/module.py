@@ -27,7 +27,8 @@ from PySide6.QtGui import QColor, QFont
 
 from ui.positioning.workers import PositioningThread, PositioningSignals
 from ui.positioning.widgets import (
-    PositionMapWidget, PositionInfoWidget, AccuracyWidget, ResidualWidget
+    PositionMapWidget, PositionInfoWidget, AccuracyWidget, ResidualWidget,
+    format_solution_status,
 )
 from ui.monitoring.workers import IOThread, DataProcessingThread, RinexReplayThread, StreamSignals
 from ui.shared.config_dialog import ConfigDialog
@@ -89,6 +90,8 @@ class PositioningModule(QMainWindow):
             "SPP", self.positioning_signals, self.positioning_ring_buffer, self.rtcm_handler
         )
         self._compact_scale = None
+        self.display_mode = "LLH"
+        self.solution_history = deque(maxlen=100)
         
         # ======================================================================
         # Stream configuration
@@ -189,6 +192,15 @@ class PositioningModule(QMainWindow):
         self.btn_pos_settings.setMaximumWidth(140)
         self.btn_pos_settings.clicked.connect(self.open_positioning_settings_dialog)
         top_bar.addWidget(self.btn_pos_settings)
+
+        self.lbl_coord_mode = QLabel("Display:")
+        top_bar.addWidget(self.lbl_coord_mode)
+        self.combo_coord_mode = QComboBox()
+        self.combo_coord_mode.addItem("Lat/Lon/H", "LLH")
+        self.combo_coord_mode.addItem("ECEF XYZ", "XYZ")
+        self.combo_coord_mode.setMaximumWidth(150)
+        self.combo_coord_mode.currentIndexChanged.connect(self.on_coordinate_mode_changed)
+        top_bar.addWidget(self.combo_coord_mode)
         
         # Start/Stop button
         self.btn_start = QPushButton("Start Positioning")
@@ -199,11 +211,13 @@ class PositioningModule(QMainWindow):
         
         # Status indicators
         self.lbl_obs_status = QLabel("OBS: OFF")
-        self.lbl_obs_status.setStyleSheet("background: #ddd; padding: 4px 8px; border-radius: 4px;")
+        self.lbl_obs_status.setProperty("class", "status")
+        self._set_status_badge(self.lbl_obs_status, "OBS: OFF", "#6D2F2B")
         top_bar.addWidget(self.lbl_obs_status)
         
         self.lbl_pos_status = QLabel("POS: IDLE")
-        self.lbl_pos_status.setStyleSheet("background: #ddd; padding: 4px 8px; border-radius: 4px;")
+        self.lbl_pos_status.setProperty("class", "status")
+        self._set_status_badge(self.lbl_pos_status, "POS: IDLE", "#4B5563")
         top_bar.addWidget(self.lbl_pos_status)
         
         top_bar.addStretch()
@@ -252,11 +266,9 @@ class PositioningModule(QMainWindow):
         
         # Tab 3: Position history
         self.history_table = QTableWidget()
-        self.history_table.setColumnCount(7)
-        self.history_table.setHorizontalHeaderLabels([
-            "Time", "Lat (°)", "Lon (°)", "Height (m)", 
-            "HDOP", "Sats", "Status"
-        ])
+        self._configure_history_table()
+        self.history_table.setAlternatingRowColors(True)
+        self.history_table.verticalHeader().setVisible(False)
         self.history_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.right_tabs.addTab(self.history_table, "History")
         
@@ -297,6 +309,7 @@ class PositioningModule(QMainWindow):
         self.btn_back.setText("< Back to Launcher")
         self.btn_pos_settings.setText("Pos Settings")
         self.lbl_mode.setText("Positioning Mode:")
+        self.lbl_coord_mode.setText("Display:")
         self._refresh_start_button_text()
 
     def _refresh_start_button_text(self):
@@ -305,27 +318,87 @@ class PositioningModule(QMainWindow):
         else:
             self.btn_start.setText("Start Positioning")
 
+    def _set_status_badge(self, label: QLabel, text: str, color: str) -> None:
+        label.setText(text)
+        label.setStyleSheet(
+            f"background-color: {color}; color: white; padding: 4px 8px; "
+            "border-radius: 4px; font-weight: bold;"
+        )
+
+    def _configure_history_table(self) -> None:
+        self.history_table.setColumnCount(7)
+        if self.display_mode == "XYZ":
+            headers = ["Time", "ECEF X (m)", "ECEF Y (m)", "ECEF Z (m)", "HDOP", "Sats", "Status"]
+        else:
+            headers = ["Time", "Lat (deg)", "Lon (deg)", "Height (m)", "HDOP", "Sats", "Status"]
+        self.history_table.setHorizontalHeaderLabels(headers)
+
+    def _refresh_history_table(self) -> None:
+        if not hasattr(self, "history_table"):
+            return
+        self._configure_history_table()
+        self.history_table.setRowCount(0)
+
+        for row, (timestamp, solution) in enumerate(self.solution_history):
+            self.history_table.insertRow(row)
+            if self.display_mode == "XYZ":
+                values = [
+                    timestamp,
+                    f"{solution.ecef_x:.3f}",
+                    f"{solution.ecef_y:.3f}",
+                    f"{solution.ecef_z:.3f}",
+                    f"{solution.hdop:.2f}",
+                    str(solution.num_satellites),
+                    format_solution_status(solution.status),
+                ]
+            else:
+                values = [
+                    timestamp,
+                    f"{solution.latitude:.8f}",
+                    f"{solution.longitude:.8f}",
+                    f"{solution.height:.3f}",
+                    f"{solution.hdop:.2f}",
+                    str(solution.num_satellites),
+                    format_solution_status(solution.status),
+                ]
+
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setFont(QFont("Consolas", 9))
+                if col == 6:
+                    self._style_status_item(item, solution.status)
+                self.history_table.setItem(row, col, item)
+
+    def _style_status_item(self, item: QTableWidgetItem, status: SolutionStatus) -> None:
+        text = format_solution_status(status)
+        if text == "Fixed":
+            item.setForeground(QColor("#2A692D"))
+        elif text == "Unfixed":
+            item.setForeground(QColor("#B7791F"))
+        else:
+            item.setForeground(QColor("#6D2F2B"))
+        status_font = QFont("Consolas", 9)
+        status_font.setWeight(QFont.Weight.Bold)
+        item.setFont(status_font)
+
     def _update_solution_badge(self, status: SolutionStatus) -> None:
         if status == SolutionStatus.FIXED:
-            self.lbl_pos_status.setText("POS: FIXED")
-            self.lbl_pos_status.setStyleSheet("background: #66ff66; padding: 4px 8px; border-radius: 4px;")
+            self._set_status_badge(self.lbl_pos_status, "POS: FIXED", "#2A692D")
         elif status == SolutionStatus.UNCERTAIN:
-            self.lbl_pos_status.setText("POS: UNCERTAIN")
-            self.lbl_pos_status.setStyleSheet("background: #ffd166; padding: 4px 8px; border-radius: 4px;")
+            self._set_status_badge(self.lbl_pos_status, "POS: UNFIXED", "#B7791F")
         else:
-            self.lbl_pos_status.setText("POS: NO FIX")
-            self.lbl_pos_status.setStyleSheet("background: #ff9999; padding: 4px 8px; border-radius: 4px;")
+            self._set_status_badge(self.lbl_pos_status, "POS: NO FIX", "#6D2F2B")
 
     def _reset_solution_views(self) -> None:
         self.pending_solution = None
         self.last_solution_ui_time = 0.0
+        self.solution_history.clear()
         self.info_widget.clear()
         self.accuracy_widget.clear()
         self.residual_widget.clear()
         self.map_widget.clear_track()
         self.history_table.setRowCount(0)
-        self.lbl_pos_status.setText("POS: IDLE")
-        self.lbl_pos_status.setStyleSheet("background: #ddd; padding: 4px 8px; border-radius: 4px;")
+        self._set_status_badge(self.lbl_pos_status, "POS: IDLE", "#4B5563")
 
     def open_config_dialog(self):
         """Open stream configuration dialog."""
@@ -354,6 +427,15 @@ class PositioningModule(QMainWindow):
         if index < len(modes):
             self.positioning_thread.set_mode(modes[index])
             self.append_log(f"Positioning mode changed to {modes[index].value}")
+
+    def on_coordinate_mode_changed(self, _index: int):
+        """Switch all coordinate-oriented displays between LLH and ECEF XYZ."""
+        mode = self.combo_coord_mode.currentData() or "LLH"
+        self.display_mode = "XYZ" if mode == "XYZ" else "LLH"
+        self.info_widget.set_display_mode(self.display_mode)
+        self.map_widget.set_display_mode(self.display_mode)
+        self.residual_widget.set_display_mode(self.display_mode)
+        self._refresh_history_table()
 
     def open_positioning_settings_dialog(self):
         """Open dialog to configure positioning (SPP) parameters."""
@@ -408,9 +490,8 @@ class PositioningModule(QMainWindow):
 
             self.is_running = True
             self._refresh_start_button_text()
-            self.btn_start.setStyleSheet("background: #ff6666;")
-            self.lbl_pos_status.setText("POS: ACTIVE")
-            self.lbl_pos_status.setStyleSheet("background: #66ccff; padding: 4px 8px; border-radius: 4px;")
+            self.btn_start.setStyleSheet("background-color: #B05E5E; color: white;")
+            self._set_status_badge(self.lbl_pos_status, "POS: ACTIVE", "#2563EB")
             self.append_log("Positioning started")
             
         except Exception as e:
@@ -558,39 +639,10 @@ class PositioningModule(QMainWindow):
         self.residual_widget.update_solution(solution)
         self._update_solution_badge(solution.status)
         if solution.status != SolutionStatus.NO_FIX:
-            self.map_widget.update_track(solution.latitude, solution.longitude, solution.hdop)
-        
-        # Add to history
-        row = self.history_table.rowCount()
-        self.history_table.insertRow(0)  # Insert at top
-        
-        items = [
-            QTableWidgetItem(datetime.utcnow().strftime('%H:%M:%S')),
-            QTableWidgetItem(f"{solution.latitude:.6f}"),
-            QTableWidgetItem(f"{solution.longitude:.6f}"),
-            QTableWidgetItem(f"{solution.height:.2f}"),
-            QTableWidgetItem(f"{solution.hdop:.2f}"),
-            QTableWidgetItem(str(solution.num_satellites)),
-            QTableWidgetItem(solution.status.value),
-        ]
-        
-        for col, item in enumerate(items):
-            item.setFont(QFont("Courier", 9))
-            
-            # Color code status
-            if col == 6:  # Status column
-                if "Fixed" in item.text():
-                    item.setForeground(QColor("green"))
-                elif "Uncertain" in item.text():
-                    item.setForeground(QColor("orange"))
-                else:
-                    item.setForeground(QColor("red"))
-            
-            self.history_table.setItem(0, col, item)
-        
-        # Keep only last 100 rows
-        while self.history_table.rowCount() > 100:
-            self.history_table.removeRow(self.history_table.rowCount() - 1)
+            self.map_widget.update_solution(solution)
+
+        self.solution_history.appendleft((datetime.utcnow().strftime('%H:%M:%S'), solution))
+        self._refresh_history_table()
 
     def _flush_pending_solution(self, now: float | None = None):
         if self.pending_solution is None:
@@ -605,22 +657,18 @@ class PositioningModule(QMainWindow):
         """Update stream status indicator."""
         if stream_name == 'OBS':
             if connected:
-                self.lbl_obs_status.setText("OBS: ON")
-                self.lbl_obs_status.setStyleSheet("background: #66ff66; padding: 4px 8px; border-radius: 4px;")
+                self._set_status_badge(self.lbl_obs_status, "OBS: ON", "#2A692D")
             else:
-                self.lbl_obs_status.setText("OBS: OFF")
-                self.lbl_obs_status.setStyleSheet("background: #ddd; padding: 4px 8px; border-radius: 4px;")
+                self._set_status_badge(self.lbl_obs_status, "OBS: OFF", "#6D2F2B")
 
     @Slot(str, bool)
     def update_positioning_status(self, status_name: str, active: bool):
         """Update positioning status indicator."""
         if active:
             if self.lbl_pos_status.text() == "POS: IDLE":
-                self.lbl_pos_status.setText("POS: ACTIVE")
-                self.lbl_pos_status.setStyleSheet("background: #66ccff; padding: 4px 8px; border-radius: 4px;")
+                self._set_status_badge(self.lbl_pos_status, "POS: ACTIVE", "#2563EB")
         else:
-            self.lbl_pos_status.setText("POS: IDLE")
-            self.lbl_pos_status.setStyleSheet("background: #ddd; padding: 4px 8px; border-radius: 4px;")
+            self._set_status_badge(self.lbl_pos_status, "POS: IDLE", "#4B5563")
 
     @Slot()
     def update_ui(self):

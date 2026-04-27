@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
+
 from core.data_models import EpochObservation, SatelliteState, SignalData
 from core.gnss_time import GNSSTime
 from core.mixed_gnss_reader import MixedGNSSReader
@@ -56,6 +58,13 @@ def _reader_factory(messages):
 
 def _handler_factory(mapping, approx_position=None):
     return lambda: _FakeHandler(mapping, approx_position)
+
+
+class _FakeRTCMMessage:
+    def __init__(self, identity: str, **attrs):
+        self.identity = identity
+        for key, value in attrs.items():
+            setattr(self, key, value)
 
 
 def test_iter_merged_epochs_merges_same_timestamp_messages():
@@ -252,6 +261,115 @@ def test_rtcm_handler_glonass_uses_utc_day_index_near_gps_midnight():
     anchor = datetime(2021, 3, 19, 23, 59, 42, tzinfo=timezone.utc)
 
     assert RTCMHandler._utc_day_of_week(anchor) == 5
+
+
+def test_rtcm_handler_decodes_msm5_observations_with_scaled_doppler():
+    handler = RTCMHandler(
+        reference_utc=datetime(2026, 3, 26, tzinfo=timezone.utc),
+        compute_geometry=False,
+    )
+    msg = _FakeRTCMMessage(
+        "1075",
+        DF004=345600000,
+        NSat=1,
+        NCell=1,
+        PRN_01=3,
+        DF397_01=70,
+        ExtSatInfo_01=0,
+        DF398_01=0.25,
+        DF399_01=100,
+        CELLPRN_01=3,
+        CELLSIG_01="1C",
+        DF400_01=0.0001,
+        DF401_01=0.00012,
+        DF402_01=7,
+        DF420_01=1,
+        DF403_01=45,
+        DF404_01=0.25,
+    )
+
+    epoch = handler.process_message(msg)
+    sig = epoch.satellites["G03"].signals["1C"]
+
+    c = 299792458.0
+    range_ms = c / 1000.0
+    rough_range = (70.0 + 0.25) * range_ms
+    l1_hz = 1575.42e6
+    assert sig.pseudorange == pytest.approx(rough_range + 0.0001 * range_ms)
+    assert sig.phase == pytest.approx((rough_range + 0.00012 * range_ms) * l1_hz / c)
+    assert sig.snr == 45.0
+    assert sig.lock_time == 7
+    assert sig.half_cycle == 1
+    assert sig.doppler == pytest.approx(-(100.0 + 0.25) * l1_hz / c)
+
+
+def test_rtcm_handler_decodes_msm6_extended_fields_without_doppler():
+    handler = RTCMHandler(
+        reference_utc=datetime(2026, 3, 26, tzinfo=timezone.utc),
+        compute_geometry=False,
+    )
+    msg = _FakeRTCMMessage(
+        "1126",
+        DF427=345600000,
+        NSat=1,
+        NCell=1,
+        PRN_01=7,
+        DF397_01=71,
+        DF398_01=0.5,
+        CELLPRN_01=7,
+        CELLSIG_01="2I",
+        DF405_01=0.00002,
+        DF406_01=0.00003,
+        DF407_01=120,
+        DF420_01=0,
+        DF408_01=42.5,
+    )
+
+    epoch = handler.process_message(msg)
+    sig = epoch.satellites["C07"].signals["2I"]
+
+    c = 299792458.0
+    range_ms = c / 1000.0
+    rough_range = (71.0 + 0.5) * range_ms
+    b1_hz = 1561.098e6
+    assert sig.pseudorange == pytest.approx(rough_range + 0.00002 * range_ms)
+    assert sig.phase == pytest.approx((rough_range + 0.00003 * range_ms) * b1_hz / c)
+    assert sig.snr == 42.5
+    assert sig.lock_time == 120
+    assert sig.doppler == 0.0
+
+
+def test_rtcm_handler_uses_glonass_msm5_frequency_channel():
+    handler = RTCMHandler(
+        reference_utc=datetime(2026, 3, 26, tzinfo=timezone.utc),
+        compute_geometry=False,
+    )
+    msg = _FakeRTCMMessage(
+        "1085",
+        DF034=43200000,
+        NSat=1,
+        NCell=1,
+        PRN_01=8,
+        DF397_01=70,
+        DF419_01=10,
+        DF398_01=0.0,
+        DF399_01=-250,
+        CELLPRN_01=8,
+        CELLSIG_01="1C",
+        DF400_01=0.00002,
+        DF401_01=0.00003,
+        DF402_01=4,
+        DF420_01=0,
+        DF403_01=39,
+        DF404_01=0.5,
+    )
+
+    epoch = handler.process_message(msg)
+    sig = epoch.satellites["R08"].signals["1C"]
+
+    c = 299792458.0
+    glo_l1_hz = 1602.0e6 + 0.5625e6 * 3
+    assert sig.doppler == pytest.approx(-(-250.0 + 0.5) * glo_l1_hz / c)
 
 
 def test_utc_to_gps_file_datetime_adds_gps_offset():

@@ -71,6 +71,7 @@ class SPPPositioner:
     DEFAULT_IONOSPHERE_OPT = "IFLC"
     DEFAULT_TROPOSPHERE_MODEL = "Sastamoinen"
     DEFAULT_MAX_PDOP = 10.0
+    DEFAULT_PREFER_GPS_ONLY = True
 
     MAX_ITERATIONS = 10
     CONVERGENCE_THRESHOLD = 1e-4
@@ -94,6 +95,7 @@ class SPPPositioner:
         )
         self.WEIGHT_MODE = config.get("weight_mode", self.DEFAULT_WEIGHT_MODE)
         self.gnss_systems = config.get("gnss_systems", ["G", "R", "E", "C", "J", "I"])
+        self.prefer_gps_only = bool(config.get("prefer_gps_only", self.DEFAULT_PREFER_GPS_ONLY))
         self.uncertain_std_pos = float(config.get("uncertain_std_pos", 5.0))
         self.fixed_std_pos = float(config.get("fixed_std_pos", 2.5))
         self.max_pdop = float(config.get("max_pdop", self.DEFAULT_MAX_PDOP))
@@ -428,6 +430,10 @@ class SPPPositioner:
             if len(observations) < self.MIN_SATELLITES:
                 return None
 
+            observations = self._select_solution_observations(observations)
+            if len(observations) < self.MIN_SATELLITES:
+                return None
+
             initial_guess = self._normalize_position_guess(approx_position)
             if initial_guess is None and self.last_solution is not None:
                 initial_guess = self._normalize_position_guess(self.last_solution.position_ecef)
@@ -443,6 +449,23 @@ class SPPPositioner:
         except Exception as exc:
             self.logger.error("SPP processing error: %s", exc, exc_info=True)
             return None
+
+    def _select_solution_observations(self, observations: List[Dict]) -> List[Dict]:
+        """
+        Choose the observation set used by the basic SPP solver.
+
+        The current implementation is intentionally conservative: GPS-only SPP
+        is much less sensitive to unmodelled inter-system biases and incomplete
+        GLONASS/BDS time-scale handling. Users can disable this preference from
+        config once the multi-GNSS model is being tuned.
+        """
+        if not self.prefer_gps_only or "G" not in self.gnss_systems:
+            return observations
+
+        gps_observations = [obs for obs in observations if obs["sat_key"].startswith("G")]
+        if len(gps_observations) >= self.MIN_SATELLITES:
+            return gps_observations
+        return observations
 
     def _build_be2pos_input(self, eph: Dict) -> Optional[Tuple[str, Dict]]:
         sat_id = str(eph.get("satellite_id", ""))
@@ -670,7 +693,10 @@ class SPPPositioner:
 
         if self.troposphere_model == "Sastamoinen":
             try:
-                return tropsphere_model(rec_lla_rad, azel_rad, humi=0.7)
+                result = tropsphere_model(rec_lla_rad, azel_rad, humi=0.7)
+                if isinstance(result, tuple):
+                    return float(result[0]), float(result[1])
+                return float(result or 0.0), 0.0
             except Exception as exc:
                 self.logger.debug("Sastamoinen troposphere model failed: %s", exc)
                 return 0.0, 0.0
@@ -887,9 +913,13 @@ class SPPPositioner:
 
         solution_status = "No Fix"
         if convergence and gdop > 0.0 and gdop <= MAX_GDOP and pdop > 0.0 and pdop <= self.max_pdop:
-            if std_pos_3d <= self.fixed_std_pos:
+            if math.isfinite(std_pos_3d) and std_pos_3d <= self.fixed_std_pos:
                 solution_status = "Fixed"
-            elif std_pos_3d <= self.uncertain_std_pos:
+            elif not math.isfinite(std_pos_3d) or std_pos_3d <= self.uncertain_std_pos:
+                solution_status = "Uncertain"
+            else:
+                # A converged code-only SPP solution is still usable even when
+                # formal covariance is pessimistic due broadcast URA/noise.
                 solution_status = "Uncertain"
 
         epoch_time = getattr(epoch_obs, "utc_datetime", None) or datetime.now(timezone.utc)

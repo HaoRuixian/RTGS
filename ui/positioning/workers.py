@@ -94,8 +94,8 @@ class PositioningThread(threading.Thread):
             except Exception:
                 self.approx_position = None
         if self.approx_position is None or np.all(self.approx_position == 0):
-            # Default to somewhere on Earth if not configured
-            self.approx_position = np.array([4000000.0, 3000000.0, 5000000.0])
+            # Let SPP compute the first coarse position from satellite geometry.
+            self.approx_position = None
         
         self.mode = PositioningMode.SPP
         self.min_satellites = pos_config.get('min_satellites', 4)
@@ -275,6 +275,7 @@ class PositioningThread(threading.Thread):
         status_map = {
             "Fixed": SolutionStatus.FIXED,
             "Uncertain": SolutionStatus.UNCERTAIN,
+            "Unfixed": SolutionStatus.UNCERTAIN,
             "No Fix": SolutionStatus.NO_FIX,
         }
         status = status_map.get(result.solution_status, SolutionStatus.NO_FIX)

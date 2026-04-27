@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import gzip
 from pathlib import Path
 
 import numpy as np
@@ -178,3 +179,14 @@ def test_precise_sp3_provider_reads_sample_sp3_epoch():
         atol=1.0,
     )
     assert abs(state.clock_correction_s - 344.257598e-6) < 1e-12
+
+
+def test_precise_sp3_provider_reads_gzip_sp3(tmp_path):
+    sp3_path = Path("tests/COD0MGXFIN_20252530000_01D_05M_ORB.SP3")
+    gz_path = tmp_path / "sample.SP3.gz"
+    gz_path.write_bytes(gzip.compress(sp3_path.read_bytes()))
+
+    provider = FileEphemerisProvider.from_file(gz_path)
+
+    assert provider.kind == "precise"
+    assert "G01" in provider.precise_records

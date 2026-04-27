@@ -1,0 +1,129 @@
+# Multi-station RT NTRIP -> RINEX configuration
+#
+# Run with:
+#   python3 utils/rt_ntrip_to_rinex.py config/streams/rt_multi_ntrip_rinex.yaml
+#
+# Relative output paths are resolved against this YAML file.
+
+defaults:
+  enabled: true
+  ntrip:
+    port: 2101
+    user_agent: NTRIP RTGS RTRINEX/0.1
+    connect_timeout_seconds: 15
+    reconnect_delay_seconds: 5
+  rinex:
+    output_directory: /mnt/20t/RT_RINEX
+    sample_interval_seconds: auto
+    split_enabled: true
+    split_period_seconds: 3600
+    daily_merge_min_interval_seconds: 15
+    country_code: CHN
+    datatype: MO
+    receiver_type: UNKNOWN
+    antenna_type: UNKNOWN
+    antenna_model: ""
+    marker_number: "0"
+    time_system: GPS
+    auto_detect_obs_types: true
+    align_tolerance_seconds: 0.001
+
+stations:
+  - name: BUAA01
+    ntrip:
+      host: 8.140.235.117
+      mountpoint: BUAA01
+      user: adminHRX
+      password: hao20030801
+    rinex:
+      marker_name: BUAA01
+      station_code: BUAA
+      receiver_number: "01"
+      receiver_type: Unicorecomm UM982
+      antenna_model: HXCCGX611A
+      antenna_type: HXCM
+      approx_position: [4000000.0, 4000000.0, 4000000.0]
+
+  - name: BUAA02
+    ntrip:
+      host: 8.140.235.117
+      mountpoint: BUAA02
+      user: adminHRX
+      password: hao20030801
+    rinex:
+      marker_name: BUAA02
+      station_code: BUAA
+      receiver_number: "02"
+      receiver_type: SEPT Mosaic-X5
+      antenna_model: HXCCGX611A
+      antenna_type: HXCM
+      approx_position: [4000000.0, 4000000.0, 4000000.0]
+
+  - name: BUAA04
+    ntrip:
+      host: 8.140.235.117
+      mountpoint: BUAA04
+      user: adminHRX
+      password: hao20030801
+    rinex:
+      marker_name: BUAA04
+      station_code: BUAA
+      receiver_number: "04"
+      receiver_type: Ublox ZED-F9P
+      antenna_model: HXCCGX611A
+      antenna_type: HXCM
+      approx_position: [4000000.0, 4000000.0, 4000000.0]
+
+  - name: NBFH
+    ntrip:
+      host: 8.140.235.117
+      mountpoint: NBFH
+      user: adminHRX
+      password: hao20030801
+    rinex:
+      marker_name: NBFH
+      station_code: NBFH
+      receiver_number: "00"
+      country_code: CHN
+      split_enabled: true
+      split_period_seconds: 86400
+      sample_interval_seconds: auto
+      receiver_type: Unicorecomm UM982
+      antenna_model: ""
+      antenna_type: UNKNOWN
+
+  - name: CJ02
+    ntrip:
+      host: 8.140.235.117
+      mountpoint: CJ02
+      user: adminHRX
+      password: hao20030801
+    rinex:
+      marker_name: CJ02
+      station_code: CJ02
+      receiver_number: "00"
+      country_code: CHN
+      split_enabled: true
+      split_period_seconds: 86400
+      sample_interval_seconds: auto
+      receiver_type: Unicorecomm UM982
+      antenna_model: ""
+      antenna_type: UNKNOWN
+
+  - name: GR01
+    ntrip:
+      host: 8.140.235.117
+      mountpoint: GR01
+      user: adminHRX
+      password: hao20030801
+    rinex:
+      marker_name: GR01
+      station_code: GR01
+      receiver_number: "00"
+      country_code: CHN
+      split_enabled: true
+      split_period_seconds: 3600
+      sample_interval_seconds: auto
+      receiver_type: SEPT Asterx-m3 Pro+
+      antenna_model: ""
+      antenna_type: UNKNOWN

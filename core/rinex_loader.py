@@ -11,12 +11,12 @@ import math
 from pathlib import Path
 from typing import Iterable
 
-import numpy as np
+try:
+    import numpy as np
+except Exception:  # pragma: no cover - depends on environment
+    np = None
 
-from core.BE2pos import brdc2pos
-from core.broadcast_ephemeris import BroadcastEphemeris
 from core.data_models import EpochObservation, SatelliteState, SignalData
-from core.geo_utils import calculate_az_el
 from core.gnss_time import GNSSTime
 
 
@@ -243,6 +243,23 @@ def _choose_best_pseudorange(signal_map: dict[str, SignalData]) -> float | None:
     return None
 
 
+def _coerce_receiver_position(values: Iterable[float] | None) -> list[float] | None:
+    if values is None:
+        return None
+    try:
+        coords = [float(value) for value in list(values)[:3]]
+    except (TypeError, ValueError):
+        return None
+    return coords if len(coords) >= 3 else None
+
+
+def _has_nonzero_position(values: Iterable[float] | None) -> bool:
+    coords = _coerce_receiver_position(values)
+    if coords is None:
+        return False
+    return any(abs(float(value)) > 1e-6 for value in coords[:3])
+
+
 def _build_satellite_state(satellite_id: str, obs_types: list[str], raw_fields: str) -> SatelliteState | None:
     if len(satellite_id) < 2:
         return None
@@ -435,12 +452,16 @@ class FileEphemerisProvider:
         self,
         kind: str,
         source_path: str,
-        broadcast_ephemeris: BroadcastEphemeris | None = None,
+        broadcast_ephemeris: "BroadcastEphemeris | None" = None,
         precise_records: dict[str, list[tuple[float, np.ndarray, float | None]]] | None = None,
     ) -> None:
         self.kind = kind
         self.source_path = source_path
-        self.broadcast_ephemeris = broadcast_ephemeris or BroadcastEphemeris()
+        if broadcast_ephemeris is None:
+            from core.broadcast_ephemeris import BroadcastEphemeris
+
+            broadcast_ephemeris = BroadcastEphemeris()
+        self.broadcast_ephemeris = broadcast_ephemeris
         self.precise_records = precise_records or {}
         self._precise_times = {
             sat_id: [item[0] for item in records]
@@ -452,16 +473,22 @@ class FileEphemerisProvider:
         cls,
         path: str | Path,
         file_type: str = "auto",
-        broadcast_ephemeris: BroadcastEphemeris | None = None,
+        broadcast_ephemeris: "BroadcastEphemeris | None" = None,
     ) -> "FileEphemerisProvider":
         source_path = str(path)
         resolved_type = cls._resolve_file_type(source_path, file_type)
 
         if resolved_type == "precise":
+            if np is None:
+                raise RuntimeError("numpy is required for precise SP3 ephemeris support.")
             precise_records = cls._load_sp3(source_path)
             return cls("precise", source_path, precise_records=precise_records)
 
-        eph_cache = broadcast_ephemeris or BroadcastEphemeris()
+        if broadcast_ephemeris is None:
+            from core.broadcast_ephemeris import BroadcastEphemeris
+
+            broadcast_ephemeris = BroadcastEphemeris()
+        eph_cache = broadcast_ephemeris
         cls._load_broadcast_nav(source_path, eph_cache)
         return cls("broadcast", source_path, broadcast_ephemeris=eph_cache)
 
@@ -483,8 +510,13 @@ class FileEphemerisProvider:
         return "broadcast"
 
     @staticmethod
+<<<<<<< HEAD
     def _load_broadcast_nav(path: str, eph_cache: BroadcastEphemeris) -> None:
         with _open_text(path) as handle:
+=======
+    def _load_broadcast_nav(path: str, eph_cache: "BroadcastEphemeris") -> None:
+        with Path(path).open("r", encoding="utf-8", errors="ignore") as handle:
+>>>>>>> 1bf1123 (server 0427)
             while True:
                 line = handle.readline()
                 if not line:
@@ -718,6 +750,8 @@ class FileEphemerisProvider:
 
     @staticmethod
     def _load_sp3(path: str) -> dict[str, list[tuple[float, np.ndarray, float | None]]]:
+        if np is None:
+            raise RuntimeError("numpy is required for SP3 loading.")
         records: dict[str, list[tuple[float, np.ndarray, float | None]]] = defaultdict(list)
         current_abs_time: float | None = None
 
@@ -783,16 +817,25 @@ class FileEphemerisProvider:
             if built is None:
                 return None
             sys_type, payload = built
+            from core.BE2pos import brdc2pos
+
             position = brdc2pos(payload, sys_type, transmission_time)
             if position is None:
                 return None
 
+            if np is None:
+                position_value = [float(item) for item in position]
+            else:
+                position_value = np.asarray(position, dtype=float)
+
             return SatelliteEphemerisState(
-                position_ecef_m=np.asarray(position, dtype=float),
+                position_ecef_m=position_value,
                 clock_correction_s=_compute_broadcast_clock(eph, transmission_time),
                 source="broadcast",
             )
 
+        if np is None:
+            raise RuntimeError("numpy is required for precise ephemeris interpolation.")
         target_time = gps_week * SECONDS_PER_WEEK + float(gps_sow)
         if pseudorange_m is not None and float(pseudorange_m) > 0.0:
             target_time -= float(pseudorange_m) / LIGHT_SPEED
@@ -852,16 +895,13 @@ class RinexObservationReader:
     ) -> Iterable[EpochObservation]:
         allowed_systems = {item.upper() for item in target_systems} if target_systems else None
 
-        receiver_position: np.ndarray | None = None
+        receiver_position: list[float] | None = None
         if receiver_position_ecef is not None:
-            try:
-                receiver_position = np.asarray(list(receiver_position_ecef), dtype=float)
-            except (TypeError, ValueError):
-                receiver_position = None
+            receiver_position = _coerce_receiver_position(receiver_position_ecef)
         elif self.metadata.has_nonzero_approx_position:
-            receiver_position = np.asarray(self.metadata.approx_position_ecef, dtype=float)
+            receiver_position = _coerce_receiver_position(self.metadata.approx_position_ecef)
 
-        if receiver_position is not None and not np.any(np.abs(receiver_position[:3]) > 1e-6):
+        if receiver_position is not None and not _has_nonzero_position(receiver_position):
             receiver_position = None
 
         with _open_text(self.path) as handle:
@@ -907,10 +947,15 @@ class RinexObservationReader:
                             pseudorange_m=pseudorange,
                         )
                         if state is not None:
-                            sat_state.sat_pos_ecef = state.position_ecef_m.tolist()
+                            if hasattr(state.position_ecef_m, "tolist"):
+                                sat_state.sat_pos_ecef = state.position_ecef_m.tolist()
+                            else:
+                                sat_state.sat_pos_ecef = list(state.position_ecef_m)
                             sat_state.sat_clk_corr = float(state.clock_correction_s)
                             sat_state.sat_var = 0.0
                             if receiver_position is not None:
+                                from core.geo_utils import calculate_az_el
+
                                 azimuth, elevation = calculate_az_el(state.position_ecef_m, receiver_position)
                                 sat_state.azimuth = float(azimuth)
                                 sat_state.elevation = float(elevation)

@@ -3,10 +3,10 @@ station:
   receiver_position:
     latitude_deg: 48.380491
     longitude_deg: -4.496598
-    height_m: 67.837
-    x_m: 4231164.131800001
-    y_m: -332747.0293
-    z_m: 4745132.2087
+    height_m: 65.794
+    x_m: 4231162.779
+    y_m: -332746.923
+    z_m: 4745130.681
   antenna_height: 21.0
   monument_height: 0.8
   environment_type: coastal
@@ -20,7 +20,7 @@ input:
 processing:
   min_elevation_deg: 5.0
   max_elevation_deg: 25.0
-  live_arc_window_minutes: 15
+  live_arc_window_minutes: 30
   live_analysis_interval_seconds: 60
   elevation_rate_mode: monotonic
   min_arc_length: 300.0
@@ -70,7 +70,7 @@ geometry:
     - - 130.0
       - 165.0
 qc:
-  min_peak_to_noise_ratio: 3.0
+  min_peak_to_noise_ratio: 10.0
   min_primary_peak_ratio: 1.25
   min_arc_duration: 120.0
   min_snr_amplitude: 1.0

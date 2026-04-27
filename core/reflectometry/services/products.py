@@ -202,6 +202,7 @@ class ProductConverter:
                 "aggregation": "second_order_dynamic_correction",
                 "dynamic_model_order": 2,
                 "dynamic_regression_method": "igg3",
+                "dynamic_design_matrix": "1, roc_plus_dt, roc_times_dt_plus_half_dt_squared",
                 "dynamic_window_hours": self.config.dynamic_sea_level_window_hours,
                 "dynamic_sample_count": estimate.sample_count,
                 "dynamic_effective_sample_count": estimate.effective_sample_count,
@@ -288,7 +289,7 @@ class ProductConverter:
                 [
                     1.0,
                     roc_like_seconds + delta_t_seconds,
-                    roc_like_seconds * delta_t_seconds + delta_t_seconds * delta_t_seconds,
+                    roc_like_seconds * delta_t_seconds + 0.5 * delta_t_seconds * delta_t_seconds,
                 ]
             )
             observations.append(float(item.value))
@@ -428,8 +429,9 @@ def _robust_igg3_fit(
     raw_weights = np.maximum(np.asarray(initial_weights, dtype=float), min_weight)
     if not np.any(raw_weights > 0.0):
         raw_weights = np.ones_like(y, dtype=float)
-    weight_scale = max(float(np.max(raw_weights)), min_weight)
-    weights = np.maximum(raw_weights / weight_scale, min_weight)
+    finite_positive = raw_weights[np.isfinite(raw_weights) & (raw_weights > min_weight)]
+    weight_scale = float(np.max(finite_positive)) if finite_positive.size else 1.0
+    weights = np.maximum(raw_weights / max(weight_scale, min_weight), min_weight)
 
     previous_beta: np.ndarray | None = None
     beta_normalized: np.ndarray | None = None
@@ -444,7 +446,11 @@ def _robust_igg3_fit(
             return None
         beta_candidate, normal_matrix = solved
         residuals = X_normalized @ beta_candidate - y
-        degrees_of_freedom = max(X_normalized.shape[0] - X_normalized.shape[1], 1)
+        if residuals.size and float(np.max(np.abs(residuals))) <= max(tolerance, 1e-10):
+            beta_normalized = beta_candidate
+            iterations = iteration
+            break
+        degrees_of_freedom = max(X_normalized.shape[0] - 2, 1)
         if iteration == 1:
             sigma0 = max(_robust_scale(residuals), np.finfo(float).eps)
         else:
@@ -488,7 +494,7 @@ def _robust_igg3_fit(
         return None
     beta_normalized, normal_matrix = solved
     residuals = X_normalized @ beta_normalized - y
-    degrees_of_freedom = max(X_normalized.shape[0] - X_normalized.shape[1], 1)
+    degrees_of_freedom = max(X_normalized.shape[0] - 2, 1)
     sigma0 = float(np.sqrt(max(float(residuals.T @ (weights * residuals)) / degrees_of_freedom, np.finfo(float).eps)))
     qx = np.linalg.pinv(normal_matrix)
     hat_diagonal = _weighted_hat_diagonal(X_normalized, qx)
@@ -499,7 +505,7 @@ def _robust_igg3_fit(
     beta = _backtransform_normalized_coefficients(beta_normalized, means, scales, normalized_columns)
     residuals_original = X @ beta - y
 
-    rejection_mask = np.abs(standardized_residuals) >= (k1 - 1e-9)
+    rejection_mask = weights <= (min_weight * (1.0 + 1e-6))
     rejected_sample_count = int(np.count_nonzero(rejection_mask))
     effective_sample_count = int(weights.size - rejected_sample_count)
 
@@ -646,5 +652,3 @@ def apply_environment_product_policy(config: ProductsConfig, environment_type: s
             snow_depth_reference_height=None,
         )
     return replace(config, enable_reflector_height=True)
-
-

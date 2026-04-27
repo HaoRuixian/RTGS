@@ -27,6 +27,7 @@ from pyrtcm import RTCMReader
 from datetime import datetime, timedelta, timezone
 
 from core.global_config import get_global_config
+from core.gnss_time import GNSSTime
 from core.ntrip_client import NtripClient
 from core.serial_client import SerialClient
 from core.ring_buffer import RingBuffer
@@ -732,9 +733,14 @@ class LoggingThread(threading.Thread):
         return epoch_time.astimezone(timezone.utc).replace(tzinfo=None)
 
     @staticmethod
+    def _utc_to_rinex_time(epoch_time: datetime) -> datetime:
+        """Convert an internal UTC epoch to the GPS-like timescale written to live RINEX."""
+        normalized_time = LoggingThread._normalize_utc_datetime(epoch_time)
+        return normalized_time + timedelta(seconds=GNSSTime.LEAP_SECONDS)
+
+    @staticmethod
     def _round_time_to_interval(epoch_time: datetime, sample_interval: int) -> datetime:
-        """Round a UTC datetime to the nearest sampling boundary."""
-        epoch_time = LoggingThread._normalize_utc_datetime(epoch_time)
+        """Round a naive epoch time to the nearest sampling boundary."""
         interval = max(1, int(sample_interval))
         anchor = datetime(1980, 1, 6)
         total_seconds = (epoch_time - anchor).total_seconds()
@@ -743,10 +749,10 @@ class LoggingThread(threading.Thread):
         return rounded_time.replace(microsecond=0)
 
     def _align_epoch_time(self, epoch_time: datetime, sample_interval: int) -> datetime | None:
-        """Return an aligned epoch time if the epoch is on a sample boundary."""
-        epoch_time = self._normalize_utc_datetime(epoch_time)
-        aligned_time = self._round_time_to_interval(epoch_time, sample_interval)
-        if abs((epoch_time - aligned_time).total_seconds()) > 1e-3:
+        """Return an aligned live-RINEX epoch time when the source epoch is on a sample boundary."""
+        rinex_epoch_time = self._utc_to_rinex_time(epoch_time)
+        aligned_time = self._round_time_to_interval(rinex_epoch_time, sample_interval)
+        if abs((rinex_epoch_time - aligned_time).total_seconds()) > 1e-3:
             return None
         return aligned_time
 
@@ -760,10 +766,9 @@ class LoggingThread(threading.Thread):
             return None
 
     def _get_initial_rinex_file_time(self, sample_interval: int) -> datetime:
-        """Choose a stable UTC start time for the RINEX long filename."""
+        """Choose a stable RINEX/GPS start time for the live long filename."""
         if self.last_rinex_epoch_time is not None:
-            last_epoch_time = self._normalize_utc_datetime(self.last_rinex_epoch_time)
-            return last_epoch_time + timedelta(seconds=max(1, int(sample_interval)))
+            return self.last_rinex_epoch_time + timedelta(seconds=max(1, int(sample_interval)))
 
         epoch_data = self._get_latest_epoch_data()
         epoch_time = getattr(epoch_data, 'utc_datetime', None) if epoch_data else None
@@ -772,7 +777,10 @@ class LoggingThread(threading.Thread):
             if aligned_time:
                 return aligned_time
 
-        return self._round_time_to_interval(datetime.now(timezone.utc), sample_interval)
+        return self._round_time_to_interval(
+            self._utc_to_rinex_time(datetime.now(timezone.utc)),
+            sample_interval,
+        )
 
     def _update_rinex_writer_position(self, rinex_writer: RINEX3Writer) -> None:
         """Push the latest station ECEF coordinates into the RINEX header state."""
@@ -874,6 +882,8 @@ class LoggingThread(threading.Thread):
                         out_path,
                         marker_name=marker_name,
                         marker_number="0",
+                        header_interval_seconds=float(sample_interval),
+                        time_system="GPS",
                         **rinex_opts,
                     )
                     if not rinex_writer.open():

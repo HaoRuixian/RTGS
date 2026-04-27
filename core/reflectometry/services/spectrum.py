@@ -52,8 +52,7 @@ def detect_peaks(
     if len(power) == 0:
         return SpectrumAnalysisResult(frequencies=frequencies, power=power, noise_floor=0.0, candidates=[])
 
-    baseline_count = max(1, int(len(power) * 0.7))
-    noise_floor = float(np.mean(np.sort(power)[:baseline_count]))
+    noise_floor = float(np.mean(power))
     peak_indices, properties = find_peaks(power, prominence=min_prominence)
     if len(peak_indices) == 0:
         return SpectrumAnalysisResult(frequencies=frequencies, power=power, noise_floor=noise_floor, candidates=[])
@@ -131,13 +130,14 @@ class SpectrumAnalyzer:
             normalize=self.config.lomb_scargle.normalize,
             floating_mean=self.config.lomb_scargle.floating_mean,
         )
+        power = _normalize_lsp_amplitude(power, sample_count=len(x))
         return detect_peaks(
             frequencies=frequencies,
             power=power,
             wavelength_m=series.wavelength_m,
             min_prominence=self.config.peak_selection.min_prominence,
             min_width_bins=self.config.peak_selection.min_width_bins,
-            max_candidates=self.config.peak_selection.max_candidates,
+            max_candidates=max(self.config.peak_selection.max_candidates, 3),
             prefer_high_power=self.config.peak_selection.prefer_high_power,
         )
 
@@ -150,3 +150,11 @@ class SpectrumAnalyzer:
         frequency_min = 2.0 * self.config.min_reflector_height / wavelength_m
         frequency_max = 2.0 * self.config.max_reflector_height / wavelength_m
         return frequency_min, frequency_max
+
+
+def _normalize_lsp_amplitude(power: np.ndarray, *, sample_count: int) -> np.ndarray:
+    """Convert Lomb-Scargle power into MATLAB snr2RH_lsp-style amplitude."""
+    if power.size == 0:
+        return power
+    clipped = np.clip(np.asarray(power, dtype=float), 0.0, None)
+    return 2.0 * np.sqrt(clipped / max(sample_count, 1))

@@ -22,7 +22,7 @@ processing:
   min_elevation_deg: 0.5
   max_elevation_deg: 13.0
   live_arc_window_minutes: 30
-  live_analysis_interval_seconds: 5
+  live_analysis_interval_seconds: 60
   elevation_rate_mode: monotonic
   min_arc_length: 300.0
   max_time_gap_seconds: 90.0
@@ -65,7 +65,7 @@ geometry:
     - - 50.0
       - 230.0
 qc:
-  min_peak_to_noise_ratio: 5.0
+  min_peak_to_noise_ratio: 2.0
   min_primary_peak_ratio: 1.25
   min_arc_duration: 300.0
   min_snr_amplitude: 1.0

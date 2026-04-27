@@ -11,7 +11,7 @@ CMakeFiles/
 # IDE
 .vscode/
 .idea/
-
+.codex/
 # OS
 .DS_Store
 Thumbs.db
@@ -22,3 +22,6 @@ log/
 output/
 GNSS_Data/
 Bridge/
+dist/
+ir_ref/
+deploy/

@@ -28,7 +28,6 @@ class SnrPreprocessor:
         elevations = []
         azimuths = []
         snr_db_values = []
-        snr_linear_values = []
 
         wavelength_m = _resolve_wavelength(
             arc.constellation,
@@ -44,13 +43,11 @@ class SnrPreprocessor:
                 snr_db_hz = float(_linear_to_dbhz(np.array([snr_linear], dtype=float))[0])
             else:
                 snr_db_hz = float(observation.snr)
-                snr_linear = float(_dbhz_to_linear(np.array([snr_db_hz], dtype=float))[0])
 
             timestamps.append(observation.timestamp)
             elevations.append(float(observation.elevation_deg))
             azimuths.append(float(observation.azimuth_deg))
             snr_db_values.append(snr_db_hz)
-            snr_linear_values.append(snr_linear)
 
         minimum_samples = minimum_required_arc_samples(self.processing_config)
 
@@ -58,7 +55,6 @@ class SnrPreprocessor:
             raise ValueError("Not enough samples remain after geometry filtering")
 
         snr_db = np.asarray(snr_db_values, dtype=float)
-        snr_linear = np.asarray(snr_linear_values, dtype=float)
         elevation_deg = np.asarray(elevations, dtype=float)
         azimuth_deg = np.asarray(azimuths, dtype=float)
         sin_elevation = _sin_elevation_deg(elevation_deg)
@@ -69,14 +65,14 @@ class SnrPreprocessor:
 
         timestamps = [timestamp for timestamp, keep in zip(timestamps, mask) if keep]
         snr_db = snr_db[mask]
-        snr_linear = snr_linear[mask]
         elevation_deg = elevation_deg[mask]
         azimuth_deg = azimuth_deg[mask]
         sin_elevation = sin_elevation[mask]
 
-        smoothed_linear = self._smooth(snr_linear)
+        smoothed_snr_db = self._smooth(snr_db)
+        smoothed_linear = _dbhz_to_linear(smoothed_snr_db)
         detrend_x = sin_elevation if "sin_elevation" in self.processing_config.detrend_method else elevation_deg
-        residual, trend = _detrend_polynomial(detrend_x, smoothed_linear, self.processing_config.detrend_order)
+        residual, trend = _detrend_polynomial(detrend_x, smoothed_snr_db, self.processing_config.detrend_order)
 
         return SnrSeries(
             arc_id=arc.arc_id,
@@ -84,12 +80,13 @@ class SnrPreprocessor:
             elevation_deg=elevation_deg.tolist(),
             sin_elevation=sin_elevation.tolist(),
             azimuth_deg=azimuth_deg.tolist(),
-            snr_db_hz=snr_db.tolist(),
+            snr_db_hz=smoothed_snr_db.tolist(),
             snr_linear=smoothed_linear.tolist(),
             residual=residual.tolist(),
             wavelength_m=wavelength_m,
             metadata={
                 "removed_outliers": int(len(mask) - np.count_nonzero(mask)),
+                "detrend_domain": "snr_db_hz",
                 "trend_preview": trend[: min(5, len(trend))].tolist(),
             },
         )
@@ -199,4 +196,3 @@ def _savgol(values: np.ndarray, window: int, polyorder: int = 2) -> np.ndarray:
         window += 1
     effective_polyorder = min(polyorder, window - 1)
     return savgol_filter(values, window_length=window, polyorder=effective_polyorder, mode="interp")
-

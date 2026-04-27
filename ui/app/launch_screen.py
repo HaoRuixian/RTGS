@@ -1,5 +1,7 @@
 """Launcher window that lets the user choose an RTGS workbench module."""
 
+import sys
+
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -175,10 +177,18 @@ class LaunchScreen(QMainWindow):
         painter.end()
         self.setWindowIcon(QIcon(pixmap))
 
-        import ctypes
+        # Windows taskbar icons can require an explicit AppUserModelID.
+        # Other platforms do not expose ctypes.windll, so skip safely there.
+        if sys.platform != "win32":
+            return
 
-        myappid = "mycompany.myproduct.subproduct.version"
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        try:
+            import ctypes
+
+            myappid = "RuixianHao.RTGS.Launcher.0.1"
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except (AttributeError, OSError):
+            pass
 
     def setup_ui(self):
         central = QWidget()

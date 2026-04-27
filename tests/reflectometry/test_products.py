@@ -98,7 +98,7 @@ def test_product_converter_adds_second_order_dynamic_sea_level_products():
         sea_level = (
             corrected_height
             + (roc_like_seconds + delta_t_seconds) * velocity_mps
-            + (roc_like_seconds * delta_t_seconds + delta_t_seconds**2) * acceleration_mps2
+            + (roc_like_seconds * delta_t_seconds + 0.5 * delta_t_seconds**2) * acceleration_mps2
         )
         reflector_height = 10.0 - sea_level
         solutions.append(
@@ -144,6 +144,7 @@ def test_product_converter_adds_second_order_dynamic_sea_level_products():
     assert round(latest_rate.value, 6) == round(velocity_mps, 6)
     assert round(latest_acceleration.value, 8) == round(acceleration_mps2, 8)
     assert latest_corrected.metadata["dynamic_model_order"] == 2
+    assert latest_corrected.metadata["dynamic_design_matrix"] == "1, roc_plus_dt, roc_times_dt_plus_half_dt_squared"
     assert latest_corrected.metadata["dynamic_sample_count"] == 6
     assert latest_corrected.metadata["signal"] == "Combined"
 
@@ -175,7 +176,7 @@ def test_dynamic_correction_uses_igg3_to_reject_outliers():
         sea_level = (
             corrected_height
             + (roc_like_seconds + delta_t_seconds) * velocity_mps
-            + (roc_like_seconds * delta_t_seconds + delta_t_seconds**2) * acceleration_mps2
+            + (roc_like_seconds * delta_t_seconds + 0.5 * delta_t_seconds**2) * acceleration_mps2
         )
         if index == outlier_index:
             sea_level += 2.0
@@ -212,3 +213,68 @@ def test_dynamic_correction_uses_igg3_to_reject_outliers():
     assert latest_corrected.metadata["dynamic_regression_method"] == "igg3"
     assert latest_corrected.metadata["dynamic_effective_sample_count"] >= 5
     assert latest_corrected.metadata["dynamic_rejected_sample_count"] >= 1
+
+
+def test_dynamic_correction_keeps_high_pnr_weights_from_collapsing_fit():
+    converter = ProductConverter(
+        ProductsConfig(
+            enable_reflector_height=True,
+            enable_sea_level=True,
+            sea_level_reference=10.0,
+            enable_dynamic_sea_level_correction=True,
+            dynamic_sea_level_window_hours=1.0,
+            dynamic_sea_level_min_points=8,
+            dynamic_sea_level_max_iterations=25,
+            dynamic_sea_level_igg3_k0=0.5,
+            dynamic_sea_level_igg3_k1=2.0,
+        )
+    )
+    start = datetime(2026, 3, 19, 0, 0, 0)
+    reference_time = start + timedelta(seconds=7 * 60)
+    corrected_height = 2.0
+    velocity_mps = 0.004
+    acceleration_mps2 = 8.0e-6
+    roc_like_seconds = 90.0
+    pnr_values = [3.0, 6.0, 9.0, 15.0, 30.0, 60.0, 120.0, 240.0]
+    solutions: list[ArcSolution] = []
+    for index, peak_to_noise_ratio in enumerate(pnr_values):
+        timestamp = start + timedelta(seconds=index * 60)
+        delta_t_seconds = (timestamp - reference_time).total_seconds()
+        sea_level = (
+            corrected_height
+            + (roc_like_seconds + delta_t_seconds) * velocity_mps
+            + (roc_like_seconds * delta_t_seconds + 0.5 * delta_t_seconds**2) * acceleration_mps2
+        )
+        if index == 3:
+            sea_level += 0.35
+        reflector_height = 10.0 - sea_level
+        solutions.append(
+            ArcSolution(
+                station_id="TEST",
+                arc_id=f"HIGH-PNR-{index}",
+                timestamp_start=timestamp,
+                timestamp_end=timestamp + timedelta(seconds=30),
+                constellation="G",
+                satellite="G03",
+                signal="1C",
+                arc_direction=ArcDirection.RISING,
+                reflector_height_m=reflector_height,
+                peak_frequency=1.0,
+                peak_power=12.0,
+                peak_to_noise_ratio=peak_to_noise_ratio,
+                qc_flags=[],
+                success=True,
+                quality_metrics=None,
+                metadata={"roc_like": roc_like_seconds},
+            )
+        )
+
+    products = converter.convert(solutions)
+    corrected_products = [
+        item for item in products if item.product_type == ProductType.SEA_LEVEL_DYNAMIC_CORRECTED
+    ]
+
+    latest_corrected = sorted(corrected_products, key=lambda item: item.timestamp)[-1]
+    assert abs(latest_corrected.value - corrected_height) < 0.08
+    assert latest_corrected.metadata["dynamic_effective_sample_count"] >= 7
+    assert latest_corrected.metadata["dynamic_rejected_sample_count"] <= 1

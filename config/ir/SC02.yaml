@@ -1,5 +1,5 @@
 station:
-  station_id: SC02
+  station_id: SC02_RTCM3P3
   receiver_position:
     latitude_deg: 48.546253
     longitude_deg: -123.007637
@@ -19,7 +19,7 @@ input:
   - 1W
   sampling_interval: 30.0
 processing:
-  min_elevation_deg: 0.5
+  min_elevation_deg: 3.0
   max_elevation_deg: 13.0
   live_arc_window_minutes: 30
   live_analysis_interval_seconds: 60
@@ -33,6 +33,7 @@ processing:
   outlier_method: mad
   outlier_threshold: 3.5
 ir:
+  estimation_mode: ekf
   wavelength_source: built_in
   wavelength_overrides_m: {}
   frequency_search_mode: reflector_height
@@ -54,12 +55,30 @@ ir:
   harmonic_check: true
   use_rising_arcs: true
   use_setting_arcs: true
+  ekf:
+    q_rh: 5.0e-05
+    q_amplitude: 6.0e-05
+    measurement_variance: 1.919
+    initial_rh_m: 5.0
+    initial_rh_variance: 1.0
+    local_state_variance: 1.0
+    init_min_samples: 20
+    init_max_samples: 600
+    rh_init_min_height_m: null
+    rh_init_max_height_m: null
+    rh_init_min_samples: 80
+    rh_init_max_arcs: 8
+    rh_init_max_samples_per_arc: 300
+    output_interval_seconds: 300
+    output_window_seconds: 300
+    min_active_arcs: 1
+    max_time_gap_seconds: 90.0
 geometry:
   use_external_az_el: true
   compute_az_el_if_missing: false
   reflection_zones:
   - name: zone
-    min_elevation_deg: 0.5
+    min_elevation_deg: 3.0
     max_elevation_deg: 13.0
     azimuth_windows:
     - - 50.0
@@ -87,7 +106,7 @@ products:
   dynamic_sea_level_igg3_k1: 2.0
   dynamic_sea_level_min_weight: 1.0e-12
   dynamic_sea_level_regularization: 1.0e-12
-  dynamic_sea_level_normalize_design: false
+  dynamic_sea_level_normalize_design: true
   snow_depth_reference_height: null
 output:
   output_dir: output/reflectometry

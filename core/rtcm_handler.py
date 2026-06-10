@@ -13,21 +13,70 @@ from core.geo_utils import calculate_az_el, get_freq
 import core.BE2pos as BE2pos 
 from core.global_config import get_global_config, update_general_settings
 from core.broadcast_ephemeris import get_shared_broadcast_ephemeris
+from core.ssr import SsrClockCorrection, SsrCorrectionStore, SsrOrbitCorrection
+from core.unicore import UnicoreMessage
 import threading
 import math
 
 # Global singleton instance
 _shared_rtcm_handler = None
 
+
+SSR_MESSAGE_DEFINITIONS = {
+    "1057": {"kind": "orbit", "system": "G", "time": "DF385", "sat": "DF068", "iod": "DF071"},
+    "1058": {"kind": "clock", "system": "G", "time": "DF385", "sat": "DF068"},
+    "1059": {"kind": "code_bias", "system": "G", "time": "DF385", "sat": "DF068", "signal": "DF380"},
+    "1060": {"kind": "combined", "system": "G", "time": "DF385", "sat": "DF068", "iod": "DF071"},
+    "1061": {"kind": "ura", "system": "G", "time": "DF385", "sat": "DF068"},
+    "1062": {"kind": "high_rate_clock", "system": "G", "time": "DF385", "sat": "DF068"},
+    "1063": {"kind": "orbit", "system": "R", "time": "DF386", "sat": "DF384", "iod": "DF392"},
+    "1064": {"kind": "clock", "system": "R", "time": "DF386", "sat": "DF384"},
+    "1065": {"kind": "code_bias", "system": "R", "time": "DF386", "sat": "DF384", "signal": "DF381"},
+    "1066": {"kind": "combined", "system": "R", "time": "DF386", "sat": "DF384", "iod": "DF392"},
+    "1067": {"kind": "ura", "system": "R", "time": "DF386", "sat": "DF384"},
+    "1068": {"kind": "high_rate_clock", "system": "R", "time": "DF386", "sat": "DF384"},
+    "1240": {"kind": "orbit", "system": "E", "time": "DF458", "sat": "DF252", "iod": "DF459"},
+    "1241": {"kind": "clock", "system": "E", "time": "DF458", "sat": "DF252"},
+    "1242": {"kind": "code_bias", "system": "E", "time": "DF458", "sat": "DF252", "signal": "DF382"},
+    "1243": {"kind": "combined", "system": "E", "time": "DF458", "sat": "DF252", "iod": "DF459"},
+    "1244": {"kind": "ura", "system": "E", "time": "DF458", "sat": "DF252"},
+    "1245": {"kind": "high_rate_clock", "system": "E", "time": "DF458", "sat": "DF252"},
+    "1246": {"kind": "orbit", "system": "J", "time": "DF460", "sat": "DF429", "iod": "DF434"},
+    "1247": {"kind": "clock", "system": "J", "time": "DF460", "sat": "DF429"},
+    "1248": {"kind": "code_bias", "system": "J", "time": "DF460", "sat": "DF429", "signal": "DF461"},
+    "1249": {"kind": "combined", "system": "J", "time": "DF460", "sat": "DF429", "iod": "DF434"},
+    "1250": {"kind": "ura", "system": "J", "time": "DF460", "sat": "DF429"},
+    "1251": {"kind": "high_rate_clock", "system": "J", "time": "DF460", "sat": "DF429"},
+    "1252": {"kind": "orbit", "system": "S", "time": "DF462", "sat": "DF463", "iod": "DF469"},
+    "1253": {"kind": "clock", "system": "S", "time": "DF462", "sat": "DF463"},
+    "1254": {"kind": "code_bias", "system": "S", "time": "DF462", "sat": "DF463", "signal": "DF464"},
+    "1255": {"kind": "combined", "system": "S", "time": "DF462", "sat": "DF463", "iod": "DF469"},
+    "1256": {"kind": "ura", "system": "S", "time": "DF462", "sat": "DF463"},
+    "1257": {"kind": "high_rate_clock", "system": "S", "time": "DF462", "sat": "DF463"},
+    "1258": {"kind": "orbit", "system": "C", "time": "DF465", "sat": "DF488", "iod": "DF471"},
+    "1259": {"kind": "clock", "system": "C", "time": "DF465", "sat": "DF488"},
+    "1260": {"kind": "code_bias", "system": "C", "time": "DF465", "sat": "DF488", "signal": "DF467"},
+    "1261": {"kind": "combined", "system": "C", "time": "DF465", "sat": "DF488", "iod": "DF471"},
+    "1262": {"kind": "ura", "system": "C", "time": "DF465", "sat": "DF488"},
+    "1263": {"kind": "high_rate_clock", "system": "C", "time": "DF465", "sat": "DF488"},
+}
+
 class RTCMHandler:
     def __init__(self, reference_utc=None, compute_geometry=True):
         self.broadcast_eph = get_shared_broadcast_ephemeris()
+        self.ssr_corrections = SsrCorrectionStore()
         self.lock = threading.Lock()
         self.last_gps_week = None  # Track GPS week for continuity
         self.last_station_coords = None  # Store coordinates from 1005/1006 messages
         self.reference_utc = self._normalize_reference_utc(reference_utc)
         self.last_utc_by_system = {}
         self.compute_geometry = bool(compute_geometry)
+        self.last_reference_station_id = None
+        self.last_antenna_descriptor = ""
+        self.last_antenna_serial_number = ""
+        self.last_receiver_type_descriptor = ""
+        self.last_receiver_firmware_version = ""
+        self.last_receiver_serial_number = ""
 
     @staticmethod
     def _normalize_reference_utc(reference_utc):
@@ -121,7 +170,9 @@ class RTCMHandler:
 
         try:
             # --- Ephemeris Processing ---
-            if msg_id == "1019":
+            if isinstance(msg, UnicoreMessage) or getattr(msg, "protocol", None) == "UNICORE":
+                return self._handle_unicore_obs(msg)
+            elif msg_id == "1019":
                 self._handle_gps_eph(msg)
             elif msg_id == "1020":
                 self._handle_glo_eph(msg)
@@ -150,6 +201,10 @@ class RTCMHandler:
                         self.last_station_coords = coords
                     except (ValueError, TypeError):
                         pass
+
+            # --- Station receiver/antenna descriptors ---
+            elif msg_id in ["1007", "1008", "1033"]:
+                self._handle_station_descriptor(msg)
             
             # --- RTCM 10403.3 Standard: Network RTK Correction Messages (1015-1017, 1037-1039) ---
             # These provide ionospheric and geometric corrections between reference stations
@@ -171,38 +226,69 @@ class RTCMHandler:
             elif msg_id == "1230":
                 return self._handle_glo_code_phase_bias(msg, epoch_data)
                 
-            # --- RTCM 10403.3 Standard: SSR Messages (1057-1062 GPS, 1063-1068 GLONASS) ---
-            # GPS SSR Messages
-            elif msg_id == "1057":
-                return self._handle_gps_ssr_orbit(msg, epoch_data)
-            elif msg_id == "1058":
-                return self._handle_gps_ssr_clock(msg, epoch_data)
-            elif msg_id == "1059":
-                return self._handle_gps_ssr_code_bias(msg, epoch_data)
-            elif msg_id == "1060":
-                return self._handle_gps_ssr_combined(msg, epoch_data)
-            elif msg_id == "1061":
-                return self._handle_gps_ssr_ura(msg, epoch_data)
-            elif msg_id == "1062":
-                return self._handle_gps_ssr_high_rate_clock(msg, epoch_data)
-            # GLONASS SSR Messages
-            elif msg_id == "1063":
-                return self._handle_glo_ssr_orbit(msg, epoch_data)
-            elif msg_id == "1064":
-                return self._handle_glo_ssr_clock(msg, epoch_data)
-            elif msg_id == "1065":
-                return self._handle_glo_ssr_code_bias(msg, epoch_data)
-            elif msg_id == "1066":
-                return self._handle_glo_ssr_combined(msg, epoch_data)
-            elif msg_id == "1067":
-                return self._handle_glo_ssr_ura(msg, epoch_data)
-            elif msg_id == "1068":
-                return self._handle_glo_ssr_high_rate_clock(msg, epoch_data)
+            elif msg_id in SSR_MESSAGE_DEFINITIONS:
+                return self._handle_ssr_message(msg, epoch_data)
             
         except (ValueError, AttributeError, TypeError, KeyError):
             # Silently skip messages with parsing errors
             pass
         
+        return epoch_data
+
+    @staticmethod
+    def _extract_rtcm_text(msg, counter_attr, char_prefix):
+        """Extract pyrtcm grouped character fields such as DF030_01..DF030_N."""
+        try:
+            count = int(getattr(msg, counter_attr, 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if count <= 0:
+            return ""
+
+        chars = []
+        for idx in range(1, count + 1):
+            value = getattr(msg, f"{char_prefix}_{idx:02d}", "")
+            if value is None:
+                continue
+            chars.append(str(value))
+        return "".join(chars).strip()
+
+    def _handle_station_descriptor(self, msg) -> None:
+        """Capture RTCM 1007/1008/1033 metadata for RINEX header records."""
+        try:
+            self.last_reference_station_id = int(getattr(msg, "DF003"))
+        except (TypeError, ValueError, AttributeError):
+            pass
+
+        antenna_descriptor = self._extract_rtcm_text(msg, "DF029", "DF030")
+        if antenna_descriptor:
+            self.last_antenna_descriptor = antenna_descriptor
+
+        antenna_serial = self._extract_rtcm_text(msg, "DF032", "DF033")
+        if antenna_serial:
+            self.last_antenna_serial_number = antenna_serial
+
+        receiver_type = self._extract_rtcm_text(msg, "DF227", "DF228")
+        if receiver_type:
+            self.last_receiver_type_descriptor = receiver_type
+
+        receiver_firmware = self._extract_rtcm_text(msg, "DF229", "DF230")
+        if receiver_firmware:
+            self.last_receiver_firmware_version = receiver_firmware
+
+        receiver_serial = self._extract_rtcm_text(msg, "DF231", "DF232")
+        if receiver_serial:
+            self.last_receiver_serial_number = receiver_serial
+
+    def _handle_unicore_obs(self, msg):
+        """Convert a decoded Unicore raw-observation log into an epoch."""
+        config = get_global_config()
+        target_systems = getattr(config, "target_systems", None)
+        epoch_data = msg.to_epoch(target_systems=target_systems)
+        epoch_time = getattr(epoch_data, "utc_datetime", None)
+        if epoch_time is not None:
+            for sys_id in {sat_key[0] for sat_key in epoch_data.satellites.keys() if sat_key}:
+                self.last_utc_by_system[sys_id] = epoch_time
         return epoch_data
 
     def _update_cache(self, key, new_eph, time_tag_key='toe'):
@@ -970,6 +1056,163 @@ class RTCMHandler:
             
         except (AttributeError, ValueError):
             return epoch_data
+
+    # =========================================================================
+    # SSR Messages
+    # =========================================================================
+
+    @staticmethod
+    def _get_group_attr(msg, attr_name: str, *indices, default=None):
+        """Read pyrtcm grouped attributes while tolerating 0- or 1-based fakes."""
+        candidates = []
+        if indices:
+            candidates.append("_".join([attr_name] + [f"{idx:02d}" for idx in indices]))
+            zero_based = tuple(max(0, int(idx) - 1) for idx in indices)
+            candidates.append("_".join([attr_name] + [f"{idx:02d}" for idx in zero_based]))
+        candidates.append(attr_name)
+
+        for candidate in candidates:
+            if hasattr(msg, candidate):
+                return getattr(msg, candidate)
+        return default
+
+    @staticmethod
+    def _to_int(value, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _to_float(value, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _mm_to_m(value) -> float:
+        """Convert pyrtcm SSR millimetre-domain fields to meters."""
+        return RTCMHandler._to_float(value) * 0.001
+
+    def _ssr_epoch_time(self, msg, definition: dict) -> float:
+        raw_time = self._to_float(getattr(msg, definition["time"], 0.0))
+        system = definition["system"]
+        if system == "C":
+            return (raw_time + 14.0) % (7 * 24 * 3600)
+        if system == "R":
+            day_anchor = self._reference_utc_for_glonass_day()
+            day_index = self._utc_day_of_week(day_anchor)
+            return day_index * 86400.0 + (raw_time % 86400.0)
+        return raw_time
+
+    @staticmethod
+    def _satellite_id(system: str, prn: int) -> str:
+        if system == "J" and prn >= 193:
+            prn -= 192
+        return f"{system}{int(prn):02d}"
+
+    def _handle_ssr_message(self, msg, epoch_data=None):
+        definition = SSR_MESSAGE_DEFINITIONS.get(str(getattr(msg, "identity", "")))
+        if not definition:
+            return epoch_data
+
+        kind = definition["kind"]
+        if kind in {"orbit", "combined"}:
+            self._cache_ssr_orbit(msg, definition)
+        if kind in {"clock", "combined", "high_rate_clock"}:
+            self._cache_ssr_clock(msg, definition)
+        if kind == "code_bias":
+            self._cache_ssr_code_biases(msg, definition)
+        if kind == "ura":
+            self._cache_ssr_ura(msg, definition)
+        return epoch_data
+
+    def _cache_ssr_orbit(self, msg, definition: dict) -> None:
+        epoch_time = self._ssr_epoch_time(msg, definition)
+        count = self._to_int(getattr(msg, "DF387", 0))
+        for index in range(1, count + 1):
+            prn = self._to_int(self._get_group_attr(msg, definition["sat"], index))
+            if prn <= 0:
+                continue
+            sat_id = self._satellite_id(definition["system"], prn)
+            correction = SsrOrbitCorrection(
+                satellite_id=sat_id,
+                epoch_time=epoch_time,
+                iod=self._to_int(self._get_group_attr(msg, definition.get("iod", ""), index, default=0)),
+                update_interval=self._to_int(getattr(msg, "DF391", 0)),
+                iod_ssr=self._to_int(getattr(msg, "DF413", 0)),
+                provider_id=self._to_int(getattr(msg, "DF414", 0)),
+                solution_id=self._to_int(getattr(msg, "DF415", 0)),
+                datum=self._to_int(getattr(msg, "DF375", 0)),
+                delta_radial_m=self._mm_to_m(self._get_group_attr(msg, "DF365", index)),
+                delta_along_track_m=self._mm_to_m(self._get_group_attr(msg, "DF366", index)),
+                delta_cross_track_m=self._mm_to_m(self._get_group_attr(msg, "DF367", index)),
+                dot_delta_radial_mps=self._mm_to_m(self._get_group_attr(msg, "DF368", index)),
+                dot_delta_along_track_mps=self._mm_to_m(self._get_group_attr(msg, "DF369", index)),
+                dot_delta_cross_track_mps=self._mm_to_m(self._get_group_attr(msg, "DF370", index)),
+            )
+            self.ssr_corrections.update_orbit(correction)
+
+    def _cache_ssr_clock(self, msg, definition: dict) -> None:
+        epoch_time = self._ssr_epoch_time(msg, definition)
+        count = self._to_int(getattr(msg, "DF387", 0))
+        is_high_rate = definition["kind"] == "high_rate_clock"
+        for index in range(1, count + 1):
+            prn = self._to_int(self._get_group_attr(msg, definition["sat"], index))
+            if prn <= 0:
+                continue
+            sat_id = self._satellite_id(definition["system"], prn)
+            correction = SsrClockCorrection(
+                satellite_id=sat_id,
+                epoch_time=epoch_time,
+                update_interval=self._to_int(getattr(msg, "DF391", 0)),
+                iod_ssr=self._to_int(getattr(msg, "DF413", 0)),
+                provider_id=self._to_int(getattr(msg, "DF414", 0)),
+                solution_id=self._to_int(getattr(msg, "DF415", 0)),
+            )
+            if is_high_rate:
+                correction.high_rate_clock_m = self._mm_to_m(self._get_group_attr(msg, "DF390", index))
+            else:
+                correction.delta_clock_m = self._mm_to_m(self._get_group_attr(msg, "DF376", index))
+                correction.delta_clock_rate_mps = self._mm_to_m(self._get_group_attr(msg, "DF377", index))
+                correction.delta_clock_accel_mps2 = self._mm_to_m(self._get_group_attr(msg, "DF378", index))
+            self.ssr_corrections.update_clock(correction)
+
+    def _cache_ssr_code_biases(self, msg, definition: dict) -> None:
+        count = self._to_int(getattr(msg, "DF387", 0))
+        signal_attr = definition.get("signal")
+        if not signal_attr:
+            return
+        for sat_index in range(1, count + 1):
+            prn = self._to_int(self._get_group_attr(msg, definition["sat"], sat_index))
+            if prn <= 0:
+                continue
+            bias_count = self._to_int(self._get_group_attr(msg, "DF379", sat_index))
+            biases = {}
+            for bias_index in range(1, bias_count + 1):
+                signal_id = self._get_group_attr(msg, signal_attr, sat_index, bias_index)
+                if signal_id is None:
+                    continue
+                biases[str(signal_id)] = self._to_float(
+                    self._get_group_attr(msg, "DF383", sat_index, bias_index)
+                )
+            if biases:
+                self.ssr_corrections.update_code_biases(
+                    self._satellite_id(definition["system"], prn),
+                    biases,
+                )
+
+    def _cache_ssr_ura(self, msg, definition: dict) -> None:
+        count = self._to_int(getattr(msg, "DF387", 0))
+        for index in range(1, count + 1):
+            prn = self._to_int(self._get_group_attr(msg, definition["sat"], index))
+            if prn <= 0:
+                continue
+            self.ssr_corrections.update_ura(
+                self._satellite_id(definition["system"], prn),
+                self._to_int(self._get_group_attr(msg, "DF389", index)),
+            )
     
     # =========================================================================
     # SSR Messages (1057-1068) - State Space Representation
@@ -1265,6 +1508,18 @@ class RTCMHandler:
     # =========================================================================
     # Public Methods for Accessing Correction Parameters
     # =========================================================================
+    def get_ephemeris(self, satellite_id):
+        """Return cached broadcast ephemeris for one satellite."""
+        return self.broadcast_eph.get_ephemeris(satellite_id)
+
+    def get_all_ephemeris(self, system=None):
+        """Return cached broadcast ephemerides, optionally filtered by constellation."""
+        return self.broadcast_eph.get_all_ephemeris(system)
+
+    def get_ssr_snapshot(self):
+        """Return a thread-safe snapshot of cached SSR corrections."""
+        return self.ssr_corrections.snapshot()
+
     def get_broadcast_eph_correction(self, satellite_id):
         """
         Get broadcast ephemeris correction parameters for a specific satellite.

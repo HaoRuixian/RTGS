@@ -6,6 +6,7 @@ from datetime import datetime
 
 from core.reflectometry.config import InputConfig
 from core.reflectometry.models import ObservationRecord, ReceiverPosition
+from core.reflectometry.signal_utils import normalize_signal_id, signal_matches
 
 
 def signal_enabled_for_reflectometry(
@@ -16,7 +17,7 @@ def signal_enabled_for_reflectometry(
     input_config: InputConfig | None = None,
 ) -> bool:
     constellation = str(constellation)
-    signal = str(signal)
+    signal = normalize_signal_id(signal)
 
     if active_systems is not None and constellation not in active_systems:
         return False
@@ -33,9 +34,9 @@ def signal_enabled_for_reflectometry(
         return False
     if constellation in exclude_constellations:
         return False
-    if include_signals and signal not in include_signals:
+    if include_signals and not signal_matches(signal, include_signals):
         return False
-    if signal in exclude_signals:
+    if signal_matches(signal, exclude_signals):
         return False
     return True
 
@@ -63,7 +64,7 @@ def build_observation_records_from_epoch(
         for signal_id, signal in signals.items():
             if not signal_enabled_for_reflectometry(
                 constellation,
-                str(signal_id),
+                normalize_signal_id(signal_id),
                 active_systems=active_systems,
                 input_config=input_config,
             ):
@@ -79,7 +80,7 @@ def build_observation_records_from_epoch(
                     timestamp=timestamp,
                     constellation=constellation,
                     satellite=str(sat_key),
-                    signal=str(signal_id),
+                    signal=normalize_signal_id(signal_id),
                     snr=snr,
                     azimuth_deg=float(azimuth) if azimuth is not None else None,
                     elevation_deg=float(elevation) if elevation is not None else None,

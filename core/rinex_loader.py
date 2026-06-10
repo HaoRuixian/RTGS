@@ -109,6 +109,26 @@ def _timescale_to_utc_and_gps(epoch_dt: datetime, time_system: str) -> tuple[dat
     return utc_dt, gps_week, gps_sow
 
 
+def _normalize_gps_sow(week: int, sow: float) -> tuple[int, float]:
+    sow = float(sow)
+    while sow < 0.0:
+        sow += SECONDS_PER_WEEK
+        week -= 1
+    while sow >= SECONDS_PER_WEEK:
+        sow -= SECONDS_PER_WEEK
+        week += 1
+    return week, sow
+
+
+def _rtklib_time_difference(time_sow: float, reference_sow: float) -> float:
+    dt = float(time_sow) - float(reference_sow)
+    if dt > SECONDS_PER_WEEK / 2.0:
+        dt -= SECONDS_PER_WEEK
+    elif dt < -SECONDS_PER_WEEK / 2.0:
+        dt += SECONDS_PER_WEEK
+    return dt
+
+
 def _parse_obs_header(handle) -> RinexObservationMetadata:
     metadata = RinexObservationMetadata(path=str(getattr(handle, "name", "")))
     current_system: str | None = None
@@ -400,7 +420,7 @@ def _compute_broadcast_clock(eph: dict, transmit_time: float) -> float:
     af1 = float(eph.get("af1", 0.0) or 0.0)
     af2 = float(eph.get("af2", 0.0) or 0.0)
     toc = float(eph.get("toc") or eph.get("Toc") or 0.0)
-    dt = transmit_time - toc
+    dt = _rtklib_time_difference(transmit_time, toc)
     saved_dt = dt
     for _ in range(2):
         dt = saved_dt - (af0 + af1 * dt + af2 * dt * dt)
@@ -415,11 +435,7 @@ def _compute_broadcast_clock(eph: dict, transmit_time: float) -> float:
         try:
             semi_major_axis = float(sqrt_a) ** 2
             mean_motion = math.sqrt(3.986005e14 / (semi_major_axis ** 3)) + float(delta_n)
-            tk = transmit_time - float(toe)
-            if tk > 302400.0:
-                tk -= SECONDS_PER_WEEK
-            elif tk < -302400.0:
-                tk += SECONDS_PER_WEEK
+            tk = _rtklib_time_difference(transmit_time, float(toe))
             mean_anomaly = float(m0) + mean_motion * tk
             eccentric_anomaly = mean_anomaly
             for _ in range(10):
@@ -510,13 +526,8 @@ class FileEphemerisProvider:
         return "broadcast"
 
     @staticmethod
-<<<<<<< HEAD
-    def _load_broadcast_nav(path: str, eph_cache: BroadcastEphemeris) -> None:
-        with _open_text(path) as handle:
-=======
     def _load_broadcast_nav(path: str, eph_cache: "BroadcastEphemeris") -> None:
         with Path(path).open("r", encoding="utf-8", errors="ignore") as handle:
->>>>>>> 1bf1123 (server 0427)
             while True:
                 line = handle.readline()
                 if not line:
@@ -651,14 +662,21 @@ class FileEphemerisProvider:
 
         if system == "C":
             line2, line3, line4, line5, line6, line7, line8 = values[1:8]
+            bds_week = int(round(line6[2] or 0.0))
+            gps_week = bds_week + 1356
+            bds_toe = float(line4[0] or 0.0)
+            gps_toe_week, gps_toe = _normalize_gps_sow(gps_week, bds_toe + 14.0)
             return {
                 "system": "BeiDou",
                 "satellite_id": satellite_id,
                 "PRN": prn,
-                "week": int(round(line6[2] or toc_week)) + 1356,
-                "bds_week": int(round(line6[2] or 0.0)),
-                "toe": float(line4[0] or 0.0),
+                "week": gps_toe_week,
+                "bds_week": bds_week,
+                "toe": gps_toe,
                 "toc": float(toc_sow),
+                "toe_week": gps_toe_week,
+                "toc_week": toc_week,
+                "bds_toe": bds_toe,
                 "aode": int(round(line2[0] or 0.0)),
                 "aodc": int(round(line7[0] or 0.0)),
                 "a": float(line3[3] or 0.0) ** 2,

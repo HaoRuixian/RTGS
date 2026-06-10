@@ -15,6 +15,7 @@ import yaml
 
 from core.data_models import EpochObservation
 from core.gnss_time import GNSSTime
+from core.mixed_gnss_reader import MixedGNSSReader
 from core.rinex3_writer import RINEX3Writer
 
 try:
@@ -227,6 +228,8 @@ def _resolve_path(path_text: object, *, config_dir: Path, field_name: str) -> Pa
     text = str(path_text or "").strip()
     if not text:
         raise ValueError(f"{field_name} is required")
+    if text.startswith("/"):
+        return Path(text)
     path = Path(text)
     if not path.is_absolute():
         path = (config_dir / path).resolve()
@@ -528,8 +531,8 @@ class PrefetchedSocketStream:
 
 def _create_default_reader(stream):
     if RTCMReader is None:
-        raise RuntimeError("pyrtcm is required for RT RTCM streaming")
-    return RTCMReader(stream)
+        raise RuntimeError("pyrtcm is required for RT GNSS streaming")
+    return MixedGNSSReader(stream)
 
 
 def _create_rtcm_handler() -> RTCMHandler:

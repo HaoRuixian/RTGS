@@ -17,6 +17,12 @@ from pynmeagps import SocketWrapper
 from pyrtcm import RTCMReader
 
 from core.gnss_time import GNSSTime
+from core.unicore import (
+    UNICORE_BINARY_HEADER_LENGTH,
+    UNICORE_BINARY_SYNC,
+    UnicoreMessage,
+    UnicoreParseError,
+)
 
 
 RTCM_PREAMBLE = 0xD3
@@ -102,6 +108,21 @@ class MixedGNSSReader:
                     return None, None
                 return raw, msg
 
+            if prefix[0] == ord("#"):
+                raw, msg = self._read_unicore_ascii(prefix)
+                if msg is None:
+                    continue
+                return raw, msg
+
+            if prefix[0] == UNICORE_BINARY_SYNC[0]:
+                try:
+                    raw, msg = self._read_unicore_binary(prefix)
+                except EOFError:
+                    return None, None
+                if raw is None and msg is None:
+                    continue
+                return raw, msg
+
             if prefix[0] == UBX_SYNC1:
                 try:
                     sync2 = self._read_bytes(1)
@@ -127,6 +148,42 @@ class MixedGNSSReader:
         try:
             msg = RTCMReader.parse(raw)
         except Exception:
+            msg = None
+        return raw, msg
+
+    def _read_unicore_ascii(self, prefix: bytes):
+        line = bytearray(prefix)
+        while True:
+            try:
+                chunk = self._read_bytes(1)
+            except EOFError:
+                break
+            line.extend(chunk)
+            if chunk == b"\n":
+                break
+
+        raw = bytes(line)
+        try:
+            msg = UnicoreMessage.parse_ascii(raw)
+        except UnicoreParseError:
+            msg = None
+        return raw, msg
+
+    def _read_unicore_binary(self, prefix: bytes):
+        sync_tail = self._read_bytes(2)
+        sync = prefix + sync_tail
+        if sync != UNICORE_BINARY_SYNC:
+            return None, None
+
+        header_tail = self._read_bytes(UNICORE_BINARY_HEADER_LENGTH - len(sync))
+        header = sync + header_tail
+        size = int.from_bytes(header[6:8], "little")
+        body = self._read_bytes(size)
+        crc = self._read_bytes(4)
+        raw = header + body + crc
+        try:
+            msg = UnicoreMessage.parse_binary(raw)
+        except UnicoreParseError:
             msg = None
         return raw, msg
 

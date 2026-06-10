@@ -1,109 +1,112 @@
-"""Thread-safe ring buffer used between acquisition, processing, and logging threads."""
+"""采集、解析和日志线程之间使用的线程安全环形缓冲区。"""
+
+from __future__ import annotations
 
 import threading
 from collections import deque
-from typing import Optional, Any
+from typing import Any
 
 
 class RingBuffer:
     """
-    Thread-safe ring buffer implementation for efficient data transfer between I/O and processing threads.
+    线程安全的固定容量环形缓冲区。
+
+    非阻塞写入是实时采集链路的默认模式：当缓冲区已满时，新数据会进入队列，
+    最旧的数据由 ``deque(maxlen=...)`` 自动淘汰，避免网络或串口接收线程被慢消费者拖住。
+
+    Args:
+        maxsize: 缓冲区最大元素数量。
     """
-    def __init__(self, maxsize: int = 1000):
-        """
-        Initialize the ring buffer.
-        
-        Args:
-            maxsize: The maximum size of the buffer. If the buffer is full, the oldest data is discarded.
-        """
+
+    def __init__(self, maxsize: int = 1000) -> None:
         self.maxsize = maxsize
-        self.buffer = deque(maxlen=maxsize)
+        self.buffer: deque[Any] = deque(maxlen=maxsize)
         self.lock = threading.Lock()
         self.not_empty = threading.Condition(self.lock)
         self.not_full = threading.Condition(self.lock)
         self.closed = False
-        
-    def put(self, item: Any, block: bool = False, timeout: Optional[float] = None) -> bool:
+
+    def put(self, item: Any, block: bool = False, timeout: float | None = None) -> bool:
         """
-        Write data to the buffer (non-blocking mode, high priority).
-        
+        写入一个元素。
+
         Args:
-            item: The data to write.
-            block: Whether to block the thread until the buffer is not full (default is False, non-blocking).
-            timeout: The timeout time (only valid when block=True).
-            
+            item: 待写入的数据。
+            block: 是否在缓冲区满时等待空间。
+            timeout: 阻塞等待超时时间，仅在 ``block=True`` 时生效。
+
         Returns:
-            bool: Whether the data is successfully written.
+            是否写入成功。
         """
         with self.not_full:
             if self.closed:
                 return False
-                
-            # Non-blocking mode: If the buffer is full, discard the oldest data (ring buffer feature).
+
             if not block:
-                # If the buffer is full, deque will discard the oldest data.
                 self.buffer.append(item)
                 self.not_empty.notify()
                 return True
-            else:
-                # Blocking mode: Wait for space to be available.
-                if len(self.buffer) >= self.maxsize:
-                    if not self.not_full.wait(timeout):
-                        return False
-                self.buffer.append(item)
-                self.not_empty.notify()
-                return True
-    
-    def get(self, block: bool = True, timeout: Optional[float] = None) -> Optional[Any]:
+
+            if len(self.buffer) >= self.maxsize and not self.not_full.wait(timeout):
+                return False
+
+            self.buffer.append(item)
+            self.not_empty.notify()
+            return True
+
+    def get(self, block: bool = True, timeout: float | None = None) -> Any | None:
         """
-        Read data from the buffer.
-        
+        读取一个元素。
+
         Args:
-            block: Whether to block the thread until the buffer is not empty (default is True).
-            timeout: The timeout time.
-            
+            block: 缓冲区为空时是否等待数据。
+            timeout: 阻塞等待超时时间。
+
         Returns:
-            The data read from the buffer. If the buffer is empty and the non-blocking mode is used, return None.
+            读取到的数据；无数据或缓冲区关闭时返回 None。
         """
         with self.not_empty:
             if not block:
-                if len(self.buffer) == 0:
+                if not self.buffer:
                     return None
                 item = self.buffer.popleft()
                 self.not_full.notify()
                 return item
-            else:
-                while len(self.buffer) == 0:
-                    if self.closed:
-                        return None
-                    if not self.not_empty.wait(timeout):
-                        return None
-                item = self.buffer.popleft()
-                self.not_full.notify()
-                return item
-    
+
+            while not self.buffer:
+                if self.closed:
+                    return None
+                if not self.not_empty.wait(timeout):
+                    return None
+
+            item = self.buffer.popleft()
+            self.not_full.notify()
+            return item
+
     def qsize(self) -> int:
-        """Return the current size of the buffer."""
+        """返回当前缓冲区元素数量。"""
         with self.lock:
             return len(self.buffer)
-    
+
     def empty(self) -> bool:
-        """Check if the buffer is empty."""
+        """检查缓冲区是否为空。"""
         with self.lock:
-            return len(self.buffer) == 0
-    
+            return not self.buffer
+
     def full(self) -> bool:
-        """Check if the buffer is full."""
+        """检查缓冲区是否已满。"""
         with self.lock:
             return len(self.buffer) >= self.maxsize
-    
-    def close(self):
+
+    def close(self) -> None:
+        """关闭缓冲区并唤醒所有等待线程。"""
         with self.lock:
             self.closed = True
             self.not_empty.notify_all()
             self.not_full.notify_all()
-    
-    def clear(self):
+
+    def clear(self) -> None:
+        """清空缓冲区内容。"""
         with self.lock:
             self.buffer.clear()
             self.not_full.notify_all()

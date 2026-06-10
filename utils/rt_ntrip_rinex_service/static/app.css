@@ -1,0 +1,412 @@
+:root {
+  color-scheme: light;
+  --ink: #20242b;
+  --muted: #69717d;
+  --soft: #949ba5;
+  --line: #d9ded7;
+  --line-soft: #edf0ec;
+  --bg: #f5f6f3;
+  --panel: #ffffff;
+  --panel-tint: #f8f9f6;
+  --accent: #2f7d68;
+  --accent-dark: #23604f;
+  --ok: #2f7d68;
+  --warn: #a86920;
+  --bad: #b6473d;
+  --shadow: 0 10px 28px rgba(30, 36, 31, 0.07);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  font-family: "Segoe UI", Arial, sans-serif;
+  color: var(--ink);
+  background: var(--bg);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--line);
+  background: #ffffff;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
+
+h1 {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+h2 {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+#configPath,
+.section-note {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.actions,
+.form-actions,
+.section-head,
+.log-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.actions,
+.log-controls {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+button {
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0 12px;
+  background: #ffffff;
+  color: var(--ink);
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+
+button[type="submit"],
+#newBtn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
+button[type="submit"]:hover,
+#newBtn:hover {
+  background: var(--accent-dark);
+  color: #ffffff;
+}
+
+.danger {
+  color: var(--bad);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(500px, 1.15fr) minmax(420px, 0.85fr);
+  gap: 16px;
+  padding: 16px;
+}
+
+.panel {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 16px;
+}
+
+.log-panel {
+  grid-column: 1 / -1;
+}
+
+.section-head {
+  justify-content: space-between;
+  margin-bottom: 14px;
+  align-items: flex-start;
+}
+
+.table-wrap {
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 13px;
+}
+
+th,
+td {
+  height: 40px;
+  border-bottom: 1px solid var(--line-soft);
+  padding: 7px 9px;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+th {
+  color: var(--muted);
+  background: var(--panel-tint);
+  font-weight: 650;
+}
+
+tbody tr {
+  cursor: pointer;
+}
+
+tbody tr:hover {
+  background: #f7faf6;
+}
+
+tr.selected {
+  background: #ecf5f1;
+}
+
+.state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--soft);
+}
+
+.dot.ok {
+  background: var(--ok);
+}
+
+.dot.warn {
+  background: var(--warn);
+}
+
+.dot.bad {
+  background: var(--bad);
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.compact-label {
+  min-width: 170px;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 7px 9px;
+  color: var(--ink);
+  background: #ffffff;
+  font: 13px/1.4 Consolas, "Segoe UI", monospace;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid rgba(47, 125, 104, 0.16);
+  border-color: var(--accent);
+}
+
+input[readonly] {
+  color: var(--muted);
+  background: var(--panel-tint);
+}
+
+textarea {
+  resize: vertical;
+}
+
+.wide {
+  margin-top: 10px;
+}
+
+.obs-editor {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--panel-tint);
+}
+
+.obs-editor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.obs-editor-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.obs-editor-head p {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#obsTypeEditor {
+  display: grid;
+  gap: 7px;
+}
+
+.obs-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.obs-row span {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  color: var(--ink);
+}
+
+.obs-row strong {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+  font-size: 12px;
+}
+
+.obs-row small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.switch {
+  display: inline-flex;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.switch input {
+  width: 16px;
+  min-height: 16px;
+}
+
+.form-actions {
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+pre {
+  min-height: 220px;
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #2f3834;
+  border-radius: 8px;
+  background: #151a18;
+  color: #d8f2e7;
+  font: 12px/1.55 Consolas, monospace;
+}
+
+#toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  max-width: min(430px, calc(100vw - 32px));
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #202820;
+  color: #ffffff;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: 0.18s ease;
+  pointer-events: none;
+  font-size: 13px;
+  box-shadow: var(--shadow);
+}
+
+#toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (max-width: 1080px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    display: block;
+  }
+
+  .actions {
+    justify-content: flex-start;
+    margin-top: 12px;
+  }
+
+  .field-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .obs-row {
+    grid-template-columns: 1fr;
+  }
+
+  .section-head {
+    display: block;
+  }
+
+  .log-controls {
+    justify-content: flex-start;
+    margin-top: 10px;
+  }
+}

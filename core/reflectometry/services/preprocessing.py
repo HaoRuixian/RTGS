@@ -9,6 +9,7 @@ from core.geo_utils import get_freq
 from core.reflectometry.config import IrConfig, ProcessingConfig, minimum_required_arc_samples
 from core.reflectometry.models import SnrUnit
 from core.reflectometry.models import SatelliteArc, SnrSeries
+from core.reflectometry.signal_utils import normalize_signal_id
 
 
 class SnrPreprocessor:
@@ -114,11 +115,15 @@ def _resolve_wavelength(
     overrides: dict[str, float] | None = None,
 ) -> float:
     """Resolve wavelength using shared core frequency utilities plus IR overrides."""
-    key = f"{constellation}:{signal}"
+    signal_id = normalize_signal_id(signal)
+    key = f"{constellation}:{signal_id}"
+    raw_key = f"{constellation}:{str(signal).strip().upper()}"
+    if overrides and raw_key in overrides:
+        return float(overrides[raw_key])
     if overrides and key in overrides:
         return float(overrides[key])
 
-    _frequency_hz, wavelength_m = get_freq(signal, f"{constellation}00")
+    _frequency_hz, wavelength_m = get_freq(signal_id, f"{constellation}00")
     if wavelength_m > 0.0:
         return float(wavelength_m)
 

@@ -1,22 +1,46 @@
-"""
-Global Configuration Module
+"""RTGS 全局运行配置。"""
 
-This module provides a centralized configuration storage for NTRIP and serial connection settings
-that can be accessed by all functions throughout the application.
+from __future__ import annotations
 
-It supports saving and loading configuration in YAML format.
-"""
-
-from typing import Dict, Any, Optional, List
-from dataclasses import dataclass, field, asdict
-import yaml
+import logging
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any
+
+import yaml
+
+LOGGER = logging.getLogger(__name__)
+
+
+def _default_positioning_settings() -> dict[str, Any]:
+    """
+    构造定位解算默认参数。
+
+    Returns:
+        新的定位参数字典，调用方可以安全修改。
+    """
+    return {
+        "cutoff_elevation_deg": 10.0,
+        "min_satellites": 4,
+        "max_pdop": 10.0,
+        "ionosphere_option": "IFLC",
+        "troposphere_model": "Sastamoinen",
+        # 默认让启用的星座都参与 SPP；需要保守 GPS-only 时可在定位设置中开启。
+        "gnss_systems": ["G", "R", "E", "C", "J", "I"],
+        "prefer_gps_only": False,
+        "weight_mode": "elevation",
+        "use_smoothing": False,
+        "smoothing_window": 10,
+        "random_walk": 0.0,
+        "uncertain_std_pos": 5.0,
+        "fixed_std_pos": 2.5,
+    }
 
 
 @dataclass
 class ConnectionSettings:
     """
-    Data class representing connection settings for either NTRIP or serial connection.
+    连接配置，支持 NTRIP、串口和文件回放数据源。
     """
     source_type: str = "NTRIP Server"  # "NTRIP Server", "Serial Port", or file mode
     
@@ -48,8 +72,7 @@ class ConnectionSettings:
 @dataclass
 class GlobalConfig:
     """
-    Global configuration container for the entire application.
-    Contains both OBS and EPH stream settings.
+    全局配置容器，集中保存 OBS/EPH 数据流、接收机位置和定位参数。
     """
     # Observation stream settings
     obs_settings: ConnectionSettings = field(default_factory=ConnectionSettings)
@@ -58,59 +81,34 @@ class GlobalConfig:
     eph_settings: ConnectionSettings = field(default_factory=lambda: ConnectionSettings(enabled=False))
     
     # Receiver approximate position (ECEF coordinates)
-    approx_rec_pos: List[float] = field(default_factory=lambda: [0, 0, 0])
+    approx_rec_pos: list[float] | None = field(default_factory=lambda: [0, 0, 0])
     
     # GNSS system filters
-    target_systems: List[str] = field(default_factory=lambda: ['G', 'R', 'E', 'C', 'J', 'S', 'I'])
+    target_systems: list[str] = field(default_factory=lambda: ['G', 'R', 'E', 'C', 'J', 'S', 'I'])
     # Positioning related settings (SPP/PPP/RTK parameters)
-    positioning_settings: dict = field(default_factory=lambda: {
-        # Basic parameters
-        'cutoff_elevation_deg': 10.0,  # Minimum elevation angle (degrees)
-        'min_satellites': 4,
-        'max_pdop': 10.0,
-        
-        # Ionosphere correction
-        'ionosphere_option': 'IFLC',  # 'IFLC' (dual-freq IF-LC) or 'SINGLE' (single-freq)
-        
-        # Troposphere correction
-        'troposphere_model': 'Sastamoinen',  # 'None', 'Sastamoinen', 'HMSL'
-        
-        # GNSS systems used by positioning. Keep basic SPP GPS-first by default;
-        # multi-GNSS can be enabled from the positioning settings.
-        'gnss_systems': ['G'],
-        'prefer_gps_only': True,
-        
-        # Observation weighting
-        'weight_mode': 'elevation',  # 'equal', 'elevation', 'snr'
-        
-        # Smoothing
-        'use_smoothing': False,
-        'smoothing_window': 10,  # epochs
-        'random_walk': 0.0,  # m/sqrt(s)
-        
-        # Solution status thresholds
-        'uncertain_std_pos': 5.0,  # meters
-        'fixed_std_pos': 2.5,  # meters
-    })
-    
+    positioning_settings: dict[str, Any] = field(default_factory=_default_positioning_settings)
+
     def get_connection_settings(self, stream_type: str) -> ConnectionSettings:
         """
-        Get connection settings for specified stream type.
-        
+        获取指定数据流的连接配置。
+
         Args:
-            stream_type: Either 'OBS' for observation stream or 'EPH' for ephemeris stream
-            
+            stream_type: ``OBS`` 表示观测流，``EPH`` 表示星历流。
+
         Returns:
-            ConnectionSettings object for the specified stream
+            指定数据流的连接配置。
+
+        Raises:
+            ValueError: 当数据流类型不是 ``OBS`` 或 ``EPH`` 时抛出。
         """
         if stream_type.upper() == 'OBS':
             return self.obs_settings
-        elif stream_type.upper() == 'EPH':
+        if stream_type.upper() == 'EPH':
             return self.eph_settings
-        else:
-            raise ValueError(f"Invalid stream type: {stream_type}. Use 'OBS' or 'EPH'")
-    
-    def update_settings(self, stream_type: str, settings: Dict[str, Any]) -> None:
+
+        raise ValueError(f"Invalid stream type: {stream_type}. Use 'OBS' or 'EPH'")
+
+    def update_settings(self, stream_type: str, settings: dict[str, Any]) -> None:
         """
         Update settings for specified stream type.
         
@@ -124,7 +122,7 @@ class GlobalConfig:
             if hasattr(conn_settings, key):
                 setattr(conn_settings, key, value)
     
-    def update_general_settings(self, settings: Dict[str, Any]) -> None:
+    def update_general_settings(self, settings: dict[str, Any]) -> None:
         """
         Update general settings like ``approx_rec_pos`` and ``target_systems``.
 
@@ -146,17 +144,16 @@ class GlobalConfig:
                     try:
                         coords = [float(v) for v in value]
                         setattr(self, key, coords)
-                    except Exception:
-                        # ignore invalid values and leave existing setting
-                        pass
+                    except (TypeError, ValueError) as exc:
+                        LOGGER.debug("Ignore invalid approx_rec_pos value %r: %s", value, exc)
             else:
                 setattr(self, key, value)
 
-    def get_positioning_settings(self) -> Dict[str, Any]:
+    def get_positioning_settings(self) -> dict[str, Any]:
         """Return the positioning settings dictionary."""
         return self.positioning_settings
 
-    def update_positioning_settings(self, settings: Dict[str, Any]) -> None:
+    def update_positioning_settings(self, settings: dict[str, Any]) -> None:
         """Update positioning-related settings.
 
         Only keys present in the provided dict will be updated.
@@ -164,53 +161,17 @@ class GlobalConfig:
         for key, value in settings.items():
             self.positioning_settings[key] = value
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert GlobalConfig to a dictionary suitable for YAML serialization."""
         return {
-            'obs_settings': {
-                'source_type': self.obs_settings.source_type,
-                'host': self.obs_settings.host,
-                'port': self.obs_settings.port,
-                'mountpoint': self.obs_settings.mountpoint,
-                'user': self.obs_settings.user,
-                'password': self.obs_settings.password,
-                'serial_port': self.obs_settings.serial_port,
-                'baudrate': self.obs_settings.baudrate,
-                'databits': self.obs_settings.databits,
-                'stopbits': self.obs_settings.stopbits,
-                'parity': self.obs_settings.parity,
-                'flowctrl': self.obs_settings.flowctrl,
-                'enabled': self.obs_settings.enabled,
-                'file_path': self.obs_settings.file_path,
-                'replay_speed': self.obs_settings.replay_speed,
-                'file_type': self.obs_settings.file_type,
-                'final_results_only': self.obs_settings.final_results_only,
-            },
-            'eph_settings': {
-                'source_type': self.eph_settings.source_type,
-                'host': self.eph_settings.host,
-                'port': self.eph_settings.port,
-                'mountpoint': self.eph_settings.mountpoint,
-                'user': self.eph_settings.user,
-                'password': self.eph_settings.password,
-                'serial_port': self.eph_settings.serial_port,
-                'baudrate': self.eph_settings.baudrate,
-                'databits': self.eph_settings.databits,
-                'stopbits': self.eph_settings.stopbits,
-                'parity': self.eph_settings.parity,
-                'flowctrl': self.eph_settings.flowctrl,
-                'enabled': self.eph_settings.enabled,
-                'file_path': self.eph_settings.file_path,
-                'replay_speed': self.eph_settings.replay_speed,
-                'file_type': self.eph_settings.file_type,
-                'final_results_only': self.eph_settings.final_results_only,
-            },
+            'obs_settings': asdict(self.obs_settings),
+            'eph_settings': asdict(self.eph_settings),
             'approx_rec_pos': self.approx_rec_pos,
             'target_systems': self.target_systems,
             'positioning_settings': self.positioning_settings,
         }
 
-    def from_dict(self, config_dict: Dict[str, Any]) -> None:
+    def from_dict(self, config_dict: dict[str, Any]) -> None:
         """Load configuration from a dictionary (typically from YAML)."""
         # Load OBS settings
         if 'obs_settings' in config_dict:
@@ -251,8 +212,8 @@ class GlobalConfig:
             Path(filepath).parent.mkdir(parents=True, exist_ok=True)
             with open(filepath, 'w', encoding='utf-8') as f:
                 yaml.dump(config_dict, f, default_flow_style=False, allow_unicode=True)
-        except Exception as e:
-            raise IOError(f"Failed to save configuration to {filepath}: {str(e)}")
+        except (OSError, yaml.YAMLError) as exc:
+            raise IOError(f"Failed to save configuration to {filepath}: {exc}") from exc
 
     def load_from_file(self, filepath: str) -> None:
         """Load configuration from a YAML file.
@@ -268,8 +229,8 @@ class GlobalConfig:
                 config_dict = yaml.safe_load(f)
             if config_dict:
                 self.from_dict(config_dict)
-        except Exception as e:
-            raise IOError(f"Failed to load configuration from {filepath}: {str(e)}")
+        except (OSError, yaml.YAMLError, TypeError) as exc:
+            raise IOError(f"Failed to load configuration from {filepath}: {exc}") from exc
 
 
 # Create a singleton instance of GlobalConfig that can be imported and used globally
@@ -286,7 +247,7 @@ def get_global_config() -> GlobalConfig:
     return global_config
 
 
-def update_connection_settings(stream_type: str, settings: Dict[str, Any]) -> None:
+def update_connection_settings(stream_type: str, settings: dict[str, Any]) -> None:
     """
     Convenience function to update connection settings.
     
@@ -310,7 +271,7 @@ def get_connection_settings(stream_type: str) -> ConnectionSettings:
     return global_config.get_connection_settings(stream_type)
 
 
-def update_general_settings(settings: Dict[str, Any]) -> None:
+def update_general_settings(settings: dict[str, Any]) -> None:
     """
     Convenience function to update general settings like approx_rec_pos and target_systems.
     
@@ -320,12 +281,12 @@ def update_general_settings(settings: Dict[str, Any]) -> None:
     global_config.update_general_settings(settings)
 
 
-def get_positioning_settings() -> Dict[str, Any]:
+def get_positioning_settings() -> dict[str, Any]:
     """Convenience function to get positioning settings."""
     return global_config.get_positioning_settings()
 
 
-def update_positioning_settings(settings: Dict[str, Any]) -> None:
+def update_positioning_settings(settings: dict[str, Any]) -> None:
     """Convenience function to update positioning settings."""
     global_config.update_positioning_settings(settings)
 

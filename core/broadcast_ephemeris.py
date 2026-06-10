@@ -315,6 +315,10 @@ class BroadcastEphemeris:
             # BeiDou Week starts Jan 1, 2006. Offset from GPS Week is 1356 weeks.
             bds_week = int(msg.DF489)
             gps_week_aligned = bds_week + 1356
+            bds_toe = float(msg.DF505)
+            bds_toc = float(msg.DF493)
+            gps_toe_week, gps_toe = self._normalize_gps_sow(gps_week_aligned, bds_toe + 14.0)
+            gps_toc_week, gps_toc = self._normalize_gps_sow(gps_week_aligned, bds_toc + 14.0)
             
             eph = {
                 'system': 'BeiDou',
@@ -322,10 +326,14 @@ class BroadcastEphemeris:
                 'PRN': prn,
                 
                 # Time parameters
-                'week': gps_week_aligned,        # GPS-aligned week number
+                'week': gps_toe_week,            # GPS week after RTKLIB bdt2gpst conversion
                 'bds_week': bds_week,            # BeiDou Week Number
-                'toe': float(msg.DF505),         # Time of Ephemeris (seconds)
-                'toc': float(msg.DF493),         # Time of Clock (seconds)
+                'toe': gps_toe,                  # Time of Ephemeris in GPST seconds-of-week
+                'toc': gps_toc,                  # Time of Clock in GPST seconds-of-week
+                'toe_week': gps_toe_week,
+                'toc_week': gps_toc_week,
+                'bds_toe': bds_toe,              # Raw BDT Time of Ephemeris (seconds)
+                'bds_toc': bds_toc,              # Raw BDT Time of Clock (seconds)
                 'aode': int(msg.DF492),          # Age of Data, Ephemeris
                 'aodc': int(msg.DF497),          # Age of Data, Clock
                 

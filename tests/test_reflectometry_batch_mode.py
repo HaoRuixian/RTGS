@@ -100,6 +100,13 @@ def test_signal_enabled_for_reflectometry_respects_include_and_exclude_rules():
     assert signal_enabled_for_reflectometry("R", "1C", active_systems={"G", "E"}, input_config=config) is False
 
 
+def test_signal_enabled_for_reflectometry_normalizes_rinex_snr_prefix():
+    config = InputConfig(constellations=["C"], signals=["S2I"])
+
+    assert signal_enabled_for_reflectometry("C", "2I", active_systems={"C"}, input_config=config) is True
+    assert signal_enabled_for_reflectometry("C", "S2I", active_systems={"C"}, input_config=config) is True
+
+
 def test_global_config_round_trip_preserves_final_results_only_flag():
     config = GlobalConfig()
     config.obs_settings.source_type = "RINEX File"

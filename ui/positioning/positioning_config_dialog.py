@@ -87,14 +87,15 @@ class PositioningConfigDialog(QDialog):
         self.gnss_irnss = QCheckBox("NavIC (I)")
         self.prefer_gps_only = QCheckBox("Prefer GPS-only for basic SPP")
 
-        gnss_systems = self.settings.get("gnss_systems", ["G"])
+        default_systems = ["G", "R", "E", "C", "J", "I"]
+        gnss_systems = self.settings.get("gnss_systems", default_systems)
         self.gnss_gps.setChecked("G" in gnss_systems)
         self.gnss_glonass.setChecked("R" in gnss_systems)
         self.gnss_galileo.setChecked("E" in gnss_systems)
         self.gnss_beidou.setChecked("C" in gnss_systems)
         self.gnss_qzss.setChecked("J" in gnss_systems)
         self.gnss_irnss.setChecked("I" in gnss_systems)
-        self.prefer_gps_only.setChecked(bool(self.settings.get("prefer_gps_only", True)))
+        self.prefer_gps_only.setChecked(bool(self.settings.get("prefer_gps_only", False)))
 
         gnss_layout.addRow("Available Systems:", self.gnss_gps)
         gnss_layout.addRow("", self.gnss_glonass)
@@ -189,8 +190,8 @@ class PositioningConfigDialog(QDialog):
             "max_pdop": 10.0,
             "ionosphere_option": "IFLC",
             "troposphere_model": "Sastamoinen",
-            "gnss_systems": ["G"],
-            "prefer_gps_only": True,
+            "gnss_systems": ["G", "R", "E", "C", "J", "I"],
+            "prefer_gps_only": False,
             "weight_mode": "elevation",
             "use_smoothing": False,
             "smoothing_window": 10,

@@ -84,7 +84,10 @@ rtcm_to_rinex sample.rtcm3 -o output --xyz -2267744.6605 5009154.1703 3221290.23
 - `--country`: 3-character country code in the RINEX long filename
 - `-n, --name`: marker name in the header
 - `-r, --rx`: receiver type in the header
+- `--rx-serial`: receiver serial number in the header
+- `--rx-version`: receiver firmware/version in the header
 - `-a, --ant`: antenna type in the header
+- `--ant-num, --antenna-number`: antenna serial number in the header
 - `--xyz X Y Z`: approximate receiver ECEF position
 
 ## Output behavior

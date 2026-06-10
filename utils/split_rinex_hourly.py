@@ -85,10 +85,13 @@ def split_rinex_hourly_file(
     *,
     marker_name: str,
     receiver_type: str,
+    receiver_serial: str = "",
+    receiver_version: str = "",
     station_code: Optional[str] = None,
     receiver_number: str = "00",
     country_code: str = "CHN",
     antenna_type: str = "UNKNOWN",
+    antenna_number: str = "",
     datatype: str = "MO",
 ) -> SplitResult:
     source_path = Path(source_path)
@@ -131,6 +134,9 @@ def split_rinex_hourly_file(
             file_time=bucket_start,
             header_interval_seconds=estimated_interval,
             time_system="UTC",
+            antenna_number=antenna_number,
+            receiver_serial=receiver_serial,
+            receiver_version=receiver_version,
         )
         if not writer.open():
             raise OSError(f"Failed to open hourly RINEX output: {writer.filename}")
@@ -139,7 +145,10 @@ def split_rinex_hourly_file(
         if not writer.write_header(
             sys_obs_types=metadata.sys_obs_types,
             receiver_type=receiver_type,
+            receiver_serial=receiver_serial,
+            receiver_version=receiver_version,
             antenna_type=antenna_type,
+            antenna_number=antenna_number,
         ):
             raise OSError(f"Failed to write hourly RINEX header: {writer.filename}")
         output_files.append(Path(writer.filename))
@@ -174,10 +183,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("output_dir", type=Path, help="Directory for hourly output files.")
     parser.add_argument("--marker-name", required=True, help="Marker name to write into the hourly headers.")
     parser.add_argument("--receiver-type", required=True, help="Receiver type string for the hourly headers.")
+    parser.add_argument("--receiver-serial", default="", help="Receiver serial number for the hourly headers.")
+    parser.add_argument("--receiver-version", default="", help="Receiver firmware/version for the hourly headers.")
     parser.add_argument("--station-code", default=None, help="Optional 4-character station code for long filenames.")
     parser.add_argument("--receiver-number", default="00", help="Receiver number for long filenames.")
     parser.add_argument("--country-code", default="CHN", help="Country code for long filenames.")
     parser.add_argument("--antenna-type", default="UNKNOWN", help="Antenna type string for the hourly headers.")
+    parser.add_argument("--antenna-number", default="", help="Antenna serial number for the hourly headers.")
     parser.add_argument("--datatype", default="MO", help="RINEX datatype code.")
     return parser
 
@@ -192,10 +204,13 @@ def main(argv: Optional[list[str]] = None) -> int:
             args.output_dir.resolve(),
             marker_name=args.marker_name,
             receiver_type=args.receiver_type,
+            receiver_serial=args.receiver_serial,
+            receiver_version=args.receiver_version,
             station_code=args.station_code,
             receiver_number=args.receiver_number,
             country_code=args.country_code,
             antenna_type=args.antenna_type,
+            antenna_number=args.antenna_number,
             datatype=args.datatype,
         )
     except Exception as exc:

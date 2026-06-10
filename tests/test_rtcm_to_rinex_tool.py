@@ -10,6 +10,11 @@ from core.gnss_time import GNSSTime
 from core.mixed_gnss_reader import MixedGNSSReader
 from core.rinex3_writer import RINEX3Writer
 from core.rtcm_handler import RTCMHandler
+from core.unicore import (
+    UnicoreMessage,
+    build_unicore_binary_frame,
+    current_unicore_ascii_crc,
+)
 from utils import rtcm_to_rinex
 from utils.rtcm_to_rinex import ScanSummary
 
@@ -65,6 +70,13 @@ class _FakeRTCMMessage:
         self.identity = identity
         for key, value in attrs.items():
             setattr(self, key, value)
+
+
+def _rtcm_text_attrs(counter_attr: str, char_prefix: str, value: str) -> dict[str, object]:
+    attrs: dict[str, object] = {counter_attr: len(value)}
+    for idx, char in enumerate(value, start=1):
+        attrs[f"{char_prefix}_{idx:02d}"] = char
+    return attrs
 
 
 def test_iter_merged_epochs_merges_same_timestamp_messages():
@@ -192,6 +204,12 @@ def test_infer_reference_utc_from_input_filename():
     assert inferred == datetime(2025, 10, 25, tzinfo=timezone.utc)
 
 
+def test_infer_reference_utc_from_year_doy_hour_filename():
+    inferred = rtcm_to_rinex._infer_reference_utc(Path("202609600.rtcm"))
+
+    assert inferred == datetime(2026, 4, 6, 0, tzinfo=timezone.utc)
+
+
 def test_infer_reference_utc_from_bridge_style_filename():
     inferred = rtcm_to_rinex._infer_reference_utc(Path("jz_con_11060_210320.log"))
 
@@ -209,10 +227,210 @@ def test_mixed_gnss_reader_ignores_truncated_tail_frame():
     assert list(reader) == []
 
 
+def test_rtcm_handler_captures_station_descriptor_metadata():
+    attrs = {"DF003": 4}
+    attrs.update(_rtcm_text_attrs("DF029", "DF030", "LEIAR25.R4 NONE"))
+    attrs.update(_rtcm_text_attrs("DF032", "DF033", "725235"))
+    attrs.update(_rtcm_text_attrs("DF227", "DF228", "SEPT MOSAIC-X5"))
+    attrs.update(_rtcm_text_attrs("DF229", "DF230", "4.14.4"))
+    attrs.update(_rtcm_text_attrs("DF231", "DF232", "4014259"))
+
+    handler = RTCMHandler(compute_geometry=False)
+    handler.process_message(_FakeRTCMMessage("1033", **attrs))
+
+    assert handler.last_reference_station_id == 4
+    assert handler.last_antenna_descriptor == "LEIAR25.R4 NONE"
+    assert handler.last_antenna_serial_number == "725235"
+    assert handler.last_receiver_type_descriptor == "SEPT MOSAIC-X5"
+    assert handler.last_receiver_firmware_version == "4.14.4"
+    assert handler.last_receiver_serial_number == "4014259"
+
+
 def test_mixed_gnss_reader_read_bytes_allows_zero_length():
     reader = MixedGNSSReader(__import__("io").BytesIO(b"abc"))
 
     assert reader._read_bytes(0) == b""
+
+
+def _with_unicore_crc(frame_body: str) -> bytes:
+    return f"#{frame_body}*{current_unicore_ascii_crc(frame_body)}\r\n".encode("ascii")
+
+
+def _tracking_status(system_code: int, signal_code: int = 0) -> int:
+    return 0x00000400 | 0x00001000 | ((system_code & 0x7) << 16) | ((signal_code & 0x1F) << 21)
+
+
+def _compressed_record(
+    *,
+    tracking_status: int,
+    doppler: float,
+    pseudorange: float,
+    phase: float,
+    psr_std_index: int,
+    adr_std_index: int,
+    prn: int,
+    lock_time: float,
+    cn0: float,
+    glo_freq: int = 0,
+) -> bytes:
+    value = 0
+
+    def put(offset: int, width: int, raw: int) -> None:
+        nonlocal value
+        value |= (raw & ((1 << width) - 1)) << offset
+
+    put(0, 32, tracking_status)
+    put(32, 28, int(round(doppler * 256.0)))
+    put(60, 36, int(round(pseudorange * 128.0)))
+    put(96, 32, int(round(phase * 256.0)))
+    put(128, 4, psr_std_index)
+    put(132, 4, adr_std_index)
+    put(136, 8, prn)
+    put(144, 21, int(round(lock_time * 32.0)))
+    put(165, 5, int(round(cn0 - 20.0)))
+    put(170, 6, glo_freq)
+    return value.to_bytes(24, "little")
+
+
+def test_unicore_ascii_obsvm_decodes_main_antenna_observation():
+    raw = _with_unicore_crc(
+        "OBSVMA,94,GPS,FINE,2190,117395000,0,0,18,17;"
+        "1,0,26,21720097.812,-114139892.254585,52,181,-2263.222,4270,0,6262.010,00181c23"
+    )
+
+    msg = UnicoreMessage.parse_ascii(raw)
+    epoch = RTCMHandler(compute_geometry=False).process_message(msg)
+
+    assert msg.identity == "OBSVM"
+    assert msg.antenna == "master"
+    assert epoch.utc_datetime == datetime(2021, 12, 27, 8, 36, 17, tzinfo=timezone.utc)
+    sig = epoch.satellites["G26"].signals["1C"]
+    assert sig.pseudorange == pytest.approx(21720097.812)
+    assert sig.phase == pytest.approx(-114139892.254585)
+    assert sig.snr == pytest.approx(42.70)
+    assert sig.doppler == pytest.approx(-2263.222)
+    assert sig.lock_time == 6262
+    assert getattr(sig, "receiver_antenna") == "master"
+
+
+def test_unicore_ascii_obsvh_zero_epoch_decodes_slave_metadata():
+    raw = b"#OBSVHA,97,GPS,FINE,2190,359897000,0,0,18,14;0*9d38304c\r\n"
+
+    msg = UnicoreMessage.parse_ascii(raw)
+    epoch = RTCMHandler(compute_geometry=False).process_message(msg)
+
+    assert msg.identity == "OBSVH"
+    assert msg.antenna == "slave"
+    assert epoch.satellites == {}
+    assert getattr(epoch, "receiver_antenna") == "slave"
+
+
+def test_unicore_binary_obsvbase_decodes_base_observation_through_reader():
+    body = bytearray()
+    body.extend((1).to_bytes(4, "little"))
+    body.extend(
+        __import__("struct").pack(
+            "<HHddHHfHHfI",
+            0,
+            3,
+            24393288.815,
+            -128187597.395405,
+            31,
+            0,
+            0.0,
+            3100,
+            0,
+            0.001,
+            _tracking_status(0),
+        )
+    )
+    frame = build_unicore_binary_frame(284, bytes(body), week=2249, milliseconds=205089000)
+
+    reader = MixedGNSSReader(__import__("io").BytesIO(frame))
+    raw, msg = next(iter(reader))
+    epoch = RTCMHandler(compute_geometry=False).process_message(msg)
+
+    assert raw == frame
+    assert msg.identity == "OBSVBASE"
+    assert msg.antenna == "base"
+    sig = epoch.satellites["G03"].signals["1C"]
+    assert sig.pseudorange == pytest.approx(24393288.815)
+    assert sig.phase == pytest.approx(-128187597.395405)
+    assert sig.snr == pytest.approx(31.0)
+    assert getattr(sig, "receiver_antenna") == "base"
+
+
+def test_unicore_compressed_ascii_decodes_main_and_slave_observations():
+    main_record = _compressed_record(
+        tracking_status=_tracking_status(0, 0),
+        doppler=-2251.60546875,
+        pseudorange=22038311.921875,
+        phase=22038311.921875 * 1575.42e6 / 299792458.0,
+        psr_std_index=5,
+        adr_std_index=7,
+        prn=25,
+        lock_time=174.0,
+        cn0=43.0,
+    )
+    slave_record = _compressed_record(
+        tracking_status=_tracking_status(0, 0),
+        doppler=-100.0,
+        pseudorange=21000000.0,
+        phase=21000000.0 * 1575.42e6 / 299792458.0,
+        psr_std_index=0,
+        adr_std_index=0,
+        prn=2,
+        lock_time=12.5,
+        cn0=45.0,
+    )
+    main_raw = _with_unicore_crc(
+        f"OBSVMCMPA,97,GPS,FINE,2244,271100000,0,0,18,14;1,{main_record.hex()}"
+    )
+    slave_raw = _with_unicore_crc(
+        f"OBSVHCMPA,97,GPS,FINE,2244,271111000,0,0,18,14;1,{slave_record.hex()}"
+    )
+
+    main_epoch = RTCMHandler(compute_geometry=False).process_message(UnicoreMessage.parse_ascii(main_raw))
+    slave_epoch = RTCMHandler(compute_geometry=False).process_message(UnicoreMessage.parse_ascii(slave_raw))
+
+    main_sig = main_epoch.satellites["G25"].signals["1C"]
+    slave_sig = slave_epoch.satellites["G02"].signals["1C"]
+    assert main_sig.pseudorange == pytest.approx(22038311.921875)
+    assert main_sig.phase == pytest.approx(22038311.921875 * 1575.42e6 / 299792458.0, abs=0.001)
+    assert main_sig.snr == 43.0
+    assert main_sig.doppler == pytest.approx(-2251.60546875)
+    assert getattr(main_sig, "receiver_antenna") == "master"
+    assert slave_sig.pseudorange == pytest.approx(21000000.0)
+    assert slave_sig.lock_time == 12
+    assert getattr(slave_sig, "receiver_antenna") == "slave"
+
+
+def test_convert_unicore_file_to_rinex(tmp_path):
+    input_path = tmp_path / "unicore.log"
+    input_path.write_bytes(
+        _with_unicore_crc(
+            "OBSVMA,94,GPS,FINE,2190,117395000,0,0,18,17;"
+            "1,0,26,21720097.812,-114139892.254585,52,181,-2263.222,4270,0,6262.010,00181c23"
+        )
+    )
+    output_dir = tmp_path / "out"
+
+    result = rtcm_to_rinex.convert_rtcm_file_to_rinex(
+        input_path,
+        output_path=output_dir,
+        station_code="UNIC",
+        receiver_number="00",
+        country_code="CHN",
+        receiver_type="Unicore",
+        antenna_type="UNKNOWN",
+    )
+
+    assert result.written_epoch_count == 1
+    text = result.output_path.read_text(encoding="utf-8")
+    assert "UNIC00CHN" in result.output_path.name
+    assert "SYS / # / OBS TYPES" in text
+    assert "G26" in text
+    assert "21720097.812" in text
 
 
 def test_scan_rtcm_file_uses_reference_date_in_filename(tmp_path, monkeypatch):
@@ -402,6 +620,34 @@ def test_rinex_writer_uses_header_interval_override():
     assert writer._parse_interval_seconds() == 0.5
 
 
+def test_rinex_writer_formats_receiver_and_antenna_header_fields_as_a20(tmp_path):
+    output = tmp_path / "header.rnx"
+    writer = RINEX3Writer(str(output), receiver_number="01")
+    assert writer.open()
+    assert writer.write_header(
+        sys_obs_types={"G": ["C1C", "L1C", "D1C", "S1C"]},
+        receiver_type="SEPT MOSAIC-X5",
+        receiver_serial="4014259",
+        receiver_version="4.14.4",
+        antenna_type="LEIAR25.R4 NONE",
+        antenna_number="725235",
+    )
+    writer.close()
+
+    lines = output.read_text(encoding="utf-8").splitlines()
+    receiver_line = next(line for line in lines if line[60:80].strip() == "REC # / TYPE / VERS")
+    antenna_line = next(line for line in lines if line[60:80].strip() == "ANT # / TYPE")
+
+    assert len(receiver_line) == 80
+    assert receiver_line[:20].strip() == "4014259"
+    assert receiver_line[20:40].strip() == "SEPT MOSAIC-X5"
+    assert receiver_line[40:60].strip() == "4.14.4"
+    assert len(antenna_line) == 80
+    assert antenna_line[:20].strip() == "725235"
+    assert antenna_line[20:40].strip() == "LEIAR25.R4 NONE"
+    assert antenna_line[40:60].strip() == ""
+
+
 def test_convert_rtcm_file_to_rinex_decimates_to_requested_interval(tmp_path):
     input_path = tmp_path / "sample.rtcm"
     input_path.write_bytes(b"rtcm")
@@ -475,8 +721,14 @@ def test_build_arg_parser_accepts_new_and_legacy_option_names():
             "F9P",
             "-r",
             "F9P",
+            "--rx-serial",
+            "RX123",
+            "--rx-version",
+            "1.2.3",
             "-a",
             "HXCM",
+            "--ant-num",
+            "ANT123",
             "-i",
             "15",
             "-p",
@@ -503,8 +755,14 @@ def test_build_arg_parser_accepts_new_and_legacy_option_names():
             "F9P",
             "--receiver-type",
             "F9P",
+            "--receiver-serial",
+            "RX123",
+            "--receiver-version",
+            "1.2.3",
             "--antenna-type",
             "HXCM",
+            "--antenna-number",
+            "ANT123",
             "--interval",
             "15",
             "--period",
@@ -525,7 +783,10 @@ def test_build_arg_parser_accepts_new_and_legacy_option_names():
     assert new_args.station_code == legacy_args.station_code == "F9P0"
     assert new_args.marker_name == legacy_args.marker_name == "F9P"
     assert new_args.receiver_type == legacy_args.receiver_type == "F9P"
+    assert new_args.receiver_serial == legacy_args.receiver_serial == "RX123"
+    assert new_args.receiver_version == legacy_args.receiver_version == "1.2.3"
     assert new_args.antenna_type == legacy_args.antenna_type == "HXCM"
+    assert new_args.antenna_number == legacy_args.antenna_number == "ANT123"
     assert new_args.interval == legacy_args.interval == 15.0
     assert new_args.period == legacy_args.period == "01D"
     assert new_args.reference_date == legacy_args.reference_date == "2025-10-25"

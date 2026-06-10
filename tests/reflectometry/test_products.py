@@ -98,7 +98,7 @@ def test_product_converter_adds_second_order_dynamic_sea_level_products():
         sea_level = (
             corrected_height
             + (roc_like_seconds + delta_t_seconds) * velocity_mps
-            + (roc_like_seconds * delta_t_seconds + 0.5 * delta_t_seconds**2) * acceleration_mps2
+            + (roc_like_seconds * delta_t_seconds + delta_t_seconds**2) * acceleration_mps2
         )
         reflector_height = 10.0 - sea_level
         solutions.append(
@@ -144,7 +144,7 @@ def test_product_converter_adds_second_order_dynamic_sea_level_products():
     assert round(latest_rate.value, 6) == round(velocity_mps, 6)
     assert round(latest_acceleration.value, 8) == round(acceleration_mps2, 8)
     assert latest_corrected.metadata["dynamic_model_order"] == 2
-    assert latest_corrected.metadata["dynamic_design_matrix"] == "1, roc_plus_dt, roc_times_dt_plus_half_dt_squared"
+    assert latest_corrected.metadata["dynamic_design_matrix"] == "1, roc_plus_dt, roc_times_dt_plus_dt_squared"
     assert latest_corrected.metadata["dynamic_sample_count"] == 6
     assert latest_corrected.metadata["signal"] == "Combined"
 
@@ -176,7 +176,7 @@ def test_dynamic_correction_uses_igg3_to_reject_outliers():
         sea_level = (
             corrected_height
             + (roc_like_seconds + delta_t_seconds) * velocity_mps
-            + (roc_like_seconds * delta_t_seconds + 0.5 * delta_t_seconds**2) * acceleration_mps2
+            + (roc_like_seconds * delta_t_seconds + delta_t_seconds**2) * acceleration_mps2
         )
         if index == outlier_index:
             sea_level += 2.0
@@ -243,7 +243,7 @@ def test_dynamic_correction_keeps_high_pnr_weights_from_collapsing_fit():
         sea_level = (
             corrected_height
             + (roc_like_seconds + delta_t_seconds) * velocity_mps
-            + (roc_like_seconds * delta_t_seconds + 0.5 * delta_t_seconds**2) * acceleration_mps2
+            + (roc_like_seconds * delta_t_seconds + delta_t_seconds**2) * acceleration_mps2
         )
         if index == 3:
             sea_level += 0.35

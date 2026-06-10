@@ -1,0 +1,6 @@
+include README.md
+include requirements.txt
+recursive-include config *.yaml
+recursive-include static *
+recursive-exclude * __pycache__
+recursive-exclude * *.py[cod]

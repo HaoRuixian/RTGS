@@ -23,7 +23,6 @@ from PySide6.QtCore import QObject, Signal
 from core.pyrtcm_compat import patch_pyrtcm_glonass_g3
 
 patch_pyrtcm_glonass_g3()
-from pyrtcm import RTCMReader
 from datetime import datetime, timedelta, timezone
 
 from core.global_config import get_global_config
@@ -32,8 +31,18 @@ from core.ntrip_client import NtripClient
 from core.serial_client import SerialClient
 from core.ring_buffer import RingBuffer
 from core.rinex3_writer import RINEX3Writer
+from core.ephemeris_output import BroadcastNavWriter, PreciseSp3Writer, build_sp3_states
 from core.rinex_loader import FileEphemerisProvider, RinexObservationReader, read_rinex_observation_header
 from core.mixed_gnss_reader import MixedGNSSReader
+
+SSR_MESSAGE_IDS = {
+    "1057", "1058", "1059", "1060", "1061", "1062",
+    "1063", "1064", "1065", "1066", "1067", "1068",
+    "1240", "1241", "1242", "1243", "1244", "1245",
+    "1246", "1247", "1248", "1249", "1250", "1251",
+    "1252", "1253", "1254", "1255", "1256", "1257",
+    "1258", "1259", "1260", "1261", "1262", "1263",
+}
 
 
 class StreamSignals(QObject):
@@ -127,7 +136,7 @@ class IOThread(threading.Thread):
                 if thread_handle:
                     kernel32.SetThreadPriority(thread_handle, 2)  # THREAD_PRIORITY_HIGHEST
                     kernel32.CloseHandle(thread_handle)
-            except:
+            except (AttributeError, OSError):
                 pass
         
         # Step 1: Initialize appropriate client based on source type
@@ -170,10 +179,10 @@ class IOThread(threading.Thread):
                         time.sleep(0.1)
                     continue
                 
-                # Step 2c: Connected successfully - log and initialize RTCM reader
+                # Step 2c: Connected successfully - log and initialize GNSS reader
                 self.signals.log_signal.emit(f"[{self.name}] Connected to NTRIP {host_port}/{mount}")
                 self.signals.status_signal.emit(self.name, True)
-                reader = RTCMReader(sock)
+                reader = MixedGNSSReader(sock)
                 self.msg_count = 0
                 self.last_log_time = time.time()
 
@@ -537,13 +546,24 @@ class DataProcessingThread(threading.Thread):
         self.msg_count = 0
         self.msg_types = {}  # Track message types
         self.eph_count = 0
+        self.ssr_count = 0
         self.eph_status_reported = False
+        self.ssr_status_reported = False
         self.last_log_time = time.time()
         self.first_epoch = True
         # Pending partial epoch merging: gps_time -> {'epoch': EpochObservation, 'last_update': time.time()}
         self.pending_epochs = {}
         # Merge timeout in seconds: wait this long for additional system messages for same epoch
         self.EPOCH_MERGE_TIMEOUT = 0.15
+
+    @staticmethod
+    def _is_observation_epoch(epoch_data) -> bool:
+        """Return True only for timestamped epochs carrying satellite observations."""
+        if epoch_data is None:
+            return False
+        if getattr(epoch_data, "utc_datetime", None) is None:
+            return False
+        return bool(getattr(epoch_data, "satellites", None))
         
     def run(self):
         """
@@ -588,13 +608,19 @@ class DataProcessingThread(threading.Thread):
                     if not self.eph_status_reported:
                         self.signals.status_signal.emit("EPH_DATA", True)
                         self.eph_status_reported = True
+                if msg_id in SSR_MESSAGE_IDS:
+                    self.ssr_count += 1
+                    if not self.ssr_status_reported:
+                        self.signals.status_signal.emit("EPH_DATA", True)
+                        self.signals.log_signal.emit(f"[{self.name}] SSR corrections detected")
+                        self.ssr_status_reported = True
                 
                 # Step 3: Process RTCM message through handler
                 # Handler manages ephemeris caching and emits EpochObservation when all satellites for epoch are received
                 epoch_data = self.handler.process_message(msg)
 
                 # Step 4: If handler returned an EpochObservation, merge by gps_time
-                if epoch_data:
+                if self._is_observation_epoch(epoch_data):
                     key = float(getattr(epoch_data, 'gps_time', 0.0))
                     nowt = time.time()
                     if key in self.pending_epochs:
@@ -643,12 +669,13 @@ class DataProcessingThread(threading.Thread):
                     self.signals.log_signal.emit(
                         f"[{self.name}] Stats: {self.msg_count} msgs ({msg_rate:.1f}/s), "
                         f"{self.epoch_count} epochs ({epoch_rate:.2f}/s), "
-                        f"{self.eph_count} eph, Top: {msg_summary}"
+                        f"{self.eph_count} eph, {self.ssr_count} ssr, Top: {msg_summary}"
                     )
                     # Reset counters for next statistics window
                     self.msg_count = 0
                     self.epoch_count = 0
                     self.eph_count = 0
+                    self.ssr_count = 0
                     self.msg_types.clear()
                     self.last_log_time = now
                     
@@ -712,6 +739,7 @@ class LoggingThread(threading.Thread):
         self.start_time = time.time()
         self.current_filename = ""
         self.last_rinex_epoch_time = None
+        self.last_sp3_epoch_time = None
         
     def get_file_count(self):
         """Get the number of files created so far."""
@@ -724,6 +752,18 @@ class LoggingThread(threading.Thread):
     def get_current_filename(self):
         """Get the current filename being written to."""
         return self.current_filename
+
+    @staticmethod
+    def _file_extension_for_format(format_type: str) -> str:
+        """Return the file extension used by a logging product format."""
+        extensions = {
+            "csv": "csv",
+            "binary": "rtcm",
+            "rinex": "rnx",
+            "rinex_nav": "rnx",
+            "sp3": "sp3",
+        }
+        return extensions.get(str(format_type or "").lower(), "csv")
 
     @staticmethod
     def _normalize_utc_datetime(epoch_time: datetime) -> datetime:
@@ -818,12 +858,14 @@ class LoggingThread(threading.Thread):
         current_file = None
         writer = None
         rinex_writer = None
+        nav_writer = None
+        sp3_writer = None
         file_start = 0
         last_sample_time = time.time()  # Track time for CSV sampling interval
         
         def open_new_file():
             """Open a new log file with timestamp and write appropriate header."""
-            nonlocal current_file, writer, rinex_writer, file_start
+            nonlocal current_file, writer, rinex_writer, nav_writer, sp3_writer, file_start
             
             try:
                 # Step 1: Generate timestamp-based filename
@@ -836,14 +878,7 @@ class LoggingThread(threading.Thread):
                 safe_mount = ''.join(c for c in str(mount) if c.isalnum() or c in ('_', '-')) or 'UNKNOWN'
                 
                 # Step 2: Determine file extension based on format type
-                if format_type == 'csv':
-                    ext = 'csv'
-                elif format_type == 'binary':
-                    ext = 'rtcm'
-                elif format_type == 'rinex':
-                    ext = 'rnx'
-                else:
-                    ext = 'csv'  # fallback to csv
+                ext = self._file_extension_for_format(format_type)
                 
                 # Step 3: Construct full file path and open for writing
                 fname = f"{safe_mount}_{name_time}.{ext}"
@@ -858,6 +893,8 @@ class LoggingThread(threading.Thread):
                     current_file = open(path, 'wb', buffering=65536)  # 64KB buffer
                     writer = None
                     rinex_writer = None
+                    nav_writer = None
+                    sp3_writer = None
                 elif format_type == 'rinex':
                     # RINEX3 format: use standard long filenames derived from the
                     # actual logging cadence instead of the UI free-text fields.
@@ -905,11 +942,30 @@ class LoggingThread(threading.Thread):
                     self.current_filename = fname
                     current_file = None
                     writer = None
+                    nav_writer = None
+                    sp3_writer = None
+                elif format_type == 'rinex_nav':
+                    nav_writer = BroadcastNavWriter(path)
+                    nav_writer.open()
+                    current_file = None
+                    writer = None
+                    rinex_writer = None
+                    sp3_writer = None
+                    self.current_filename = fname
+                elif format_type == 'sp3':
+                    sp3_writer = PreciseSp3Writer(path, epoch_interval_seconds=float(sample_interval))
+                    current_file = None
+                    writer = None
+                    rinex_writer = None
+                    nav_writer = None
+                    self.current_filename = fname
                 else:
                     # Text mode for CSV format
                     current_file = open(path, 'a', newline='', encoding='utf-8', buffering=65536)
                     writer = csv.writer(current_file)
                     rinex_writer = None
+                    nav_writer = None
+                    sp3_writer = None
                     self.current_filename = fname
                     # CSV header row: field names
                     if writer:
@@ -935,7 +991,7 @@ class LoggingThread(threading.Thread):
             file_start = time.time()
         else:
             current_file, writer, rinex_writer = open_new_file()
-            if current_file is None:
+            if current_file is None and nav_writer is None and sp3_writer is None:
                 return
         
         # Add initial status signal with start time
@@ -970,9 +1026,13 @@ class LoggingThread(threading.Thread):
                     try:
                         if format_type == 'rinex' and rinex_writer:
                             rinex_writer.close()
+                        elif format_type == 'rinex_nav' and nav_writer:
+                            nav_writer.close()
+                        elif format_type == 'sp3' and sp3_writer:
+                            sp3_writer.close()
                         elif current_file:
                             current_file.close()
-                    except:
+                    except OSError:
                         pass
                     if format_type == 'rinex':
                         current_file, writer, rinex_writer = None, None, None
@@ -980,7 +1040,7 @@ class LoggingThread(threading.Thread):
                     else:
                         # Open new file with new timestamp
                         current_file, writer, rinex_writer = open_new_file()
-                        if current_file is None:
+                        if current_file is None and nav_writer is None and sp3_writer is None:
                             break
                         last_sample_time = time.time()
                 
@@ -997,6 +1057,16 @@ class LoggingThread(threading.Thread):
                         # RINEX output is driven by the epoch timestamp itself rather than
                         # wall-clock polling so the header/body remain aligned to true epochs.
                         self._save_rinex_obs(rinex_writer, sample_interval)
+                        time.sleep(0.1)
+                    elif format_type == 'rinex_nav':
+                        if current_time - last_sample_time >= sample_interval:
+                            self._save_rinex_nav(nav_writer)
+                            last_sample_time = current_time
+                        time.sleep(0.1)
+                    elif format_type == 'sp3':
+                        if current_time - last_sample_time >= sample_interval:
+                            self._save_sp3_epoch(sp3_writer, sample_interval)
+                            last_sample_time = current_time
                         time.sleep(0.1)
                     elif current_time - last_sample_time >= sample_interval:
                         # CSV format: sample and write satellite data at specified interval
@@ -1017,6 +1087,10 @@ class LoggingThread(threading.Thread):
         # Step 3: Cleanup on shutdown
         if format_type == 'rinex' and rinex_writer:
             rinex_writer.close()
+        elif format_type == 'rinex_nav' and nav_writer:
+            nav_writer.close()
+        elif format_type == 'sp3' and sp3_writer:
+            sp3_writer.close()
         elif current_file:
             current_file.close()
         
@@ -1057,7 +1131,8 @@ class LoggingThread(threading.Thread):
                         file_handle.write(raw)
                         bytes_written += len(raw)
                         count += 1
-                except:
+                except Exception as exc:
+                    self.signals.log_signal.emit(f"[Logging] Error reading RTCM logging buffer: {exc}")
                     break
             
             # Flush after writing batch (更频繁的flush确保数据不丢失)
@@ -1172,6 +1247,60 @@ class LoggingThread(threading.Thread):
             self.signals.log_signal.emit(f"[Logging] Error saving RINEX observation: {e}")
             import traceback
             self.signals.log_signal.emit(f"[Logging] Traceback: {traceback.format_exc()}")
+
+    def _get_shared_rtcm_handler(self):
+        """Fetch the shared RTCM handler that owns live ephemeris and SSR caches."""
+        try:
+            from core.rtcm_handler import get_shared_handler
+
+            return get_shared_handler()
+        except Exception:
+            return None
+
+    def _save_rinex_nav(self, nav_writer):
+        """Write newly cached broadcast ephemerides to a RINEX navigation file."""
+        if nav_writer is None:
+            return
+        handler = self._get_shared_rtcm_handler()
+        if handler is None or not hasattr(handler, "get_all_ephemeris"):
+            return
+        try:
+            ephemerides = handler.get_all_ephemeris()
+            count = nav_writer.write_many(ephemerides.values())
+            if count:
+                self.signals.log_signal.emit(f"[Logging] Wrote {count} broadcast ephemeris record(s)")
+        except Exception as e:
+            self.signals.log_signal.emit(f"[Logging] Error saving RINEX NAV: {e}")
+
+    def _save_sp3_epoch(self, sp3_writer, sample_interval):
+        """Write one SSR-corrected precise-orbit snapshot to SP3."""
+        if sp3_writer is None:
+            return
+        handler = self._get_shared_rtcm_handler()
+        if handler is None or not hasattr(handler, "get_all_ephemeris"):
+            return
+
+        epoch_data = self._get_latest_epoch_data()
+        epoch_time = getattr(epoch_data, 'utc_datetime', None) if epoch_data else None
+        if epoch_time is None:
+            epoch_time = datetime.now(timezone.utc)
+        epoch_time = self._normalize_utc_datetime(epoch_time)
+        aligned_time = self._round_time_to_interval(epoch_time, sample_interval)
+        if self.last_sp3_epoch_time == aligned_time:
+            return
+
+        try:
+            states = build_sp3_states(
+                handler.get_all_ephemeris(),
+                aligned_time.replace(tzinfo=timezone.utc),
+                ssr_store=getattr(handler, "ssr_corrections", None),
+            )
+            if not states:
+                return
+            if sp3_writer.write_epoch(aligned_time, states):
+                self.last_sp3_epoch_time = aligned_time
+        except Exception as e:
+            self.signals.log_signal.emit(f"[Logging] Error saving SP3: {e}")
     
     def _save_csv_obs(self, file_handle, writer, fields):
         """

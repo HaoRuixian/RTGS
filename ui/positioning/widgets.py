@@ -83,6 +83,27 @@ def _finite(value) -> bool:
         return False
 
 
+def _format_counts_value(counts) -> str:
+    if not counts:
+        return "--"
+    try:
+        items = sorted(counts.items())
+    except Exception:
+        return str(counts)
+    return ", ".join(f"{key}:{int(value)}" for key, value in items)
+
+
+def _format_satellite_list(satellites, per_line: int = 8) -> str:
+    if not satellites:
+        return "--"
+    ordered = sorted(str(item) for item in satellites)
+    lines = [
+        ", ".join(ordered[index : index + per_line])
+        for index in range(0, len(ordered), per_line)
+    ]
+    return "\n".join(lines)
+
+
 class LegacyPositionMapWidget(QWidget):
     """
     Real-time position map display using matplotlib.
@@ -637,6 +658,11 @@ class PositionInfoWidget(QWidget):
     COMMON_PARAMETERS = [
         "Clock Bias",
         "Num Satellites",
+        "Solution Source",
+        "Used Systems",
+        "Candidate Systems",
+        "Used Satellites",
+        "Quality Reason",
         "HDOP",
         "VDOP",
         "PDOP",
@@ -656,8 +682,9 @@ class PositionInfoWidget(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(2)
         self.table.setHorizontalHeaderLabels(["Parameter", "Value"])
-        self.table.setMaximumHeight(400)
+        self.table.setMaximumHeight(520)
         self.table.setAlternatingRowColors(True)
+        self.table.setWordWrap(True)
         self.table.verticalHeader().setVisible(False)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -698,6 +725,11 @@ class PositionInfoWidget(QWidget):
             {
                 "Clock Bias": f"{solution.clock_bias:.3e} m",
                 "Num Satellites": str(solution.num_satellites),
+                "Solution Source": getattr(solution, "solution_source", "") or "--",
+                "Used Systems": _format_counts_value(getattr(solution, "used_system_counts", {})),
+                "Candidate Systems": _format_counts_value(getattr(solution, "candidate_system_counts", {})),
+                "Used Satellites": _format_satellite_list(getattr(solution, "used_satellites", [])),
+                "Quality Reason": getattr(solution, "quality_reason", "") or "--",
                 "HDOP": f"{solution.hdop:.2f}",
                 "VDOP": f"{solution.vdop:.2f}",
                 "PDOP": f"{solution.pdop:.2f}",
@@ -716,6 +748,7 @@ class PositionInfoWidget(QWidget):
                 item.setForeground(_status_color(solution.status, self.theme))
                 item.setFont(_make_font("Consolas", 10, QFont.Weight.Bold))
             self.table.setItem(row, 1, item)
+        self.table.resizeRowsToContents()
 
     def clear(self):
         """Reset the table to placeholder values."""

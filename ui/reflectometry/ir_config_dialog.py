@@ -81,6 +81,7 @@ class ReflectometryConfigDialog(QDialog):
         self.tabs.addTab(self._build_tab_page(self._build_station_section(), self._build_geometry_section()), "Station")
         self.tabs.addTab(self._build_tab_page(self._build_input_section()), "Scope")
         self.tabs.addTab(self._build_tab_page(self._build_processing_section()), "Processing")
+        self.tabs.addTab(self._build_tab_page(self._build_ekf_section()), "EKF")
         self.tabs.addTab(self._build_tab_page(self._build_products_section()), "Products")
 
         yaml_tab = QWidget()
@@ -213,6 +214,8 @@ class ReflectometryConfigDialog(QDialog):
         form = QFormLayout(form_widget)
         _configure_form_layout(form)
 
+        self.include_signals_edit = QLineEdit()
+        self.include_signals_edit.setPlaceholderText("Empty = all; Example: S1C,S2I,2W")
         self.exclude_signals_edit = QLineEdit()
         self.exclude_signals_edit.setPlaceholderText("Example: 2W,7Q")
         systems_row = QHBoxLayout()
@@ -225,10 +228,11 @@ class ReflectometryConfigDialog(QDialog):
             systems_row.addWidget(checkbox)
         systems_row.addStretch()
 
-        for widget in [self.exclude_signals_edit]:
+        for widget in [self.include_signals_edit, self.exclude_signals_edit]:
             _connect_change(widget, self._sync_form_to_yaml)
 
         form.addRow("Enabled Systems", _wrap_layout(systems_row))
+        form.addRow("Include Signals", self.include_signals_edit)
         form.addRow("Exclude Signals", self.exclude_signals_edit)
         info_label = QLabel(
             "System, signal, and reflection-zone controls here are applied directly to the realtime stream."
@@ -279,6 +283,90 @@ class ReflectometryConfigDialog(QDialog):
         form.addRow("Smoothing Window", self.smoothing_window_spin)
         form.addRow("Min Peak/Noise", self.min_pnr_spin)
         form.addRow("Output Dir", self.output_dir_edit)
+        card.layout().addWidget(form_widget)
+        return card
+
+    def _build_ekf_section(self) -> QWidget:
+        card = self._build_card(
+            "Estimation Mode",
+            "EKF uses the realtime stream directly and emits fixed-interval reflector-height products.",
+        )
+        form_widget = QWidget()
+        form = QFormLayout(form_widget)
+        _configure_form_layout(form)
+
+        self.estimation_mode_combo = QComboBox()
+        self.estimation_mode_combo.addItem("Spectrum", "spectrum")
+        self.estimation_mode_combo.addItem("EKF", "ekf")
+        self.ekf_initial_rh_spin = _float_spin(0.0, 100.0, 3)
+        self.ekf_initial_rh_spin.setSpecialValueText("auto")
+        self.ekf_initial_rh_variance_spin = _float_spin(0.000001, 1000.0, 6)
+        self.ekf_local_state_variance_spin = _float_spin(0.000001, 1000.0, 6)
+        self.ekf_q_rh_spin = _float_spin(0.0, 1.0, 8)
+        self.ekf_q_rh_spin.setSingleStep(0.000001)
+        self.ekf_q_amplitude_spin = _float_spin(0.0, 1.0, 8)
+        self.ekf_q_amplitude_spin.setSingleStep(0.000001)
+        self.ekf_measurement_variance_spin = _float_spin(0.000001, 1000.0, 6)
+        self.ekf_measurement_variance_spin.setSingleStep(0.1)
+        self.ekf_init_min_samples_spin = _float_spin(3.0, 5000.0, 0)
+        self.ekf_init_max_samples_spin = _float_spin(3.0, 20000.0, 0)
+        self.ekf_rh_init_min_height_spin = _float_spin(0.0, 100.0, 3)
+        self.ekf_rh_init_min_height_spin.setSpecialValueText("auto")
+        self.ekf_rh_init_max_height_spin = _float_spin(0.0, 100.0, 3)
+        self.ekf_rh_init_max_height_spin.setSpecialValueText("auto")
+        self.ekf_rh_init_min_samples_spin = _float_spin(3.0, 5000.0, 0)
+        self.ekf_rh_init_max_arcs_spin = _float_spin(1.0, 100.0, 0)
+        self.ekf_rh_init_max_samples_spin = _float_spin(3.0, 20000.0, 0)
+        self.ekf_output_interval_spin = _float_spin(1.0, 86400.0, 0)
+        self.ekf_output_window_spin = _float_spin(1.0, 86400.0, 0)
+        self.ekf_min_active_arcs_spin = _float_spin(1.0, 100.0, 0)
+        self.ekf_max_gap_spin = _float_spin(1.0, 3600.0, 1)
+        self.ekf_status_label = QLabel()
+        self.ekf_status_label.setWordWrap(True)
+        self.ekf_status_label.setObjectName("cardDescription")
+
+        for widget in [
+            self.estimation_mode_combo,
+            self.ekf_initial_rh_spin,
+            self.ekf_initial_rh_variance_spin,
+            self.ekf_local_state_variance_spin,
+            self.ekf_q_rh_spin,
+            self.ekf_q_amplitude_spin,
+            self.ekf_measurement_variance_spin,
+            self.ekf_init_min_samples_spin,
+            self.ekf_init_max_samples_spin,
+            self.ekf_rh_init_min_height_spin,
+            self.ekf_rh_init_max_height_spin,
+            self.ekf_rh_init_min_samples_spin,
+            self.ekf_rh_init_max_arcs_spin,
+            self.ekf_rh_init_max_samples_spin,
+            self.ekf_output_interval_spin,
+            self.ekf_output_window_spin,
+            self.ekf_min_active_arcs_spin,
+            self.ekf_max_gap_spin,
+        ]:
+            _connect_change(widget, self._sync_form_to_yaml)
+        self.estimation_mode_combo.currentTextChanged.connect(self._update_ekf_control_state)
+
+        form.addRow("Mode", self.estimation_mode_combo)
+        form.addRow("Initial RH (m)", self.ekf_initial_rh_spin)
+        form.addRow("Initial RH Variance", self.ekf_initial_rh_variance_spin)
+        form.addRow("Local State Variance", self.ekf_local_state_variance_spin)
+        form.addRow("Q RH", self.ekf_q_rh_spin)
+        form.addRow("Q Amplitude", self.ekf_q_amplitude_spin)
+        form.addRow("Measurement Variance", self.ekf_measurement_variance_spin)
+        form.addRow("Init Min Samples", self.ekf_init_min_samples_spin)
+        form.addRow("Init Max Samples", self.ekf_init_max_samples_spin)
+        form.addRow("RH0 Min Height (m)", self.ekf_rh_init_min_height_spin)
+        form.addRow("RH0 Max Height (m)", self.ekf_rh_init_max_height_spin)
+        form.addRow("RH0 Min Samples", self.ekf_rh_init_min_samples_spin)
+        form.addRow("RH0 Max Arcs", self.ekf_rh_init_max_arcs_spin)
+        form.addRow("RH0 Max Samples", self.ekf_rh_init_max_samples_spin)
+        form.addRow("Output Interval (s)", self.ekf_output_interval_spin)
+        form.addRow("Output Window (s)", self.ekf_output_window_spin)
+        form.addRow("Min Active Arcs", self.ekf_min_active_arcs_spin)
+        form.addRow("Max Gap (s)", self.ekf_max_gap_spin)
+        form.addRow("Status", self.ekf_status_label)
         card.layout().addWidget(form_widget)
         return card
 
@@ -630,6 +718,39 @@ class ReflectometryConfigDialog(QDialog):
         smoothing_enabled = self.smoothing_method_combo.currentText().strip().lower() != "none"
         self.smoothing_window_spin.setEnabled(smoothing_enabled)
 
+    def _update_ekf_control_state(self, _value=None) -> None:
+        mode = _combo_data(self.estimation_mode_combo, "spectrum")
+        ekf_enabled = mode == "ekf"
+        for widget in [
+            self.ekf_initial_rh_spin,
+            self.ekf_initial_rh_variance_spin,
+            self.ekf_local_state_variance_spin,
+            self.ekf_q_rh_spin,
+            self.ekf_q_amplitude_spin,
+            self.ekf_measurement_variance_spin,
+            self.ekf_init_min_samples_spin,
+            self.ekf_init_max_samples_spin,
+            self.ekf_rh_init_min_height_spin,
+            self.ekf_rh_init_max_height_spin,
+            self.ekf_rh_init_min_samples_spin,
+            self.ekf_rh_init_max_arcs_spin,
+            self.ekf_rh_init_max_samples_spin,
+            self.ekf_output_interval_spin,
+            self.ekf_output_window_spin,
+            self.ekf_min_active_arcs_spin,
+            self.ekf_max_gap_spin,
+        ]:
+            widget.setEnabled(ekf_enabled)
+        interval_minutes = self.ekf_output_interval_spin.value() / 60.0
+        window_minutes = self.ekf_output_window_spin.value() / 60.0
+        if ekf_enabled:
+            self.ekf_status_label.setText(
+                f"EKF mode is active; realtime products are emitted every {interval_minutes:g} min "
+                f"using a {window_minutes:g} min averaging window."
+            )
+        else:
+            self.ekf_status_label.setText("Spectrum mode is active; EKF parameters are preserved for later use.")
+
     def _load_config_to_form(self) -> None:
         self._building_form = True
         try:
@@ -644,10 +765,30 @@ class ReflectometryConfigDialog(QDialog):
             _set_combo_value(self.surface_combo, str(data["station"]["reflector_surface_type"]))
             self.min_height_spin.setValue(float(data["ir"]["min_reflector_height"]))
             self.max_height_spin.setValue(float(data["ir"]["max_reflector_height"]))
+            _set_combo_data(self.estimation_mode_combo, str(data["ir"].get("estimation_mode", "spectrum")))
+            ekf_data = data["ir"].get("ekf", {}) or {}
+            self.ekf_initial_rh_spin.setValue(float(ekf_data.get("initial_rh_m") or 0.0))
+            self.ekf_initial_rh_variance_spin.setValue(float(ekf_data.get("initial_rh_variance", 1.0)))
+            self.ekf_local_state_variance_spin.setValue(float(ekf_data.get("local_state_variance", 1.0)))
+            self.ekf_q_rh_spin.setValue(float(ekf_data.get("q_rh", 5.0e-5)))
+            self.ekf_q_amplitude_spin.setValue(float(ekf_data.get("q_amplitude", 6.0e-5)))
+            self.ekf_measurement_variance_spin.setValue(float(ekf_data.get("measurement_variance", 1.5)))
+            self.ekf_init_min_samples_spin.setValue(float(ekf_data.get("init_min_samples", 20)))
+            self.ekf_init_max_samples_spin.setValue(float(ekf_data.get("init_max_samples", 600)))
+            self.ekf_rh_init_min_height_spin.setValue(float(ekf_data.get("rh_init_min_height_m") or 0.0))
+            self.ekf_rh_init_max_height_spin.setValue(float(ekf_data.get("rh_init_max_height_m") or 0.0))
+            self.ekf_rh_init_min_samples_spin.setValue(float(ekf_data.get("rh_init_min_samples", 80)))
+            self.ekf_rh_init_max_arcs_spin.setValue(float(ekf_data.get("rh_init_max_arcs", 8)))
+            self.ekf_rh_init_max_samples_spin.setValue(float(ekf_data.get("rh_init_max_samples_per_arc", 300)))
+            self.ekf_output_interval_spin.setValue(float(ekf_data.get("output_interval_seconds", 300)))
+            self.ekf_output_window_spin.setValue(float(ekf_data.get("output_window_seconds", 60)))
+            self.ekf_min_active_arcs_spin.setValue(float(ekf_data.get("min_active_arcs", 1)))
+            self.ekf_max_gap_spin.setValue(float(ekf_data.get("max_time_gap_seconds", 90.0)))
 
             enabled_systems = _enabled_systems_from_config(data["input"])
             for sys_char, checkbox in self.system_checks.items():
                 checkbox.setChecked(sys_char in enabled_systems)
+            self.include_signals_edit.setText(",".join(data["input"].get("signals", [])))
             self.exclude_signals_edit.setText(",".join(data["input"].get("exclude_signals", [])))
 
             self.live_arc_window_spin.setValue(float(data["processing"].get("live_arc_window_minutes", 20)))
@@ -684,7 +825,7 @@ class ReflectometryConfigDialog(QDialog):
             self.dynamic_igg3_k0_spin.setValue(float(data["products"].get("dynamic_sea_level_igg3_k0", 0.5)))
             self.dynamic_igg3_k1_spin.setValue(float(data["products"].get("dynamic_sea_level_igg3_k1", 2.0)))
             self.dynamic_normalize_design_chk.setChecked(
-                bool(data["products"].get("dynamic_sea_level_normalize_design", False))
+                bool(data["products"].get("dynamic_sea_level_normalize_design", True))
             )
             self.snow_ref_spin.setValue(float(data["products"]["snow_depth_reference_height"] or 0.0))
             self._apply_environment_policy(sync_yaml=False)
@@ -693,6 +834,7 @@ class ReflectometryConfigDialog(QDialog):
             self._building_form = False
 
         self._update_processing_control_state()
+        self._update_ekf_control_state()
         self._sync_form_to_yaml()
         self._set_yaml_editor_text(self.current_yaml_text)
         self.path_label.setText(str(self.current_path))
@@ -730,12 +872,11 @@ class ReflectometryConfigDialog(QDialog):
         input_data = data["input"]
         for legacy_key in ("source_type", "source_path", "cache_endpoint", "time_window", "source_options"):
             input_data.pop(legacy_key, None)
-        input_data["constellations"] = []
-        input_data["signals"] = []
         enabled_systems = [sys_char for sys_char, checkbox in self.system_checks.items() if checkbox.isChecked()]
-        input_data["exclude_constellations"] = [
-            sys_char for sys_char, _label in self.SYSTEM_OPTIONS if sys_char not in enabled_systems
-        ]
+        all_systems = [sys_char for sys_char, _label in self.SYSTEM_OPTIONS]
+        input_data["constellations"] = [] if set(enabled_systems) == set(all_systems) else enabled_systems
+        input_data["signals"] = _split_csv(self.include_signals_edit.text())
+        input_data["exclude_constellations"] = []
         input_data["exclude_signals"] = _split_csv(self.exclude_signals_edit.text())
 
         zones = self._zones_from_table()
@@ -750,10 +891,34 @@ class ReflectometryConfigDialog(QDialog):
         processing["smoothing_window"] = int(self.smoothing_window_spin.value())
 
         ir_data = data["ir"]
+        ir_data["estimation_mode"] = _combo_data(self.estimation_mode_combo, "spectrum")
         ir_data["min_reflector_height"] = self.min_height_spin.value()
         ir_data["max_reflector_height"] = self.max_height_spin.value()
         ir_data["use_rising_arcs"] = True
         ir_data["use_setting_arcs"] = True
+        ekf = ir_data.setdefault("ekf", {})
+        ekf["q_rh"] = self.ekf_q_rh_spin.value()
+        ekf["q_amplitude"] = self.ekf_q_amplitude_spin.value()
+        ekf["measurement_variance"] = self.ekf_measurement_variance_spin.value()
+        ekf["initial_rh_m"] = self.ekf_initial_rh_spin.value() if self.ekf_initial_rh_spin.value() > 0.0 else None
+        ekf["initial_rh_variance"] = self.ekf_initial_rh_variance_spin.value()
+        ekf["local_state_variance"] = self.ekf_local_state_variance_spin.value()
+        ekf["init_min_samples"] = int(self.ekf_init_min_samples_spin.value())
+        ekf["init_max_samples"] = max(int(self.ekf_init_max_samples_spin.value()), ekf["init_min_samples"])
+        rh_init_min_height = self.ekf_rh_init_min_height_spin.value()
+        rh_init_max_height = self.ekf_rh_init_max_height_spin.value()
+        ekf["rh_init_min_height_m"] = rh_init_min_height if rh_init_min_height > 0.0 else None
+        ekf["rh_init_max_height_m"] = rh_init_max_height if rh_init_max_height > 0.0 else None
+        ekf["rh_init_min_samples"] = int(self.ekf_rh_init_min_samples_spin.value())
+        ekf["rh_init_max_arcs"] = int(self.ekf_rh_init_max_arcs_spin.value())
+        ekf["rh_init_max_samples_per_arc"] = max(
+            int(self.ekf_rh_init_max_samples_spin.value()),
+            ekf["rh_init_min_samples"],
+        )
+        ekf["output_interval_seconds"] = int(self.ekf_output_interval_spin.value())
+        ekf["output_window_seconds"] = int(self.ekf_output_window_spin.value())
+        ekf["min_active_arcs"] = int(self.ekf_min_active_arcs_spin.value())
+        ekf["max_time_gap_seconds"] = self.ekf_max_gap_spin.value()
 
         processing.pop("min_samples_per_arc", None)
 
@@ -796,6 +961,7 @@ class ReflectometryConfigDialog(QDialog):
 
         self.current_yaml_text = yaml.safe_dump(data, sort_keys=False, allow_unicode=False)
         self._set_yaml_editor_text(self.current_yaml_text)
+        self._update_ekf_control_state()
         self._update_dynamic_control_state()
 
     def _on_environment_changed(self, _text: str | None = None) -> None:
@@ -1239,8 +1405,23 @@ def _set_combo_value(combo: QComboBox, value: str) -> None:
         combo.setCurrentText(value)
 
 
+def _set_combo_data(combo: QComboBox, value: str) -> None:
+    target = str(value or "").strip().lower()
+    for index in range(combo.count()):
+        if str(combo.itemData(index) or "").strip().lower() == target:
+            combo.setCurrentIndex(index)
+            return
+    _set_combo_value(combo, value)
+
+
+def _combo_data(combo: QComboBox, default: str = "") -> str:
+    data = combo.currentData()
+    if data is None:
+        return combo.currentText().strip().lower() or default
+    return str(data).strip().lower() or default
+
+
 def _wrap_layout(layout) -> QWidget:
     widget = QWidget()
     widget.setLayout(layout)
     return widget
-

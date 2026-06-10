@@ -2,7 +2,7 @@
 Data models for GNSS positioning results and state.
 """
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from enum import Enum
 
 
@@ -80,6 +80,13 @@ class PositioningSolution:
     clock_drift: float = 0.0  # m/s (dT * c, drift)
     # time offsets for other systems (seconds relative to GPS)
     time_offsets: Dict[str, float] = field(default_factory=dict)
+    used_satellites: List[str] = field(default_factory=list)
+    used_system_counts: Dict[str, int] = field(default_factory=dict)
+    candidate_system_counts: Dict[str, int] = field(default_factory=dict)
+    solution_source: str = ""
+    fallback_reason: str = ""
+    quality_reason: str = ""
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
     
     # Accuracy metrics
     std_north: float = 0.0  # meters

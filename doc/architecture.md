@@ -5,8 +5,10 @@ This document summarizes the current code layering after the 2026 structure clea
 ## Directory Layers
 
 ### Root Entry
+- `main.py`
+  Standard GUI entry point.
 - `gui_main.py`
-  Starts the Qt application and hands control to `ui.app.manager.AppManager`.
+  Historical GUI entry point kept for compatibility; both entries hand control to `ui.app.manager.AppManager`.
 
 ### UI Layer (`ui/`)
 - `ui/app/`

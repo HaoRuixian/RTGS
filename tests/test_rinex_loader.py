@@ -5,6 +5,7 @@ import gzip
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from core.gnss_time import GNSSTime
 from core.rinex_loader import (
@@ -12,6 +13,7 @@ from core.rinex_loader import (
     RinexObservationReader,
     SatelliteEphemerisState,
     _parse_float,
+    _rtklib_time_difference,
     read_rinex_observation_header,
 )
 
@@ -27,6 +29,13 @@ def _obs_line(satellite_id: str, values: list[float]) -> str:
 
 def _obs_field(value: float, lli: int | str = " ", ssi: int | str = " ") -> str:
     return f"{value:14.3f}{lli}{ssi}"
+
+
+def _require_fixture(path: Path) -> Path:
+    """缺少可选大型样例文件时跳过依赖该文件的测试。"""
+    if not path.is_file():
+        pytest.skip(f"optional fixture is missing: {path}")
+    return path
 
 
 def _write_sample_obs(path: Path, approx_position=(3875000.0, 332500.0, 5029000.0), interval=15.0) -> Path:
@@ -75,6 +84,33 @@ def test_read_rinex_observation_header_extracts_interval_and_position(tmp_path):
 
 def test_parse_float_accepts_embedded_quality_flag():
     assert _parse_float("6483452.632 5") == 6483452.632
+
+
+def test_rtklib_time_difference_wraps_week_boundary():
+    assert _rtklib_time_difference(4.0, 604790.0) == 14.0
+    assert _rtklib_time_difference(604790.0, 4.0) == -14.0
+
+
+def test_rinex_bds_nav_parser_converts_toe_from_bdt_to_gpst():
+    lines = [
+        "C06 2025 07 05 00 00 00 0.000000000000E+00 0.000000000000E+00 0.000000000000E+00\n",
+        "    1.000000000000E+00 0.000000000000E+00 0.000000000000E+00 0.000000000000E+00\n",
+        "    0.000000000000E+00 0.000000000000E+00 0.000000000000E+00 5.153600000000E+03\n",
+        "    6.047900000000E+05 0.000000000000E+00 0.000000000000E+00 0.000000000000E+00\n",
+        "    0.300000000000E+00 0.000000000000E+00 0.000000000000E+00 0.000000000000E+00\n",
+        "    0.000000000000E+00 0.000000000000E+00 1.000000000000E+03 0.000000000000E+00\n",
+        "    1.000000000000E+00 0.000000000000E+00 0.000000000000E+00 0.000000000000E+00\n",
+        "    0.000000000000E+00 0.000000000000E+00 0.000000000000E+00 0.000000000000E+00\n",
+    ]
+
+    eph = FileEphemerisProvider._parse_nav_record("C06", lines)
+
+    assert eph is not None
+    assert eph["bds_week"] == 1000
+    assert eph["bds_toe"] == 604790.0
+    assert eph["week"] == 2357
+    assert eph["toe"] == 4.0
+    assert eph["toc_week"] == 2373
 
 
 def test_rinex_observation_reader_emits_epochs_with_geometry(tmp_path):
@@ -151,7 +187,7 @@ def test_rinex_observation_reader_handles_long_rinex3_records(tmp_path):
 
 
 def test_broadcast_nav_provider_loads_sample_nav():
-    nav_path = Path("tests/BRDC00IGS_R_20251860000_01D_MN.rnx")
+    nav_path = _require_fixture(Path("tests/BRDC00IGS_R_20251860000_01D_MN.rnx"))
 
     provider = FileEphemerisProvider.from_file(nav_path, file_type="Broadcast RINEX")
     eph = provider.get_ephemeris("G01")
@@ -164,7 +200,7 @@ def test_broadcast_nav_provider_loads_sample_nav():
 
 
 def test_precise_sp3_provider_reads_sample_sp3_epoch():
-    sp3_path = Path("tests/COD0MGXFIN_20252530000_01D_05M_ORB.SP3")
+    sp3_path = _require_fixture(Path("tests/COD0MGXFIN_20252530000_01D_05M_ORB.SP3"))
     provider = FileEphemerisProvider.from_file(sp3_path, file_type="Precise SP3")
 
     utc_epoch = datetime(2025, 9, 9, 23, 59, 42, tzinfo=timezone.utc)
@@ -182,7 +218,7 @@ def test_precise_sp3_provider_reads_sample_sp3_epoch():
 
 
 def test_precise_sp3_provider_reads_gzip_sp3(tmp_path):
-    sp3_path = Path("tests/COD0MGXFIN_20252530000_01D_05M_ORB.SP3")
+    sp3_path = _require_fixture(Path("tests/COD0MGXFIN_20252530000_01D_05M_ORB.SP3"))
     gz_path = tmp_path / "sample.SP3.gz"
     gz_path.write_bytes(gzip.compress(sp3_path.read_bytes()))
 

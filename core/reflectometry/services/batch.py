@@ -16,6 +16,7 @@ from core.reflectometry.models import ArcDirection
 from core.reflectometry.models import ArcSolution, ObservationRequest, ProcessingRunResult, SnrSeries
 from core.reflectometry.logging_utils import configure_logging
 from core.reflectometry.services.arc_builder import ArcBuilder
+from core.reflectometry.services.ekf import EkfReflectometryProcessor
 from core.reflectometry.services.geometry import GeometryResolver
 from core.reflectometry.services.height_estimator import HeightEstimator
 from core.reflectometry.services.preprocessing import SnrPreprocessor
@@ -56,6 +57,9 @@ class BatchProcessor:
         self.logger.info("Loaded %d observations from %s", len(observations), type(self.provider).__name__)
 
         observations = self.geometry_resolver.filter_and_resolve(observations)
+        if self.config.ir.estimation_mode == "ekf":
+            return self._run_ekf(observations)
+
         arcs = self.arc_builder.build_arcs(observations)
         self.logger.info("Built %d candidate arcs", len(arcs))
 
@@ -91,6 +95,40 @@ class BatchProcessor:
             "Completed batch run: %d arc solutions, %d products",
             len(result.arc_solutions),
             len(result.products),
+        )
+        return result
+
+    def _run_ekf(self, observations) -> ProcessingRunResult:
+        ekf_processor = EkfReflectometryProcessor(
+            self.config.ir,
+            self.config.products,
+            station_id=self.config.station.station_id,
+            sampling_interval_seconds=self.config.input.sampling_interval,
+        )
+        outputs = ekf_processor.ingest(observations)
+        products = ekf_processor.build_products(outputs)
+        if products:
+            start_time = products[0].timestamp
+            end_time = products[-1].timestamp
+        else:
+            start_time = datetime.utcnow()
+            end_time = start_time
+        aggregates = self.product_converter.aggregate(products, window_start=start_time, window_end=end_time)
+        result = ProcessingRunResult(
+            station_id=self.config.station.station_id,
+            arc_solutions=[],
+            products=products,
+            window_aggregates=aggregates,
+            metadata={
+                "estimation_mode": "ekf",
+                "observation_count": len(observations),
+                "ekf_output_count": len(outputs),
+            },
+        )
+        self.logger.info(
+            "Completed EKF batch run: %d outputs, %d products",
+            len(outputs),
+            len(products),
         )
         return result
 

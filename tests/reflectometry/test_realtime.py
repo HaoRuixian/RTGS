@@ -56,7 +56,7 @@ def test_realtime_processor_discards_open_arc_samples_outside_window(example_con
             satellite="G12",
             signal="1C",
             snr=45.0 + index,
-            azimuth_deg=120.0,
+            azimuth_deg=180.0,
             elevation_deg=8.0 + index,
             receiver_position=receiver,
         )

@@ -173,14 +173,14 @@ class ConfigDialog(QDialog):
         scroll_layout.addWidget(grp_obs)
         
         # =====================================================================
-        # EPH Stream Configuration (Optional)
+        # EPH/SSR Stream Configuration (Optional)
         # =====================================================================
-        self.chk_eph = QCheckBox("Enable Ephemeris Stream (EPH)")
+        self.chk_eph = QCheckBox("Enable Ephemeris / SSR Stream")
         self.chk_eph.setChecked(self.settings.get('EPH_ENABLED', False))
         self.chk_eph.stateChanged.connect(self.on_eph_enabled_changed)
         scroll_layout.addWidget(self.chk_eph)
         
-        grp_eph = QGroupBox("Ephemeris Stream (EPH)")
+        grp_eph = QGroupBox("Ephemeris / SSR Stream")
         fl_eph = QFormLayout()
         fl_eph.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         fl_eph.setRowWrapPolicy(QFormLayout.DontWrapRows)
@@ -513,7 +513,7 @@ class ConfigDialog(QDialog):
         try:
             import serial.tools.list_ports
             return [port.device for port in serial.tools.list_ports.comports()]
-        except:
+        except (ImportError, OSError):
             return ["COM1", "COM2", "COM3"]
 
     def on_connect(self):
@@ -616,9 +616,9 @@ class ConfigDialog(QDialog):
         if self.chk_eph.isChecked():
             eph_source = self.eph_source.currentText()
             if eph_source == "NTRIP Server" and not self.eph_h.text().strip():
-                raise ValueError("Ephemeris stream is missing the NTRIP host.")
+                raise ValueError("Ephemeris/SSR stream is missing the NTRIP host.")
             if eph_source == "Serial Port" and not self.eph_port.currentText().strip():
-                raise ValueError("Ephemeris stream is missing the serial port.")
+                raise ValueError("Ephemeris/SSR stream is missing the serial port.")
             if eph_source == "File" and not self.eph_file_path.text().strip():
                 raise ValueError("Please select an ephemeris file.")
 
@@ -831,7 +831,7 @@ class ConfigDialog(QDialog):
         # Update general settings
         try:
             target_systems = [s.strip() for s in self.target_systems.text().split(',')]
-        except:
+        except AttributeError:
             target_systems = ['G', 'R', 'E', 'C', 'J', 'S', 'I']
             
         # Read coordinates from QLineEdit

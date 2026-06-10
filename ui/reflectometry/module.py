@@ -67,6 +67,7 @@ from core.reflectometry import (
 from core.reflectometry.config import minimum_required_arc_samples
 from core.reflectometry.models import SnrSeries
 from core.reflectometry.rinex_batch import build_observation_records_from_epoch
+from core.reflectometry.signal_utils import signal_matches
 from core.reflectometry.services.geometry import matches_reflection_zones
 from core.reflectometry.models import ArcSolution, ProductResult
 from ui.shared.colors import get_sys_color
@@ -1225,9 +1226,9 @@ class ReflectometryModule(QMainWindow):
             return False
         if constellation in exclude_constellations:
             return False
-        if include_signals and signal not in include_signals:
+        if include_signals and not signal_matches(signal, include_signals):
             return False
-        if signal in exclude_signals:
+        if signal_matches(signal, exclude_signals):
             return False
         return True
 

@@ -45,6 +45,7 @@ processing:
   outlier_threshold: 3.5
 
 ir:
+  estimation_mode: "spectrum"
   wavelength_source: "built_in"
   wavelength_overrides_m: {}
   frequency_search_mode: "reflector_height"
@@ -64,6 +65,25 @@ ir:
     min_width_bins: 1.0
     prefer_high_power: true
   harmonic_check: true
+  ekf:
+    q_rh: 5.0e-5
+    q_amplitude: 6.0e-5
+    measurement_variance: 1.5
+    initial_rh_m: 8.0
+    initial_rh_variance: 1.0
+    local_state_variance: 1.0
+    init_min_samples: 20
+    init_max_samples: 600
+    rh_init_min_height_m: null
+    rh_init_max_height_m: null
+    rh_init_min_samples: 80
+    rh_init_min_arcs: 1
+    rh_init_max_arcs: 8
+    rh_init_max_samples_per_arc: 300
+    output_interval_seconds: 300
+    output_window_seconds: 60
+    min_active_arcs: 1
+    max_time_gap_seconds: 90.0
 
 geometry:
   use_external_az_el: true
@@ -99,7 +119,7 @@ products:
   dynamic_sea_level_igg3_k1: 2.0
   dynamic_sea_level_min_weight: 1.0e-12
   dynamic_sea_level_regularization: 1.0e-12
-  dynamic_sea_level_normalize_design: false
+  dynamic_sea_level_normalize_design: true
   snow_depth_reference_height:
 
 output:
@@ -207,7 +227,67 @@ class PeakSelectionConfig:
 
 
 @dataclass(slots=True)
+class EkfConfig:
+    q_rh: float = 5e-5
+    q_amplitude: float = 6e-5
+    measurement_variance: float = 1.5
+    initial_rh_m: float | None = None
+    initial_rh_variance: float = 1.0
+    local_state_variance: float = 1.0
+    init_min_samples: int = 20
+    init_max_samples: int = 600
+    rh_init_min_height_m: float | None = None
+    rh_init_max_height_m: float | None = None
+    rh_init_min_samples: int = 80
+    rh_init_min_arcs: int = 1
+    rh_init_max_arcs: int = 8
+    rh_init_max_samples_per_arc: int = 300
+    output_interval_seconds: int = 300
+    output_window_seconds: int = 60
+    min_active_arcs: int = 1
+    max_time_gap_seconds: float = 90.0
+
+    def __post_init__(self) -> None:
+        if self.q_rh < 0:
+            raise ValueError("ir.ekf.q_rh must be >= 0")
+        if self.q_amplitude < 0:
+            raise ValueError("ir.ekf.q_amplitude must be >= 0")
+        if self.measurement_variance <= 0:
+            raise ValueError("ir.ekf.measurement_variance must be > 0")
+        if self.initial_rh_variance <= 0:
+            raise ValueError("ir.ekf.initial_rh_variance must be > 0")
+        if self.local_state_variance <= 0:
+            raise ValueError("ir.ekf.local_state_variance must be > 0")
+        if self.init_min_samples < 3:
+            raise ValueError("ir.ekf.init_min_samples must be >= 3")
+        if self.init_max_samples < self.init_min_samples:
+            raise ValueError("ir.ekf.init_max_samples must be >= init_min_samples")
+        if self.rh_init_min_height_m is not None and self.rh_init_max_height_m is not None:
+            if self.rh_init_min_height_m >= self.rh_init_max_height_m:
+                raise ValueError("ir.ekf.rh_init_min_height_m must be < rh_init_max_height_m")
+        if self.rh_init_min_samples < 3:
+            raise ValueError("ir.ekf.rh_init_min_samples must be >= 3")
+        if self.rh_init_min_arcs <= 0:
+            raise ValueError("ir.ekf.rh_init_min_arcs must be > 0")
+        if self.rh_init_max_arcs <= 0:
+            raise ValueError("ir.ekf.rh_init_max_arcs must be > 0")
+        if self.rh_init_min_arcs > self.rh_init_max_arcs:
+            raise ValueError("ir.ekf.rh_init_min_arcs must be <= rh_init_max_arcs")
+        if self.rh_init_max_samples_per_arc < self.rh_init_min_samples:
+            raise ValueError("ir.ekf.rh_init_max_samples_per_arc must be >= rh_init_min_samples")
+        if self.output_interval_seconds <= 0:
+            raise ValueError("ir.ekf.output_interval_seconds must be > 0")
+        if self.output_window_seconds <= 0:
+            raise ValueError("ir.ekf.output_window_seconds must be > 0")
+        if self.min_active_arcs <= 0:
+            raise ValueError("ir.ekf.min_active_arcs must be > 0")
+        if self.max_time_gap_seconds <= 0:
+            raise ValueError("ir.ekf.max_time_gap_seconds must be > 0")
+
+
+@dataclass(slots=True)
 class IrConfig:
+    estimation_mode: str = "spectrum"
     wavelength_source: str = "built_in"
     wavelength_overrides_m: dict[str, float] = field(default_factory=dict)
     frequency_search_mode: str = "reflector_height"
@@ -221,8 +301,12 @@ class IrConfig:
     harmonic_check: bool = True
     use_rising_arcs: bool = True
     use_setting_arcs: bool = True
+    ekf: EkfConfig = field(default_factory=EkfConfig)
 
     def __post_init__(self) -> None:
+        self.estimation_mode = str(self.estimation_mode or "spectrum").lower()
+        if self.estimation_mode not in {"spectrum", "ekf"}:
+            raise ValueError("ir.estimation_mode must be 'spectrum' or 'ekf'")
         if self.min_reflector_height <= 0:
             raise ValueError("ir.min_reflector_height must be > 0")
         if self.max_reflector_height <= self.min_reflector_height:
@@ -263,7 +347,7 @@ class ProductsConfig:
     dynamic_sea_level_igg3_k1: float = 2.0
     dynamic_sea_level_min_weight: float = 1e-12
     dynamic_sea_level_regularization: float = 1e-12
-    dynamic_sea_level_normalize_design: bool = False
+    dynamic_sea_level_normalize_design: bool = True
     snow_depth_reference_height: float | None = None
 
     def __post_init__(self) -> None:
@@ -351,6 +435,14 @@ def _as_list(value: Any) -> list[Any]:
     if isinstance(value, tuple):
         return list(value)
     return [value]
+
+
+def _optional_float(value: Any, *, default: float) -> float:
+    if value is None:
+        return float(default)
+    if isinstance(value, str) and value.strip().lower() in {"", "auto", "none", "null"}:
+        return float(default)
+    return float(value)
 
 
 def _parse_angle_windows(value: Any) -> list[list[float]]:
@@ -445,7 +537,7 @@ def load_config(path: str | Path) -> ReflectorConfig:
             signals=[str(item) for item in _as_list(input_raw.get("signals", []))],
             exclude_constellations=[str(item) for item in _as_list(input_raw.get("exclude_constellations", []))],
             exclude_signals=[str(item) for item in _as_list(input_raw.get("exclude_signals", []))],
-            sampling_interval=float(input_raw.get("sampling_interval", 30.0) or 30.0),
+            sampling_interval=_optional_float(input_raw.get("sampling_interval"), default=30.0),
         ),
         processing=ProcessingConfig(
             min_elevation_deg=effective_min_elevation,
@@ -463,6 +555,7 @@ def load_config(path: str | Path) -> ReflectorConfig:
             outlier_threshold=float(processing_raw.get("outlier_threshold", 3.5)),
         ),
         ir=IrConfig(
+            estimation_mode=ir_raw.get("estimation_mode", "spectrum"),
             wavelength_source=ir_raw.get("wavelength_source", "built_in"),
             wavelength_overrides_m=ir_raw.get("wavelength_overrides_m", {}) or {},
             frequency_search_mode=ir_raw.get("frequency_search_mode", "reflector_height"),
@@ -476,6 +569,7 @@ def load_config(path: str | Path) -> ReflectorConfig:
             harmonic_check=bool(ir_raw.get("harmonic_check", True)),
             use_rising_arcs=bool(ir_raw.get("use_rising_arcs", True)),
             use_setting_arcs=bool(ir_raw.get("use_setting_arcs", True)),
+            ekf=EkfConfig(**((ir_raw.get("ekf") or {}) | {})),
         ),
         geometry=GeometryConfig(
             use_external_az_el=bool(geometry_raw.get("use_external_az_el", True)),
@@ -508,7 +602,7 @@ def load_config(path: str | Path) -> ReflectorConfig:
             dynamic_sea_level_igg3_k1=float(products_raw.get("dynamic_sea_level_igg3_k1", 2.0)),
             dynamic_sea_level_min_weight=float(products_raw.get("dynamic_sea_level_min_weight", 1e-12)),
             dynamic_sea_level_regularization=float(products_raw.get("dynamic_sea_level_regularization", 1e-12)),
-            dynamic_sea_level_normalize_design=bool(products_raw.get("dynamic_sea_level_normalize_design", False)),
+            dynamic_sea_level_normalize_design=bool(products_raw.get("dynamic_sea_level_normalize_design", True)),
             snow_depth_reference_height=products_raw.get("snow_depth_reference_height"),
         ),
         output=OutputConfig(
@@ -543,6 +637,7 @@ def config_to_dict(config: ReflectorConfig) -> dict[str, Any]:
 
 __all__ = [
     "DEFAULT_CONFIG_YAML",
+    "EkfConfig",
     "GeometryConfig",
     "InputConfig",
     "IrConfig",

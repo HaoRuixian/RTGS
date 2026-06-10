@@ -442,17 +442,30 @@ class PositioningModule(QMainWindow):
         dlg = PositioningConfigDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             params = dlg.get_settings()
-            # Apply to positioning thread and positioner
-            self.append_log("Positioning settings updated")
-            # Update min satellites and elevation
-            min_sats = params.get('min_satellites', None)
-            min_el = params.get('cutoff_elevation_deg', None)
-            if min_sats is not None or min_el is not None:
-                self.positioning_thread.set_parameters(min_satellites=min_sats, min_elevation=min_el)
-            # Update weight mode
-            weight = params.get('weight_mode', None)
-            if weight and hasattr(self.positioning_thread.positioner, 'WEIGHT_MODE'):
-                self.positioning_thread.positioner.WEIGHT_MODE = weight
+            self.positioning_thread.update_positioning_settings(params)
+            self._ensure_stream_target_systems_for_positioning(params.get("gnss_systems", []), announce=True)
+            active_systems = ",".join(params.get("gnss_systems", []))
+            gps_only = "ON" if params.get("prefer_gps_only") else "OFF"
+            self.append_log(f"Positioning settings updated: systems={active_systems}, prefer GPS-only={gps_only}")
+
+    def _ensure_stream_target_systems_for_positioning(self, gnss_systems=None, announce: bool = False) -> None:
+        """Keep the RTCM/RINEX stream filter wide enough for selected positioning systems."""
+        selected = list(gnss_systems or getattr(self.positioning_thread.positioner, "gnss_systems", []) or [])
+        if not selected:
+            return
+
+        config = get_global_config()
+        current = [str(item).strip().upper()[:1] for item in (config.target_systems or []) if str(item).strip()]
+        expanded = list(current)
+        for system in selected:
+            normalized = str(system).strip().upper()[:1]
+            if normalized and normalized not in expanded:
+                expanded.append(normalized)
+
+        if expanded != current:
+            config.update_general_settings({"target_systems": expanded})
+            if announce:
+                self.append_log(f"Stream target systems expanded for positioning: {','.join(expanded)}")
 
     def toggle_positioning(self):
         """Start/stop positioning."""
@@ -501,6 +514,7 @@ class PositioningModule(QMainWindow):
     def start_streams(self):
         """Start IO and DataProcessing threads only (do not start positioning)."""
         self._apply_replay_ui_policy(announce=False)
+        self._ensure_stream_target_systems_for_positioning()
         # Validate configuration minimal requirements
         obs_source = self.settings.get('OBS', {}).get('source')
         if not self.settings.get('OBS', {}).get('host') and obs_source == 'NTRIP Server':
@@ -621,6 +635,12 @@ class PositioningModule(QMainWindow):
     @Slot(object)
     def on_observation_epoch(self, epoch_obs):
         """Receive observation epoch from monitoring and forward to positioning."""
+        if epoch_obs is None:
+            return
+        if getattr(epoch_obs, "utc_datetime", None) is None:
+            return
+        if not getattr(epoch_obs, "satellites", None):
+            return
         # Submit to positioning ring buffer
         self.positioning_ring_buffer.put(epoch_obs, block=False)
 

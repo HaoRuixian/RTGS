@@ -1,4 +1,4 @@
-"""Convert an RTCM file into a RINEX observation file from the command line."""
+"""Convert a GNSS observation stream file into a RINEX observation file."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ DEFAULT_SYS_OBS_TYPES = {
 
 @dataclass
 class ScanSummary:
-    """Metadata discovered during the RTCM scan pass."""
+    """Metadata discovered during the GNSS stream scan pass."""
 
     input_path: Path
     epoch_count: int = 0
@@ -49,11 +49,16 @@ class ScanSummary:
     interval_seconds: float = 1.0
     sys_obs_types: Dict[str, list[str]] = field(default_factory=dict)
     approx_position: Optional[list[float]] = None
+    receiver_type: str = ""
+    receiver_serial: str = ""
+    receiver_version: str = ""
+    antenna_type: str = ""
+    antenna_number: str = ""
 
 
 @dataclass
 class ConversionResult:
-    """Result for one RTCM-to-RINEX conversion run."""
+    """Result for one GNSS-stream-to-RINEX conversion run."""
 
     output_path: Path
     summary: ScanSummary
@@ -254,6 +259,25 @@ def _build_handler(handler_factory, reference_utc: Optional[datetime]) -> RTCMHa
 def _infer_reference_utc(input_path: Path) -> Optional[datetime]:
     stem = input_path.stem
 
+    match = re.search(r"(?<!\d)(20\d{2})(\d{3})(\d{2})(?!\d)", stem)
+    if match:
+        year = int(match.group(1))
+        day_of_year = int(match.group(2))
+        hour = int(match.group(3))
+        try:
+            return datetime(year, 1, 1, hour, tzinfo=timezone.utc) + timedelta(days=day_of_year - 1)
+        except ValueError:
+            pass
+
+    match = re.search(r"(?<!\d)(20\d{2})(\d{3})(?!\d)", stem)
+    if match:
+        year = int(match.group(1))
+        day_of_year = int(match.group(2))
+        try:
+            return datetime(year, 1, 1, tzinfo=timezone.utc) + timedelta(days=day_of_year - 1)
+        except ValueError:
+            pass
+
     match = re.search(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)", stem)
     if match:
         year = int(match.group(1))
@@ -262,7 +286,7 @@ def _infer_reference_utc(input_path: Path) -> Optional[datetime]:
         try:
             return datetime(year, month, day, tzinfo=timezone.utc)
         except ValueError:
-            return None
+            pass
 
     match = re.search(r"(?<!\d)(\d{2})(\d{2})(\d{2})(?!\d)", stem)
     if match:
@@ -272,9 +296,35 @@ def _infer_reference_utc(input_path: Path) -> Optional[datetime]:
         try:
             return datetime(year, month, day, tzinfo=timezone.utc)
         except ValueError:
-            return None
+            pass
 
     return None
+
+
+def _clean_header_value(value: object) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _update_summary_from_handler(summary: ScanSummary, handler: RTCMHandler) -> None:
+    receiver_type = _clean_header_value(getattr(handler, "last_receiver_type_descriptor", ""))
+    if receiver_type:
+        summary.receiver_type = receiver_type
+
+    receiver_serial = _clean_header_value(getattr(handler, "last_receiver_serial_number", ""))
+    if receiver_serial:
+        summary.receiver_serial = receiver_serial
+
+    receiver_version = _clean_header_value(getattr(handler, "last_receiver_firmware_version", ""))
+    if receiver_version:
+        summary.receiver_version = receiver_version
+
+    antenna_type = _clean_header_value(getattr(handler, "last_antenna_descriptor", ""))
+    if antenna_type:
+        summary.antenna_type = antenna_type
+
+    antenna_number = _clean_header_value(getattr(handler, "last_antenna_serial_number", ""))
+    if antenna_number:
+        summary.antenna_number = antenna_number
 
 
 def scan_rtcm_file(
@@ -288,7 +338,7 @@ def scan_rtcm_file(
     stable_epoch_threshold: int = 100,
     require_approx_position: bool = True,
 ) -> ScanSummary:
-    """Scan an RTCM file to discover observation metadata before writing RINEX."""
+    """Scan a GNSS stream file to discover observation metadata before writing RINEX."""
 
     input_path = Path(input_path)
     reader_factory = reader_factory or MixedGNSSReader
@@ -342,6 +392,7 @@ def scan_rtcm_file(
                     summary.approx_position = [float(value) for value in approx_position[:3]]
                 except (TypeError, ValueError):
                     summary.approx_position = None
+            _update_summary_from_handler(summary, handler)
 
             if signal_changed:
                 stable_epoch_count = 0
@@ -360,6 +411,7 @@ def scan_rtcm_file(
                 ):
                     break
 
+    _update_summary_from_handler(summary, handler)
     summary.sys_obs_types = _build_sys_obs_types(signal_ids_by_system)
 
     selected_counter = reasonable_delta_counter or delta_counter
@@ -385,8 +437,11 @@ def convert_rtcm_file_to_rinex(
     country_code: str = "CHN",
     marker_name: Optional[str] = None,
     marker_number: str = "0",
-    receiver_type: str = "Generic",
+    receiver_type: Optional[str] = None,
+    receiver_serial: str = "",
+    receiver_version: str = "",
     antenna_type: str = "UNKNOWN",
+    antenna_number: str = "",
     datatype: str = "MO",
     interval_seconds: Optional[float] = None,
     period_code: Optional[str] = None,
@@ -416,7 +471,7 @@ def convert_rtcm_file_to_rinex(
         )
 
     if summary.epoch_count == 0:
-        raise ValueError(f"No observation epochs found in RTCM file: {input_path}")
+        raise ValueError(f"No observation epochs found in GNSS stream file: {input_path}")
 
     target_interval_seconds = float(interval_seconds or summary.interval_seconds or 1.0)
     target_interval_seconds = max(0.001, target_interval_seconds)
@@ -435,6 +490,14 @@ def convert_rtcm_file_to_rinex(
         daily_file_start_time_utc = _normalize_utc_datetime(resolved_reference_utc)
     writer_file_time = _utc_to_gps_file_datetime(daily_file_start_time_utc or effective_first_epoch)
 
+    effective_receiver_type = _clean_header_value(receiver_type) or summary.receiver_type or "Generic"
+    effective_receiver_serial = _clean_header_value(receiver_serial) or summary.receiver_serial
+    effective_receiver_version = _clean_header_value(receiver_version) or summary.receiver_version
+    effective_antenna_type = _clean_header_value(antenna_type)
+    if not effective_antenna_type or effective_antenna_type.upper() == "UNKNOWN":
+        effective_antenna_type = summary.antenna_type or "UNKNOWN"
+    effective_antenna_number = _clean_header_value(antenna_number) or summary.antenna_number
+
     writer = RINEX3Writer(
         str(output_target),
         marker_name=marker_name or station_code,
@@ -447,6 +510,9 @@ def convert_rtcm_file_to_rinex(
         datatype=datatype,
         file_time=writer_file_time,
         header_interval_seconds=target_interval_seconds,
+        antenna_number=effective_antenna_number,
+        receiver_serial=effective_receiver_serial,
+        receiver_version=effective_receiver_version,
     )
 
     if not writer.open():
@@ -460,8 +526,11 @@ def convert_rtcm_file_to_rinex(
     try:
         if not writer.write_header(
             sys_obs_types=summary.sys_obs_types,
-            receiver_type=receiver_type,
-            antenna_type=antenna_type,
+            receiver_type=effective_receiver_type,
+            receiver_serial=effective_receiver_serial,
+            receiver_version=effective_receiver_version,
+            antenna_type=effective_antenna_type,
+            antenna_number=effective_antenna_number,
         ):
             raise OSError(f"Failed to write RINEX header: {writer.filename}")
 
@@ -514,7 +583,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     prog_name = Path(sys.argv[0]).stem or "rtcm_to_rinex"
     parser = argparse.ArgumentParser(
         prog=prog_name,
-        description="Convert RTCM observation data to a RINEX 3 observation file.",
+        description="Convert RTCM/Unicore observation data to a RINEX 3 observation file.",
         formatter_class=argparse.RawTextHelpFormatter,
         usage=(
             f"{prog_name} <input.rtcm3/dat> [-o OUT] [-i SEC] [-d YYYY-MM-DD] "
@@ -528,7 +597,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             f"  {prog_name} sample.rtcm3 -o output -i 15 -p 01D\n"
         ),
     )
-    parser.add_argument("input", type=Path, help="Input RTCM file.")
+    parser.add_argument("input", type=Path, help="Input RTCM/Unicore stream file.")
 
     common = parser.add_argument_group("common options")
     advanced = parser.add_argument_group("advanced options")
@@ -542,8 +611,17 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     common.add_argument("-s", "--site", dest="station_code", default="RTGS", help="Station code in the long filename.")
     common.add_argument("-n", "--name", dest="marker_name", default=None, help="Marker name written to the header.")
-    common.add_argument("-r", "--rx", dest="receiver_type", default="Generic", help="Receiver type written to the header.")
+    common.add_argument("-r", "--rx", dest="receiver_type", default=None, help="Receiver type written to the header.")
+    common.add_argument("--rx-serial", dest="receiver_serial", default="", help="Receiver serial number for the header.")
+    common.add_argument("--rx-version", dest="receiver_version", default="", help="Receiver firmware/version for the header.")
     common.add_argument("-a", "--ant", dest="antenna_type", default="UNKNOWN", help="Antenna type written to the header.")
+    common.add_argument(
+        "--ant-num",
+        "--antenna-number",
+        dest="antenna_number",
+        default="",
+        help="Antenna serial number for the header.",
+    )
     common.add_argument(
         "-i",
         "--interval",
@@ -582,6 +660,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--marker-name", dest="marker_name", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     parser.add_argument("--marker-number", dest="marker_number", default="0", help=argparse.SUPPRESS)
     parser.add_argument("--receiver-type", dest="receiver_type", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    parser.add_argument("--receiver-serial", dest="receiver_serial", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    parser.add_argument("--receiver-version", dest="receiver_version", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     parser.add_argument("--antenna-type", dest="antenna_type", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
     parser.add_argument("--datatype", dest="datatype", default="MO", help=argparse.SUPPRESS)
     parser.add_argument("--approx-position", dest="approx_position", nargs=3, type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
@@ -595,7 +675,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     input_path = args.input.resolve()
     if not input_path.is_file():
-        parser.error(f"Input RTCM file does not exist: {input_path}")
+        parser.error(f"Input GNSS stream file does not exist: {input_path}")
 
     reference_utc = None
     if args.reference_date:
@@ -614,7 +694,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             marker_name=args.marker_name,
             marker_number=args.marker_number,
             receiver_type=args.receiver_type,
+            receiver_serial=args.receiver_serial,
+            receiver_version=args.receiver_version,
             antenna_type=args.antenna_type,
+            antenna_number=args.antenna_number,
             datatype=args.datatype,
             interval_seconds=args.interval,
             period_code=args.period,
@@ -622,10 +705,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             reference_utc=reference_utc,
         )
     except Exception as exc:
-        print(f"RTCM to RINEX conversion failed: {exc}", file=sys.stderr)
+        print(f"GNSS stream to RINEX conversion failed: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Converted RTCM to RINEX: {result.output_path}")
+    print(f"Converted GNSS stream to RINEX: {result.output_path}")
     print(f"Epochs written: {result.written_epoch_count}")
     print(f"Interval: {result.summary.interval_seconds:g}s")
     return 0

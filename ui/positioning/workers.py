@@ -112,6 +112,40 @@ class PositioningThread(threading.Thread):
         self.last_log_time = time.time()
         self.last_position = None
         self.first_solution = True
+        self.last_diagnostic_log_time = 0.0
+        self.last_solution_source = ""
+
+    def update_positioning_settings(self, settings: dict) -> None:
+        """Apply SPP settings to the live positioner."""
+        if not settings:
+            return
+
+        min_satellites = settings.get("min_satellites")
+        if min_satellites is not None:
+            self.min_satellites = int(min_satellites)
+            self.positioner.MIN_SATELLITES = int(min_satellites)
+
+        min_elevation = settings.get("cutoff_elevation_deg", settings.get("min_elevation"))
+        if min_elevation is not None:
+            self.min_elevation = float(min_elevation)
+            self.positioner.MIN_ELEVATION = float(min_elevation)
+
+        if "max_pdop" in settings:
+            self.positioner.max_pdop = float(settings["max_pdop"])
+        if "ionosphere_option" in settings:
+            self.positioner.ionosphere_option = settings["ionosphere_option"]
+        if "troposphere_model" in settings:
+            self.positioner.troposphere_model = settings["troposphere_model"]
+        if "gnss_systems" in settings:
+            self.positioner.gnss_systems = SPPPositioner.normalize_gnss_systems(settings["gnss_systems"])
+        if "prefer_gps_only" in settings:
+            self.positioner.prefer_gps_only = bool(settings["prefer_gps_only"])
+        if "weight_mode" in settings:
+            self.positioner.WEIGHT_MODE = settings["weight_mode"]
+        if "uncertain_std_pos" in settings:
+            self.positioner.uncertain_std_pos = float(settings["uncertain_std_pos"])
+        if "fixed_std_pos" in settings:
+            self.positioner.fixed_std_pos = float(settings["fixed_std_pos"])
         
     def run(self):
         """
@@ -251,6 +285,7 @@ class PositioningThread(threading.Thread):
                 return None
             
             if result is None:
+                self._emit_failure_diagnostics(getattr(self.positioner, "last_diagnostics", {}))
                 return None
             
             # Convert RTCMHandler's PositioningResult to our PositioningSolution
@@ -260,6 +295,7 @@ class PositioningThread(threading.Thread):
             
             # Timing
             solution.processing_time_ms = (time.time() - start_time) * 1000
+            self._emit_solution_diagnostics(solution)
             
             return solution
         
@@ -314,6 +350,13 @@ class PositioningThread(threading.Thread):
             status=status,
             mode=self.mode,
             time_offsets=getattr(result, 'time_offsets', {}),
+            used_satellites=list(getattr(result, "used_satellites", []) or []),
+            used_system_counts=dict(getattr(result, "used_system_counts", {}) or {}),
+            candidate_system_counts=dict(getattr(result, "candidate_system_counts", {}) or {}),
+            solution_source=str(getattr(result, "solution_source", "") or ""),
+            fallback_reason=str(getattr(result, "fallback_reason", "") or ""),
+            quality_reason=str(getattr(result, "quality_reason", "") or ""),
+            diagnostics=dict(getattr(self.positioner, "last_diagnostics", {}) or {}),
         )
         
         # Compute residuals statistics
@@ -324,6 +367,79 @@ class PositioningThread(threading.Thread):
             solution.residuals_max = float(np.max(np.abs(residuals_array)))
         
         return solution
+
+    @staticmethod
+    def _format_counts(counts: dict) -> str:
+        if not counts:
+            return "-"
+        return ",".join(f"{system}:{int(count)}" for system, count in sorted(counts.items()))
+
+    @staticmethod
+    def _format_satellites(satellites: list[str], limit: int = 24) -> str:
+        if not satellites:
+            return "-"
+        ordered = sorted(str(item) for item in satellites)
+        if len(ordered) <= limit:
+            return ",".join(ordered)
+        shown = ",".join(ordered[:limit])
+        return f"{shown},...(+{len(ordered) - limit})"
+
+    def _emit_solution_diagnostics(self, solution: PositioningSolution) -> None:
+        now = time.time()
+        source = solution.solution_source or "Unknown"
+        should_log = (
+            self.last_diagnostic_log_time == 0.0
+            or source != self.last_solution_source
+            or bool(solution.fallback_reason)
+            or now - self.last_diagnostic_log_time >= 15.0
+        )
+        if not should_log:
+            return
+
+        candidate_counts = self._format_counts(solution.candidate_system_counts)
+        used_counts = self._format_counts(solution.used_system_counts)
+        used_satellites = self._format_satellites(solution.used_satellites)
+        message = (
+            f"[{self.name}] SPP used {solution.num_satellites} satellites "
+            f"({used_counts}); candidates {candidate_counts}; source={source}; sats={used_satellites}"
+        )
+        if solution.fallback_reason:
+            message += f"; fallback={solution.fallback_reason}"
+        if solution.quality_reason:
+            message += f"; quality={solution.quality_reason}"
+        self.signals.log_signal.emit(message)
+
+        reject_counts = (solution.diagnostics or {}).get("reject_counts", {})
+        if reject_counts:
+            self.signals.log_signal.emit(
+                f"[{self.name}] SPP rejected observations: {self._format_counts(reject_counts)}"
+            )
+
+        self.last_diagnostic_log_time = now
+        self.last_solution_source = source
+
+    def _emit_failure_diagnostics(self, diagnostics: dict) -> None:
+        now = time.time()
+        if now - self.last_diagnostic_log_time < 15.0:
+            return
+
+        raw_counts = self._format_counts(diagnostics.get("raw_system_counts", {}))
+        extracted_counts = self._format_counts(diagnostics.get("extracted_system_counts", {}))
+        selected_counts = self._format_counts(diagnostics.get("selected_system_counts", {}))
+        reason = diagnostics.get("failure_reason", "no solution")
+        solver_reason = diagnostics.get("solver_failure_reason", "")
+        if solver_reason:
+            reason = f"{reason}; {solver_reason}"
+        self.signals.log_signal.emit(
+            f"[{self.name}] SPP no solution: {reason}; raw {raw_counts}; "
+            f"extracted {extracted_counts}; selected {selected_counts}"
+        )
+        reject_counts = diagnostics.get("reject_counts", {})
+        if reject_counts:
+            self.signals.log_signal.emit(
+                f"[{self.name}] SPP rejected observations: {self._format_counts(reject_counts)}"
+            )
+        self.last_diagnostic_log_time = now
     
     def set_ring_buffer(self, ring_buffer: RingBuffer):
         """

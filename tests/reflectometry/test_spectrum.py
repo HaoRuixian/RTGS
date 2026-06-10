@@ -8,6 +8,7 @@ import numpy as np
 
 from core.geo_utils import get_freq
 from core.reflectometry.models import SnrSeries
+from core.reflectometry.services.preprocessing import _resolve_wavelength
 from core.reflectometry.services.spectrum import SpectrumAnalyzer
 
 
@@ -41,3 +42,7 @@ def test_lsp_inversion_recovers_reflector_height_from_descending_arc(example_con
     assert result.candidates
     assert abs(result.candidates[0].reflector_height_m - true_height_m) < 0.12
     assert result.noise_floor == float(np.mean(result.power))
+
+
+def test_wavelength_resolution_accepts_snr_observation_type_prefix():
+    assert _resolve_wavelength("C", "S2I") == _resolve_wavelength("C", "2I")

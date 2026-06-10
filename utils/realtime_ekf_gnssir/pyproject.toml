@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "realtime-ekf-gnssir"
+version = "0.1.0"
+description = "Standalone realtime EKF-GNSSIR sea-level inversion Web service."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.21.0",
+  "pandas>=2.2.0",
+  "scipy>=1.11.0",
+  "PyYAML>=6.0",
+  "pyrtcm>=1.1.0",
+  "pynmeagps>=1.0.0",
+  "pyserial>=3.5",
+]
+
+[project.scripts]
+realtime-ekf-gnssir = "realtime_ekf_gnssir.__main__:main"
+
+[tool.setuptools]
+include-package-data = true
+packages = [
+  "realtime_ekf_gnssir",
+  "realtime_ekf_gnssir._vendor",
+  "realtime_ekf_gnssir._vendor.core",
+  "realtime_ekf_gnssir._vendor.core.reflectometry",
+  "realtime_ekf_gnssir._vendor.core.reflectometry.services",
+  "realtime_ekf_gnssir._vendor.rt_ntrip_rinex_service",
+]
+
+[tool.setuptools.package-dir]
+realtime_ekf_gnssir = "."
+
+[tool.setuptools.package-data]
+realtime_ekf_gnssir = [
+  "config/*.yaml",
+  "config/ir/*.yaml",
+  "static/*",
+]

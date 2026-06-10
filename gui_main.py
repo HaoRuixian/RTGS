@@ -19,13 +19,20 @@ real-time GNSS data processing and analysis.
 """
 
 import sys
-from PySide6.QtWidgets import QApplication
-from ui.app_manager import AppManager
 
-def main():
+from PySide6.QtWidgets import QApplication
+
+from ui.app.manager import AppManager
+ 
+
+APPLICATION_NAME = "RTGS - RealTimeGNSS Studio"
+APPLICATION_VERSION = "0.1"
+
+
+def main() -> None:
     app = QApplication(sys.argv)
-    app.setApplicationName("RTGS - RealTimeGNSS Studio")
-    app.setApplicationVersion("0.1")
+    app.setApplicationName(APPLICATION_NAME)
+    app.setApplicationVersion(APPLICATION_VERSION)
 
     manager = AppManager(app)
     manager.show_launch_screen()

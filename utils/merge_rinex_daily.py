@@ -124,6 +124,8 @@ def merge_rinex_daily_files(
     *,
     marker_name: str,
     receiver_type: str,
+    receiver_serial: str = "",
+    receiver_version: str = "",
     station_code: Optional[str] = None,
     receiver_number: str = "00",
     country_code: str = "CHN",
@@ -195,6 +197,8 @@ def merge_rinex_daily_files(
             header_interval_seconds=target_interval_seconds,
             time_system=time_system,
             antenna_number=antenna_number,
+            receiver_serial=receiver_serial,
+            receiver_version=receiver_version,
         )
         if not daily_writer.open():
             raise OSError(f"Failed to open daily RINEX output: {daily_writer.filename}")
@@ -203,6 +207,8 @@ def merge_rinex_daily_files(
         if not daily_writer.write_header(
             sys_obs_types=combined_sys_obs_types,
             receiver_type=receiver_type,
+            receiver_serial=receiver_serial,
+            receiver_version=receiver_version,
             antenna_type=antenna_type,
             antenna_number=antenna_number,
         ):
@@ -262,6 +268,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("output_dir", type=Path, help="Directory for daily output files.")
     parser.add_argument("--marker-name", required=True, help="Marker name to write into the daily headers.")
     parser.add_argument("--receiver-type", required=True, help="Receiver type string for the daily headers.")
+    parser.add_argument("--receiver-serial", default="", help="Receiver serial number for the daily headers.")
+    parser.add_argument("--receiver-version", default="", help="Receiver firmware/version for the daily headers.")
     parser.add_argument("--station-code", default=None, help="Optional 4-character station code for long filenames.")
     parser.add_argument("--receiver-number", default="00", help="Receiver number for long filenames.")
     parser.add_argument("--country-code", default="CHN", help="Country code for long filenames.")
@@ -293,6 +301,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             args.output_dir.resolve(),
             marker_name=args.marker_name,
             receiver_type=args.receiver_type,
+            receiver_serial=args.receiver_serial,
+            receiver_version=args.receiver_version,
             station_code=args.station_code,
             receiver_number=args.receiver_number,
             country_code=args.country_code,

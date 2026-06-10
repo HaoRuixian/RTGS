@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+output/
+log/
+logs/
+web_stdout.log
+web_stderr.log
+config/app.local.yaml

@@ -955,7 +955,7 @@ class MonitoringModule(QMainWindow):
             info_text += f"Duration: {self.get_recording_duration()}\n"
             info_text += f"Current file: {self.get_current_filename()}\n"
             info_text += f"Split interval: {self.logging_settings.get('split_minutes', 60)} min\n"
-            if self.logging_settings.get('format') == 'csv':
+            if self.logging_settings.get('format') in {'csv', 'rinex', 'rinex_nav', 'sp3'}:
                 info_text += f"Sampling: every {self.logging_settings.get('sample_interval', 1)} sec\n"
         else:
             info_text += "Status: ⚪ NOT RECORDING\n"

@@ -10,10 +10,14 @@ Date:    2026-02-08
 Email: vitamin_n@outlook.com
 """
 
-from datetime import datetime
-from typing import Dict, List, Optional
+import logging
 import os
 import re
+from datetime import datetime
+from typing import Dict, List, Optional
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 class RINEX3Writer:
@@ -47,6 +51,7 @@ class RINEX3Writer:
     ]
 
     HEADER_CONTENT_WIDTH = 60
+    HEADER_FIELD_WIDTH = 20
     OBS_TYPES_PER_HEADER_LINE = 13
 
     def __init__(
@@ -65,6 +70,8 @@ class RINEX3Writer:
         header_interval_seconds: Optional[float] = None,
         time_system: str = "GPS",
         antenna_number: str = "",
+        receiver_serial: str = "",
+        receiver_version: str = "",
     ):
         """
         Initialize RINEX3 writer.
@@ -103,7 +110,9 @@ class RINEX3Writer:
             else None
         )
         self.time_system = str(time_system or "GPS").strip().upper() or "GPS"
-        self.antenna_number = str(antenna_number or "")[:20]
+        self.antenna_number = self._format_a20(antenna_number).strip()
+        self.receiver_serial = self._format_a20(receiver_serial if receiver_serial else receiver_number).strip()
+        self.receiver_version = self._format_a20(receiver_version).strip()
 
         self.output_directory = "."
         if filename.lower().endswith(".rnx"):
@@ -125,6 +134,19 @@ class RINEX3Writer:
         self.antenna_type = "UNKNOWN"
         self.approx_position = [0.0, 0.0, 0.0]
         self.antenna_delta = [0.0, 0.0, 0.0]
+
+    @classmethod
+    def _format_a20(cls, value: object) -> str:
+        """Format one RINEX A20 header field."""
+        text = str(value or "").strip()
+        return text[: cls.HEADER_FIELD_WIDTH].ljust(cls.HEADER_FIELD_WIDTH)
+
+    @classmethod
+    def _format_a20_fields(cls, *values: object) -> str:
+        """Format a RINEX 60-character content record from A20 fields."""
+        return "".join(cls._format_a20(value) for value in values)[: cls.HEADER_CONTENT_WIDTH].ljust(
+            cls.HEADER_CONTENT_WIDTH
+        )
 
     @classmethod
     def _normalize_span_code(cls, code: str, fallback: str) -> str:
@@ -192,8 +214,8 @@ class RINEX3Writer:
             os.makedirs(self.output_directory or ".", exist_ok=True)
             self.file_handle = open(self.filename, "w", encoding="utf-8")
             return True
-        except IOError as e:
-            print(f"Cannot open RINEX file {self.filename}: {e}")
+        except OSError as exc:
+            LOGGER.error("Cannot open RINEX file %s: %s", self.filename, exc)
             return False
 
     def close(self) -> None:
@@ -221,7 +243,7 @@ class RINEX3Writer:
         if not self.file_handle:
             return
         safe_content = (content or "")[: self.HEADER_CONTENT_WIDTH].ljust(self.HEADER_CONTENT_WIDTH)
-        safe_label = (label or "")[:20]
+        safe_label = (label or "")[:20].ljust(20)
         self.file_handle.write(f"{safe_content}{safe_label}\n")
 
     def _parse_interval_seconds(self) -> float:
@@ -271,11 +293,11 @@ class RINEX3Writer:
         self._write_header_line(f"{self.marker_number:<20}", "MARKER NUMBER")
         self._write_header_line(f"{'Automatic':<20}{'RTGS':<40}", "OBSERVER / AGENCY")
         self._write_header_line(
-            f"{self.receiver_number:<20}{self.receiver_type[:20]:<20}{'':<20}",
+            self._format_a20_fields(self.receiver_serial, self.receiver_type, self.receiver_version),
             "REC # / TYPE / VERS",
         )
         self._write_header_line(
-            f"{self.antenna_number[:20]:<20}{self.antenna_type[:40]:<40}",
+            self._format_a20_fields(self.antenna_number, self.antenna_type, ""),
             "ANT # / TYPE",
         )
         self._write_header_line(
@@ -329,6 +351,8 @@ class RINEX3Writer:
         receiver_type: str = "UNKNOWN",
         antenna_type: str = "UNKNOWN",
         antenna_number: str = "",
+        receiver_serial: str = "",
+        receiver_version: str = "",
     ) -> bool:
         """
         Write the initial header block.
@@ -355,8 +379,10 @@ class RINEX3Writer:
             self.sys_obs_types = cleaned
 
         self.receiver_type = str(receiver_type or self.receiver_type)
-        self.antenna_type = str(antenna_type or self.antenna_type)
-        self.antenna_number = str(antenna_number or self.antenna_number)[:20]
+        self.receiver_serial = self._format_a20(receiver_serial or self.receiver_serial).strip()
+        self.receiver_version = self._format_a20(receiver_version or self.receiver_version).strip()
+        self.antenna_type = self._format_a20(antenna_type or self.antenna_type).strip()
+        self.antenna_number = self._format_a20(antenna_number or self.antenna_number).strip()
 
         if marker_lon is not None and marker_lat is not None and marker_alt is not None:
             self.set_approx_position([marker_lon, marker_lat, marker_alt])
@@ -389,8 +415,8 @@ class RINEX3Writer:
 
             self.file_handle.flush()
             return True
-        except Exception as e:
-            print(f"Error writing observation epoch: {e}")
+        except (OSError, TypeError, ValueError, AttributeError) as exc:
+            LOGGER.exception("Error writing observation epoch: %s", exc)
             return False
 
     def _format_epoch_header(self, epoch_time: datetime, num_sats: int) -> str:

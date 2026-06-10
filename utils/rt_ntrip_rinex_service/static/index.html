@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>RT NTRIP RINEX Console</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div>
+          <h1>RT NTRIP RINEX Console</h1>
+          <p id="configPath"></p>
+        </div>
+      </div>
+      <nav class="actions">
+        <button id="refreshBtn" class="icon-button" type="button" title="Refresh">Refresh</button>
+        <button id="reloadBtn" type="button">Reload Config</button>
+        <button id="mergeBtn" type="button">Run Merge</button>
+      </nav>
+    </header>
+
+    <main class="layout">
+      <section class="station-panel panel">
+        <div class="section-head">
+          <div>
+            <h2>Stations</h2>
+            <p class="section-note">Runtime state and current output files</p>
+          </div>
+          <button id="newBtn" type="button">New Station</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Mountpoint</th>
+                <th>Status</th>
+                <th>Epochs</th>
+                <th>Sample</th>
+                <th>Active File</th>
+              </tr>
+            </thead>
+            <tbody id="stationRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="editor-panel panel">
+        <div class="section-head">
+          <div>
+            <h2 id="editorTitle">Station Config</h2>
+            <p class="section-note">Changes are written to the YAML config</p>
+          </div>
+          <label class="switch">
+            <input id="enabled" type="checkbox" />
+            <span>Enabled</span>
+          </label>
+        </div>
+
+        <form id="stationForm">
+          <div class="field-grid">
+            <label>Name<input id="name" required /></label>
+            <label>Host<input id="host" required /></label>
+            <label>Port<input id="port" type="number" min="1" value="2101" /></label>
+            <label>Mountpoint<input id="mountpoint" required /></label>
+            <label>User<input id="user" autocomplete="off" /></label>
+            <label>Password<input id="password" type="password" autocomplete="new-password" /></label>
+            <label>Output Directory<input id="outputDirectory" /></label>
+            <label>Marker Name<input id="markerName" /></label>
+            <label>Station Code<input id="stationCode" maxlength="4" /></label>
+            <label>Receiver No.<input id="receiverNumber" maxlength="2" /></label>
+            <label>Receiver Type<input id="receiverType" /></label>
+            <label>Antenna Type<input id="antennaType" /></label>
+            <label>Antenna Model<input id="antennaModel" /></label>
+            <label>Sample Interval<input id="sampleInterval" placeholder="auto" /></label>
+            <label>Split Period (s)<input id="splitPeriod" type="number" min="1" value="3600" /></label>
+            <label>Daily Merge Interval (s)<input id="mergeInterval" type="number" min="1" value="15" /></label>
+            <label>Time System<input id="timeSystem" value="GPS" readonly /></label>
+            <label>Approx Position XYZ<input id="approxPosition" placeholder="x, y, z" /></label>
+          </div>
+
+          <div class="obs-editor wide">
+            <div class="obs-editor-head">
+              <div>
+                <h3>Observation Types</h3>
+                <p>Leave all rows blank to keep auto-detection enabled.</p>
+              </div>
+              <button id="clearObsTypesBtn" type="button">Clear</button>
+            </div>
+            <div id="obsTypeEditor"></div>
+          </div>
+
+          <div class="form-actions">
+            <button id="deleteBtn" type="button" class="danger">Delete</button>
+            <button id="saveBtn" type="submit">Save Station</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="log-panel panel">
+        <div class="section-head">
+          <div>
+            <h2>Logs</h2>
+            <p class="section-note">Filter by station or service source</p>
+          </div>
+          <div class="log-controls">
+            <label class="compact-label">Source
+              <select id="logSource">
+                <option value="">All Sources</option>
+              </select>
+            </label>
+            <button id="copyLogsBtn" type="button">Copy Logs</button>
+          </div>
+        </div>
+        <pre id="logs"></pre>
+      </section>
+    </main>
+
+    <div id="toast" role="status"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

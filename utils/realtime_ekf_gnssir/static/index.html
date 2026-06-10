@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GNSS-IR&#23454;&#26102;&#27700;&#20301;</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand-block">
+      <h1 data-i18n="appTitle">GNSS-IR&#23454;&#26102;&#27700;&#20301;</h1>
+      <p><span id="selectedStationLabel">Station -</span><span id="headerStateLabel">Idle</span></p>
+    </div>
+    <div class="header-actions">
+      <span id="configPath" class="config-chip">config</span>
+      <span id="userBadge" class="config-chip">-</span>
+      <button id="langToggleBtn" type="button">EN</button>
+      <button id="reloadBtn" type="button" data-i18n="refresh">&#21047;&#26032;</button>
+      <button id="newStationBtn" type="button" data-i18n="newStation">&#26032;&#22686;&#27979;&#31449;</button>
+      <button id="logoutBtn" type="button" data-i18n="logout">&#30331;&#20986;</button>
+    </div>
+  </header>
+
+  <section id="loginScreen" class="login-screen">
+    <form id="loginForm" class="login-card">
+      <div>
+        <h2 data-i18n="appTitle">GNSS-IR&#23454;&#26102;&#27700;&#20301;</h2>
+        <p>Realtime monitoring console</p>
+      </div>
+      <label>Username<input name="username" autocomplete="username" required></label>
+      <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
+      <button id="loginBtn" type="submit">Login</button>
+      <p id="loginError" class="login-error hidden"></p>
+    </form>
+  </section>
+
+  <main id="appWorkbench" class="workbench hidden">
+    <aside class="station-sidebar">
+      <div class="sidebar-title">
+        <h2 data-i18n="stations">&#27979;&#31449;</h2>
+        <span id="runningCount">0 / 0</span>
+      </div>
+      <div id="stationList" class="station-list"></div>
+    </aside>
+
+    <section class="main-panel">
+      <div class="status-strip">
+        <div class="status-card">
+          <span data-i18n="receiverStatus">Receiver Status</span>
+          <strong id="stateValue">-</strong>
+          <small id="healthValue">-</small>
+        </div>
+        <div class="status-card">
+          <span data-i18n="waterLevel">Water Level</span>
+          <strong id="seaLevelValue">-</strong>
+          <small id="seaLevelTime">-</small>
+        </div>
+      </div>
+
+      <nav class="tabs">
+        <button class="tab active" data-tab="overview" type="button" data-i18n="overview">&#24635;&#35272;</button>
+        <button class="tab" data-tab="space" type="button" data-i18n="spaceView">&#31354;&#38388;&#35270;&#22270;</button>
+        <button class="tab" data-tab="config" type="button" data-i18n="config">&#37197;&#32622;</button>
+        <button class="tab" data-tab="products" type="button" data-i18n="products">&#32467;&#26524;</button>
+        <button class="tab" data-tab="postprocess" type="button" data-i18n="postProcess">Post Process</button>
+        <button class="tab" data-tab="logs" type="button" data-i18n="logs">&#26085;&#24535;</button>
+      </nav>
+
+      <section id="overviewTab" class="tab-panel active">
+        <div class="action-bar">
+          <button id="startBtn" type="button" data-i18n="start">&#21551;&#21160;</button>
+          <button id="stopBtn" type="button" data-i18n="stop">&#20572;&#27490;</button>
+          <button id="restartBtn" type="button" data-i18n="restart">&#37325;&#21551;</button>
+          <span id="lastErrorPill" class="pill hidden"></span>
+        </div>
+
+        <div class="overview-grid">
+          <article class="panel-card">
+            <div class="panel-title">
+              <h3>Stream Monitor</h3>
+              <span id="streamHealthBadge" class="badge">idle</span>
+            </div>
+            <div class="kv-grid">
+              <div><span>OBS Source</span><strong id="obsStreamInfo">-</strong></div>
+              <div><span>EPH Source</span><strong id="ephStreamInfo">-</strong></div>
+              <div><span>Last OBS Message</span><strong id="lastMessageInfo">-</strong></div>
+              <div><span>Last EPH Message</span><strong id="lastEphMessageInfo">-</strong></div>
+              <div><span>Epoch Time</span><strong id="lastEpochInfo">-</strong></div>
+              <div><span>NTRIP Bytes</span><strong id="bytesInfo">0</strong></div>
+            </div>
+          </article>
+
+          <article class="panel-card station-map-card wide">
+            <div class="panel-title">
+              <h3 data-i18n="stationLocation">Station Location</h3>
+              <span id="stationMapBadge" class="badge">OSM</span>
+            </div>
+            <div id="stationMap" class="station-map"></div>
+            <div class="station-position-grid">
+              <div><span data-i18n="latitude">Latitude</span><strong id="stationLatInfo">-</strong></div>
+              <div><span data-i18n="longitude">Longitude</span><strong id="stationLonInfo">-</strong></div>
+              <div><span data-i18n="height">Height</span><strong id="stationHeightInfo">-</strong></div>
+            </div>
+          </article>
+
+          <article id="initPanel" class="panel-card">
+            <div class="panel-title">
+              <h3>LSP / EKF &#21021;&#22987;&#21270;</h3>
+              <span id="initBadge" class="badge">waiting</span>
+            </div>
+            <div class="progress-track"><div id="initProgress" class="progress-fill"></div></div>
+            <p id="initReason" class="diagnostic-text">-</p>
+            <div class="kv-grid compact">
+              <div><span>&#24359;&#27573;</span><strong id="arcCountInfo">0</strong></div>
+              <div><span>&#26368;&#22823;&#26679;&#26412;</span><strong id="maxLspSamplesInfo">0</strong></div>
+              <div><span>&#38656;&#35201;&#26679;&#26412;</span><strong id="requiredSamplesInfo">0</strong></div>
+              <div><span>&#24050;&#21021;&#22987;&#21270;&#24359;</span><strong id="initializedArcInfo">0</strong></div>
+            </div>
+            <canvas id="lspArcCanvas" width="620" height="150" class="mini-canvas"></canvas>
+          </article>
+
+          <article class="panel-card wide">
+            <div class="panel-title">
+              <h3>Water Level Time Series</h3>
+              <span id="overviewProductCount" class="badge">0</span>
+            </div>
+            <canvas id="overviewProductChart" width="960" height="260"></canvas>
+          </article>
+
+          <article class="panel-card wide">
+            <div class="panel-title">
+              <h3>Observation Quality</h3>
+              <span id="recordCountBadge" class="badge">0 &#26465;&#35760;&#24405;</span>
+            </div>
+            <div class="quality-row">
+              <div><span>Satellite Count</span><strong id="satCountInfo">0</strong></div>
+              <div><span>In Reflection Zone</span><strong id="inversionSatInfo">0</strong></div>
+              <div><span>Arc Count</span><strong id="inversionArcInfo">0</strong></div>
+              <div><span>Record Count</span><strong id="recordCountInfo">0</strong></div>
+            </div>
+            <div id="systemBars" class="bar-list"></div>
+          </article>
+        </div>
+
+        <div id="errorBox" class="error-box hidden"></div>
+      </section>
+
+      <section id="spaceTab" class="tab-panel">
+        <article class="panel-card">
+          <div class="panel-title">
+            <h3>&#22825;&#31354;&#22270; / &#21453;&#23556;&#21306;</h3>
+            <span id="spacePlotBadge" class="badge">0 / 0</span>
+          </div>
+          <canvas id="spaceCanvas" width="1040" height="520"></canvas>
+        </article>
+        <article class="panel-card">
+          <div class="panel-title">
+            <h3>&#24359;&#27573;&#21644;&#35266;&#27979;&#26126;&#32454;</h3>
+            <span id="arcTableBadge" class="badge">0</span>
+          </div>
+          <div class="split-tables">
+            <div class="table-wrap"><table><thead><tr><th>&#21355;&#26143;&#24359;&#27573;</th><th>&#26679;&#26412;</th><th>LSP</th><th>&#39640;&#24230;&#35282;</th><th>&#20449;&#21495;&#25968;</th></tr></thead><tbody id="arcBody"></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>Sat</th><th>Sig</th><th>SNR</th><th>Az</th><th>El</th></tr></thead><tbody id="sampleBody"></tbody></table></div>
+          </div>
+        </article>
+      </section>
+
+      <section id="configTab" class="tab-panel">
+        <div class="config-layout">
+          <article class="panel-card">
+            <div class="panel-title">
+              <h3>&#27979;&#31449;&#19982;&#25968;&#25454;&#27969;</h3>
+              <span class="badge">NTRIP</span>
+            </div>
+            <form id="stationForm" class="form-grid">
+              <fieldset class="form-section">
+                <legend>&#27979;&#31449;</legend>
+                <label>&#21517;&#31216;<input name="name" required></label>
+                <label>IR YAML<input name="reflectometry_config" required></label>
+                <div class="switch-row">
+                  <label><input name="enabled" type="checkbox"> &#21551;&#29992;</label>
+                  <label><input name="auto_start" type="checkbox"> &#33258;&#21160;</label>
+                </div>
+              </fieldset>
+
+              <fieldset class="form-section">
+                <legend>OBS</legend>
+                <label>&#22320;&#22336;<input name="obs_host"></label>
+                <label>Port<input name="obs_port" type="number" min="1" max="65535"></label>
+                <label>Mount<input name="obs_mountpoint"></label>
+                <label>User<input name="obs_user"></label>
+                <label>Pass<input name="obs_password" type="password"></label>
+                <label>&#36229;&#26102; s<input name="obs_connect_timeout_seconds" type="number" min="1" step="0.5"></label>
+                <label>&#37325;&#36830; s<input name="obs_reconnect_delay_seconds" type="number" min="0.5" step="0.5"></label>
+              </fieldset>
+
+              <fieldset class="form-section">
+                <legend>EPH</legend>
+                <div class="switch-row">
+                  <label><input name="eph_enabled" type="checkbox"> &#21551;&#29992; EPH</label>
+                </div>
+                <label>&#22320;&#22336;<input name="eph_host"></label>
+                <label>Port<input name="eph_port" type="number" min="1" max="65535"></label>
+                <label>Mount<input name="eph_mountpoint"></label>
+                <label>User<input name="eph_user"></label>
+                <label>Pass<input name="eph_password" type="password"></label>
+                <label>&#36229;&#26102; s<input name="eph_connect_timeout_seconds" type="number" min="1" step="0.5"></label>
+                <label>&#37325;&#36830; s<input name="eph_reconnect_delay_seconds" type="number" min="0.5" step="0.5"></label>
+              </fieldset>
+
+              <fieldset class="form-section">
+                <legend>&#36816;&#34892;</legend>
+                <label>&#20869;&#23384;&#32467;&#26524;<input name="max_product_history" type="number" min="1"></label>
+              </fieldset>
+              <div class="form-actions">
+                <button id="saveStationBtn" type="submit">&#20445;&#23384;&#27979;&#31449;</button>
+                <button id="deleteStationBtn" type="button" class="danger">&#21024;&#38500;&#27979;&#31449;</button>
+              </div>
+            </form>
+          </article>
+
+          <article class="panel-card">
+            <div class="panel-title">
+              <h3>&#21453;&#28436;&#26680;&#24515;&#21442;&#25968;</h3>
+              <span id="irConfigPath" class="badge">IR YAML</span>
+            </div>
+            <form id="irForm" class="form-grid">
+              <label>Station ID<input name="station_id"></label>
+              <label>&#28023;&#38754;&#22522;&#20934; m<input name="sea_level_reference" type="number" step="0.001"></label>
+              <label>RH min<input name="min_reflector_height" type="number" step="0.001"></label>
+              <label>RH max<input name="max_reflector_height" type="number" step="0.001"></label>
+              <label>El min<input name="min_elevation_deg" type="number" step="0.1"></label>
+              <label>El max<input name="max_elevation_deg" type="number" step="0.1"></label>
+              <label>&#25490;&#38500;&#31995;&#32479;<input name="exclude_constellations"></label>
+              <label>&#25490;&#38500;&#20449;&#21495;<input name="exclude_signals"></label>
+              <label>&#36755;&#20986;&#38388;&#38548; s<input name="output_interval_seconds" type="number" min="1"></label>
+              <details class="advanced-section">
+                <summary>&#39640;&#32423;&#21442;&#25968;</summary>
+                <div class="advanced-grid">
+                  <label>Q RH<input name="q_rh" type="number" step="0.000001"></label>
+                  <label>R var<input name="measurement_variance" type="number" step="0.0001"></label>
+                  <label>Init RH<input name="initial_rh_m" type="number" step="0.001"></label>
+                  <label>LSP &#26679;&#26412;<input name="rh_init_min_samples" type="number" min="3"></label>
+                  <label>&#24359;&#26679;&#26412;<input name="init_min_samples" type="number" min="3"></label>
+                  <label>LSP &#24359;&#25968;<input name="rh_init_max_arcs" type="number" min="1"></label>
+                  <label>&#31383;&#38271; s<input name="output_window_seconds" type="number" min="1"></label>
+                  <label>Gap s<input name="max_time_gap_seconds" type="number" step="0.1"></label>
+                </div>
+              </details>
+              <div class="form-actions">
+                <button id="saveIrBtn" type="submit">&#20445;&#23384;&#21453;&#28436;&#37197;&#32622;</button>
+                <button id="reloadIrBtn" type="button">&#37325;&#36733; YAML</button>
+              </div>
+            </form>
+          </article>
+        </div>
+
+        <article class="panel-card">
+          <div class="panel-title">
+            <h3>YAML</h3>
+            <span class="badge">&#39640;&#32423;</span>
+          </div>
+          <textarea id="yamlEditor" spellcheck="false"></textarea>
+          <div class="form-actions yaml-actions">
+            <button id="saveYamlBtn" type="button">&#20445;&#23384; YAML</button>
+          </div>
+        </article>
+      </section>
+
+      <section id="productsTab" class="tab-panel">
+        <article class="panel-card">
+          <div class="panel-title">
+            <h3>&#20135;&#21697;&#26102;&#24207;</h3>
+            <span id="productCount">0</span>
+          </div>
+          <div class="product-actions">
+            <label>&#31867;&#22411;<select id="productTypeFilter"><option value="">&#20840;&#37096;</option></select></label>
+            <label>&#36215;&#22987;&#26102;&#38388;<input id="productStartTime" type="datetime-local"></label>
+            <label>&#32467;&#26463;&#26102;&#38388;<input id="productEndTime" type="datetime-local"></label>
+            <button id="productApplyRangeBtn" type="button">&#24212;&#29992;</button>
+            <button id="productResetRangeBtn" type="button">&#20840;&#37096;&#21382;&#21490;</button>
+            <button id="exportCsvBtn" type="button">&#23548;&#20986; CSV</button>
+            <button id="exportJsonBtn" type="button">&#23548;&#20986; JSON</button>
+            <span id="productRangeMeta" class="range-meta">-</span>
+          </div>
+          <div class="product-summary">
+            <div><span>Latest</span><strong id="productLatestMetric">-</strong><small id="productLatestTime">-</small></div>
+            <div><span>Range</span><strong id="productRangeMetric">-</strong><small id="productDeltaMetric">-</small></div>
+            <div><span>Confidence</span><strong id="productConfidenceMetric">-</strong><small id="productConfidenceMinMetric">-</small></div>
+            <div><span>Satellite Arcs</span><strong id="productArcMetric">-</strong><small id="productArcMaxMetric">-</small></div>
+          </div>
+          <canvas id="productChart" width="960" height="260"></canvas>
+          <div class="product-visual-grid">
+            <div>
+              <div class="mini-title">Confidence / Arcs</div>
+              <canvas id="productDiagnosticsChart" width="520" height="190" class="mini-canvas"></canvas>
+            </div>
+            <div>
+              <div class="mini-title">Value Distribution</div>
+              <canvas id="productDistributionChart" width="520" height="190" class="mini-canvas"></canvas>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table><thead><tr><th>&#26102;&#38388;</th><th>&#31867;&#22411;</th><th>&#20540;</th><th>&#21333;&#20301;</th><th>&#21442;&#19982;&#35299;&#31639;&#24359;&#27573;</th><th>&#32622;&#20449;&#24230;</th></tr></thead><tbody id="productsBody"></tbody></table>
+          </div>
+        </article>
+      </section>
+
+      <section id="postprocessTab" class="tab-panel">
+        <div class="postprocess-layout">
+          <article class="panel-card">
+            <div class="panel-title">
+              <h3 data-i18n="rinexPostProcessing">RINEX Post Processing</h3>
+              <span id="postprocessBadge" class="badge">ready</span>
+            </div>
+            <form id="postprocessForm" class="form-grid">
+              <fieldset class="form-section">
+                <legend data-i18n="files">Files</legend>
+                <label class="file-picker">
+                  <input name="observation_file" type="file" required>
+                  <span class="file-kind">OBS</span>
+                  <strong data-i18n="observationRinex">Observation RINEX</strong>
+                  <small id="obsFileName" data-i18n="noFileSelected">No file selected</small>
+                </label>
+                <label class="file-picker">
+                  <input name="ephemeris_file" type="file" required>
+                  <span class="file-kind">EPH</span>
+                  <strong data-i18n="ephemerisFile">Ephemeris / SP3</strong>
+                  <small id="ephFileName" data-i18n="noFileSelected">No file selected</small>
+                </label>
+                <label data-i18n-label="ephemerisType">Ephemeris Type<select name="ephemeris_file_type">
+                  <option>Auto Detect</option>
+                  <option>Broadcast RINEX</option>
+                  <option>Precise SP3</option>
+                </select></label>
+                <div class="switch-row upload-switch">
+                  <label><input name="use_rinex_position" type="checkbox"> <span data-i18n="useRinexPosition">Use RINEX APPROX POSITION XYZ</span></label>
+                </div>
+              </fieldset>
+              <div class="form-actions">
+                <button id="runPostprocessBtn" type="submit" data-i18n="runPostProcess">Run Post Process</button>
+              </div>
+            </form>
+            <p id="postprocessStatus" class="diagnostic-text">-</p>
+          </article>
+
+          <article class="panel-card">
+            <div class="panel-title">
+              <h3 data-i18n="postProcessSummary">Post Process Summary</h3>
+              <span id="postProductCountBadge" class="badge">0</span>
+            </div>
+            <div class="product-summary postprocess-summary">
+              <div><span data-i18n="epochs">Epochs</span><strong id="postEpochCount">-</strong><small id="postRinexMeta">-</small></div>
+              <div><span data-i18n="observations">Observations</span><strong id="postObservationCount">-</strong><small id="postArcCount">-</small></div>
+              <div><span data-i18n="products">Products</span><strong id="postProductCount">-</strong><small id="postJobId">-</small></div>
+              <div><span data-i18n="output">Output</span><strong id="postOutputDir">-</strong><small id="postPositionMeta">-</small></div>
+            </div>
+            <canvas id="postprocessChart" width="960" height="260"></canvas>
+          </article>
+
+          <article class="panel-card wide">
+            <div class="panel-title">
+              <h3 data-i18n="postProcessProducts">Post Process Products</h3>
+              <span class="badge">batch</span>
+            </div>
+            <div class="table-wrap">
+              <table><thead><tr><th>Time</th><th>Type</th><th>Value</th><th>Unit</th><th>Arcs</th><th>Confidence</th></tr></thead><tbody id="postprocessProductsBody"></tbody></table>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="logsTab" class="tab-panel">
+        <article class="panel-card">
+          <div class="panel-title"><h3>&#36816;&#34892;&#26085;&#24535;</h3><span class="badge">tail</span></div>
+          <pre id="logBox" class="log-box"></pre>
+        </article>
+      </section>
+    </section>
+  </main>
+
+  <div id="confirmOverlay" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+    <div class="confirm-card">
+      <strong id="confirmTitle">&#30830;&#35748;&#25805;&#20316;</strong>
+      <p id="confirmMessage">-</p>
+      <div class="confirm-actions">
+        <button id="confirmCancelBtn" type="button">&#21462;&#28040;</button>
+        <button id="confirmOkBtn" type="button" class="danger solid">&#30830;&#35748;</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

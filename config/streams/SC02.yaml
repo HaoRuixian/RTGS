@@ -1,0 +1,60 @@
+approx_rec_pos: null
+eph_settings:
+  baudrate: 115200
+  databits: 8
+  enabled: true
+  file_path: ''
+  file_type: Auto Detect
+  final_results_only: false
+  flowctrl: None
+  host: ntrip.data.gnss.ga.gov.au
+  mountpoint: BCEP00BKG0
+  parity: None
+  password: Hao20030801@
+  port: '2101'
+  replay_speed: 1.0
+  serial_port: COM3
+  source_type: NTRIP Server
+  stopbits: 1.0
+  user: hrx
+obs_settings:
+  baudrate: 115200
+  databits: 8
+  enabled: true
+  file_path: ''
+  file_type: Auto Detect
+  final_results_only: false
+  flowctrl: None
+  host: ntrip.earthscope.org
+  mountpoint: SC02_RTCM3P3
+  parity: None
+  password: NpwPoUk73wbRE7DS
+  port: '2101'
+  replay_speed: 1.0
+  serial_port: COM3
+  source_type: NTRIP Server
+  stopbits: 1.0
+  user: keen_bell
+positioning_settings:
+  cutoff_elevation_deg: 10.0
+  fixed_std_pos: 2.5
+  gnss_systems:
+  - G
+  ionosphere_option: IFLC
+  max_pdop: 10.0
+  min_satellites: 4
+  prefer_gps_only: true
+  random_walk: 0.0
+  smoothing_window: 10
+  troposphere_model: Sastamoinen
+  uncertain_std_pos: 5.0
+  use_smoothing: false
+  weight_mode: elevation
+target_systems:
+- G
+- R
+- E
+- C
+- J
+- S
+- I

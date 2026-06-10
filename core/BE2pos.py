@@ -17,7 +17,7 @@ class Const:
     J2_PZ90  = 1082625.75e-9
     A_PZ90   = 6378136.0      # [m]
 
-def brdc2pos(eph_data, sys_type, t_obs_gpst):
+def brdc2state(eph_data, sys_type, t_obs_gpst):
 
     try:
         if sys_type == 'GLO':
@@ -30,9 +30,16 @@ def brdc2pos(eph_data, sys_type, t_obs_gpst):
         if result is None:
             return None
         
-        return result[0]
+        return result
     except (KeyError, TypeError, ValueError, IndexError):
         return None
+
+
+def brdc2pos(eph_data, sys_type, t_obs_gpst):
+    state = brdc2state(eph_data, sys_type, t_obs_gpst)
+    if state is None:
+        return None
+    return state[0]
 
 def check_t(t):
     """

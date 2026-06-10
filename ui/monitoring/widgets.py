@@ -335,7 +335,7 @@ class MultiSignalBarWidget(FigureCanvas):
         if self.tooltip_annotation is not None:
             try:
                 self.tooltip_annotation.remove()
-            except:
+            except (AttributeError, RuntimeError, ValueError):
                 pass
         
         # 创建新的annotation（tooltip）
@@ -364,7 +364,7 @@ class MultiSignalBarWidget(FigureCanvas):
         if self.tooltip_annotation is not None:
             try:
                 self.tooltip_annotation.remove()
-            except:
+            except (AttributeError, RuntimeError, ValueError):
                 pass
             self.tooltip_annotation = None
             self.draw_idle()
@@ -400,7 +400,7 @@ class MultiSignalBarWidget(FigureCanvas):
                 if self.tooltip_annotation is not None:
                     try:
                         self.tooltip_annotation.remove()
-                    except:
+                    except (AttributeError, RuntimeError, ValueError):
                         pass
                 
                 # 创建新的tooltip，使用保存的坐标

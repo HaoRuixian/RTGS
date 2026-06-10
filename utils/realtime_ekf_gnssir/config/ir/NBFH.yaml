@@ -1,0 +1,64 @@
+station:
+  station_id: NBFH
+  receiver_position:
+    latitude_deg: 29.788157
+    longitude_deg: 121.455481
+    height_m: 19.303
+    x_m: -2890959.0587
+    y_m: 4725854.8085
+    z_m: 3150024.8212
+  antenna_height: 8.836
+  reflector_surface_type: sea
+
+input:
+  sampling_interval: 30
+
+processing:
+  live_arc_window_minutes: 30
+  live_analysis_interval_seconds: 300
+  min_arc_length: 300
+  max_time_gap_seconds: 90
+
+geometry:
+  reflection_zones:
+    - name: zone_1
+      min_elevation_deg: 5
+      max_elevation_deg: 30
+      azimuth_windows:
+        - [180, 220]
+    - name: zone_2
+      min_elevation_deg: 5
+      max_elevation_deg: 30
+      azimuth_windows:
+        - [90, 180]
+
+ir:
+  estimation_mode: ekf
+  min_reflector_height: 2.836
+  max_reflector_height: 12.836
+  frequency_grid_size: 2048
+  ekf:
+    measurement_variance: 1.3055
+    initial_rh_m: 8
+    init_min_samples: 12
+    init_max_samples: 600
+    rh_init_min_height_m: 3
+    rh_init_max_height_m: 9
+    rh_init_min_samples: 30
+    rh_init_max_arcs: 8
+    rh_init_max_samples_per_arc: 300
+    output_interval_seconds: 60
+    output_window_seconds: 60
+    min_active_arcs: 1
+    max_time_gap_seconds: 22.5
+
+qc:
+  min_peak_to_noise_ratio: 10
+  min_arc_duration: 120
+
+products:
+  enable_reflector_height: true
+  enable_sea_level: true
+  sea_level_reference: 8.785
+  enable_dynamic_sea_level_correction: true
+  dynamic_sea_level_window_hours: 3

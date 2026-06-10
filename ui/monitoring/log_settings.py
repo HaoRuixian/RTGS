@@ -166,10 +166,14 @@ class LogSettingsDialog(QDialog):
         h_radio.setSpacing(15)
         self.radio_csv = QRadioButton("CSV")
         self.radio_binary = QRadioButton("Binary RTCM")
-        self.radio_rinex = QRadioButton("RINEX")
+        self.radio_rinex = QRadioButton("RINEX OBS")
+        self.radio_rinex_nav = QRadioButton("RINEX NAV")
+        self.radio_sp3 = QRadioButton("SP3 Precise")
         h_radio.addWidget(self.radio_csv)
         h_radio.addWidget(self.radio_binary)
         h_radio.addWidget(self.radio_rinex)
+        h_radio.addWidget(self.radio_rinex_nav)
+        h_radio.addWidget(self.radio_sp3)
         h_radio.addStretch()
         format_vbox.addLayout(h_radio)
 
@@ -266,6 +270,8 @@ class LogSettingsDialog(QDialog):
         self.radio_csv.toggled.connect(self.on_format_changed)
         self.radio_binary.toggled.connect(self.on_format_changed)
         self.radio_rinex.toggled.connect(self.on_format_changed)
+        self.radio_rinex_nav.toggled.connect(self.on_format_changed)
+        self.radio_sp3.toggled.connect(self.on_format_changed)
         
         # 自动同步RINEX参数
         self.split_spin.valueChanged.connect(self._update_rinex_period)
@@ -376,6 +382,8 @@ class LogSettingsDialog(QDialog):
         self.radio_csv.setEnabled(enabled)
         self.radio_binary.setEnabled(enabled)
         self.radio_rinex.setEnabled(enabled)
+        self.radio_rinex_nav.setEnabled(enabled)
+        self.radio_sp3.setEnabled(enabled)
         self.fields_list.setEnabled(enabled)
         self.country_code_input.setEnabled(enabled)
         self.datatype_input.setEnabled(enabled)
@@ -395,6 +403,8 @@ class LogSettingsDialog(QDialog):
         if fmt == "csv": self.radio_csv.setChecked(True)
         elif fmt == "binary": self.radio_binary.setChecked(True)
         elif fmt == "rinex": self.radio_rinex.setChecked(True)
+        elif fmt == "rinex_nav": self.radio_rinex_nav.setChecked(True)
+        elif fmt == "sp3": self.radio_sp3.setChecked(True)
         
         # Load RINEX options
         rinex_opts = s.get("rinex_options", {})
@@ -405,6 +415,8 @@ class LogSettingsDialog(QDialog):
         fmt = "csv"
         if self.radio_binary.isChecked(): fmt = "binary"
         elif self.radio_rinex.isChecked(): fmt = "rinex"
+        elif self.radio_rinex_nav.isChecked(): fmt = "rinex_nav"
+        elif self.radio_sp3.isChecked(): fmt = "sp3"
         
         settings = {
             "directory": self.dir_edit.text(),

@@ -1,0 +1,276 @@
+defaults:
+  enabled: true
+  ntrip:
+    port: 2101
+    user_agent: NTRIP RTGS RTRINEX/0.2
+    connect_timeout_seconds: 15
+    reconnect_delay_seconds: 5
+  rinex:
+    output_directory: ./output/rt_rinex
+    sample_interval_seconds: auto
+    split_enabled: true
+    split_period_seconds: 3600
+    daily_merge_min_interval_seconds: 15
+    country_code: CHN
+    datatype: MO
+    receiver_type: UNKNOWN
+    antenna_type: UNKNOWN
+    antenna_model: ''
+    marker_number: '0'
+    time_system: GPS
+    auto_detect_obs_types: true
+    align_tolerance_seconds: 0.001
+    header_refresh_seconds: 60
+    fsync_interval_seconds: 0
+stations:
+- name: GR01
+  enabled: true
+  ntrip:
+    host: grserg.top
+    port: 2101
+    mountpoint: GR01
+    user: adminHRX
+    password: hao20030801
+  rinex:
+    output_directory: D:\GNSS_ToolBox\RTGS\output
+    marker_name: NONE
+    station_code: GR01
+    receiver_number: '00'
+    receiver_type: SEPT M3
+    antenna_type: UNKNOWN
+    antenna_model: ''
+    sample_interval_seconds: auto
+    split_enabled: true
+    split_period_seconds: 3600
+    daily_merge_min_interval_seconds: 15
+    time_system: GPS
+    auto_detect_obs_types: false
+    sys_obs_types:
+      C:
+      - C1P
+      - L1P
+      - D1P
+      - S1P
+      - C2I
+      - L2I
+      - D2I
+      - S2I
+      - C5P
+      - L5P
+      - D5P
+      - S5P
+      - C6I
+      - L6I
+      - D6I
+      - S6I
+      - C7D
+      - L7D
+      - D7D
+      - S7D
+      E:
+      - C1C
+      - L1C
+      - D1C
+      - S1C
+      - C5Q
+      - L5Q
+      - D5Q
+      - S5Q
+      - C7Q
+      - L7Q
+      - D7Q
+      - S7Q
+      - C8Q
+      - L8Q
+      - D8Q
+      - S8Q
+      G:
+      - C1C
+      - L1C
+      - D1C
+      - S1C
+      - C1L
+      - L1L
+      - D1L
+      - S1L
+      - C2L
+      - L2L
+      - D2L
+      - S2L
+      - C2W
+      - L2W
+      - D2W
+      - S2W
+      - C5Q
+      - L5Q
+      - D5Q
+      - S5Q
+      J:
+      - C1L
+      - L1L
+      - D1L
+      - S1L
+      - C5Q
+      - L5Q
+      - D5Q
+      - S5Q
+      R:
+      - C1C
+      - L1C
+      - D1C
+      - S1C
+      - C2C
+      - L2C
+      - D2C
+      - S2C
+      - C2P
+      - L2P
+      - D2P
+      - S2P
+      S:
+      - C1C
+      - L1C
+      - D1C
+      - S1C
+      - C5Q
+      - L5Q
+      - D5Q
+      - S5Q
+    approx_position:
+    - -2171382.1703
+    - 4384801.0383
+    - 4077726.2435000003
+- name: BUAA02
+  enabled: true
+  ntrip:
+    host: grserg.top
+    port: 2101
+    mountpoint: BUAA02
+    user: adminHRX
+    password: hao20030801
+  rinex:
+    output_directory: D:\GNSS_ToolBox\RTGS\output
+    marker_name: NONE
+    station_code: BUAA
+    receiver_number: '02'
+    receiver_type: UNKNOWN
+    antenna_type: UNKNOWN
+    antenna_model: ''
+    sample_interval_seconds: auto
+    split_enabled: true
+    split_period_seconds: 3600
+    daily_merge_min_interval_seconds: 15
+    time_system: GPS
+    auto_detect_obs_types: false
+    sys_obs_types:
+      C:
+      - C1P
+      - L1P
+      - D1P
+      - S1P
+      - C2I
+      - L2I
+      - D2I
+      - S2I
+      - C5P
+      - L5P
+      - D5P
+      - S5P
+      - C6I
+      - L6I
+      - D6I
+      - S6I
+      - C7D
+      - L7D
+      - D7D
+      - S7D
+      - C7I
+      - L7I
+      - D7I
+      - S7I
+      E:
+      - C1C
+      - L1C
+      - D1C
+      - S1C
+      - C5Q
+      - L5Q
+      - D5Q
+      - S5Q
+      - C6C
+      - L6C
+      - D6C
+      - S6C
+      - C7Q
+      - L7Q
+      - D7Q
+      - S7Q
+      - C8Q
+      - L8Q
+      - D8Q
+      - S8Q
+      G:
+      - C1C
+      - L1C
+      - D1C
+      - S1C
+      - C1W
+      - L1W
+      - D1W
+      - S1W
+      - C2L
+      - L2L
+      - D2L
+      - S2L
+      - C2W
+      - L2W
+      - D2W
+      - S2W
+      - C5Q
+      - L5Q
+      - D5Q
+      - S5Q
+      I:
+      - C5A
+      - L5A
+      - D5A
+      - S5A
+      J:
+      - C1C
+      - L1C
+      - D1C
+      - S1C
+      - C2L
+      - L2L
+      - D2L
+      - S2L
+      - C5Q
+      - L5Q
+      - D5Q
+      - S5Q
+      R:
+      - C1C
+      - L1C
+      - D1C
+      - S1C
+      - C2C
+      - L2C
+      - D2C
+      - S2C
+      - C2P
+      - L2P
+      - D2P
+      - S2P
+      S:
+      - C1C
+      - L1C
+      - D1C
+      - S1C
+      - C5Q
+      - L5Q
+      - D5Q
+      - S5Q
+    approx_position:
+    - -2171602.6985
+    - 4385713.0598
+    - 4076736.0599

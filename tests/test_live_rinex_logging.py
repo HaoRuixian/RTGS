@@ -138,3 +138,13 @@ def test_logging_thread_initial_rinex_file_time_uses_same_alignment(monkeypatch)
 
     assert file_time == datetime(2026, 3, 26, 0, 0, 30)
     assert not_aligned is None
+
+
+def test_logging_thread_maps_ephemeris_formats_to_file_extensions(monkeypatch):
+    workers_module = _load_monitoring_workers_module(monkeypatch)
+
+    assert workers_module.LoggingThread._file_extension_for_format("csv") == "csv"
+    assert workers_module.LoggingThread._file_extension_for_format("binary") == "rtcm"
+    assert workers_module.LoggingThread._file_extension_for_format("rinex") == "rnx"
+    assert workers_module.LoggingThread._file_extension_for_format("rinex_nav") == "rnx"
+    assert workers_module.LoggingThread._file_extension_for_format("sp3") == "sp3"

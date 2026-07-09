@@ -13,6 +13,7 @@ import yaml
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_DIR.parent
+REFLECTOMETRY_CONFIG_WRITE_LOCK = RLock()
 
 
 @dataclass(slots=True)

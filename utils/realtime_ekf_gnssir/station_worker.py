@@ -6,14 +6,13 @@ import csv
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 import json
+import math
 from pathlib import Path
 from threading import Event, Lock, RLock, Thread
 import time
 from typing import Any, Callable, Iterable
 
-from ._vendor import install_aliases
-
-install_aliases()
+import yaml
 
 from ._vendor.rt_ntrip_rinex_service.data_models import EpochObservation
 from ._vendor.rt_ntrip_rinex_service.global_config import update_general_settings
@@ -26,14 +25,15 @@ from ._vendor.rt_ntrip_rinex_service.service import (
     _merge_epoch_data,
 )
 
-from core.reflectometry.config import ReflectorConfig, load_config
-from core.reflectometry.models import ProcessingRunResult, ProductResult
-from core.reflectometry.outputs import ResultSerializer
-from core.reflectometry.rinex_batch import build_observation_records_from_epoch
-from core.reflectometry.services.geometry import matches_reflection_zones
-from core.reflectometry.services.realtime import RealtimeProcessor
+from ._vendor.core.geo_utils import ecef2lla
+from ._vendor.core.reflectometry.config import ReflectorConfig, load_config
+from ._vendor.core.reflectometry.models import ProcessingRunResult, ProductResult
+from ._vendor.core.reflectometry.outputs import ResultSerializer
+from ._vendor.core.reflectometry.rinex_batch import build_observation_records_from_epoch
+from ._vendor.core.reflectometry.services.geometry import matches_reflection_zones
+from ._vendor.core.reflectometry.services.realtime import RealtimeProcessor
 
-from .config import StationConfig, StorageConfig, StreamConfig
+from .config import REFLECTOMETRY_CONFIG_WRITE_LOCK, StationConfig, StorageConfig, StreamConfig
 
 
 _RTCM_GLOBAL_CONFIG_LOCK = Lock()
@@ -118,6 +118,9 @@ class RealtimeEkfStationWorker(Thread):
         self._epochs_processed = 0
         self._observations_ingested = 0
         self._products_emitted = 0
+        self._reflectometry_epochs_ingested = 0
+        self._sampling_skipped_epochs = 0
+        self._last_reflectometry_epoch_time: datetime | None = None
         self._rh_initialized = False
         self._rh_initial_m: float | None = None
         self._rh_initial_arc_count = 0
@@ -127,6 +130,10 @@ class RealtimeEkfStationWorker(Thread):
         self._latest_signal_counts: dict[str, int] = {}
         self._latest_record_samples: list[dict[str, Any]] = []
         self._last_filter_warning = "No epoch has been decoded yet"
+        self._coordinate_source = "not_loaded"
+        self._coordinate_message_type = ""
+        self._coordinate_acquired_at: datetime | None = None
+        self._coordinate_error = ""
 
     def stop(self) -> None:
         self.stop_event.set()
@@ -199,6 +206,13 @@ class RealtimeEkfStationWorker(Thread):
                 "epochs_processed": self._epochs_processed,
                 "observations_ingested": self._observations_ingested,
                 "products_emitted": self._products_emitted,
+                "receiver_position": self._receiver_position_status_locked(),
+                "sampling": {
+                    "interval_seconds": _sampling_interval_seconds(self._reflector_config),
+                    "ingested_epochs": self._reflectometry_epochs_ingested,
+                    "skipped_epochs": self._sampling_skipped_epochs,
+                    "last_ingested_epoch_time": _iso(self._last_reflectometry_epoch_time),
+                },
                 "rh_initialized": self._rh_initialized,
                 "rh_initial_m": self._rh_initial_m,
                 "rh_initial_arc_count": self._rh_initial_arc_count,
@@ -310,6 +324,10 @@ class RealtimeEkfStationWorker(Thread):
             )
             epoch_data = self._handler.process_message(msg)
 
+        msg_id = _message_identity(msg)
+        if msg_id in {"1005", "1006"} and self._handler.last_station_coords is not None:
+            self._apply_rtcm_receiver_position(self._handler.last_station_coords, message_type=msg_id)
+
         if epoch_data is None:
             return
 
@@ -370,6 +388,18 @@ class RealtimeEkfStationWorker(Thread):
                 self._last_filter_warning = epoch_summary.get("warning", "No reflectometry records passed filters")
             return
 
+        if not self._should_ingest_reflectometry_epoch(epoch_time):
+            with self.status_lock:
+                self._last_epoch_time = epoch_time
+                self._epochs_processed += 1
+                self._last_epoch_summary = epoch_summary
+                self._latest_skyplot = epoch_summary.get("satellites", [])
+                self._latest_system_counts = epoch_summary.get("system_counts", {})
+                self._latest_signal_counts = epoch_summary.get("signal_counts", {})
+                self._latest_record_samples = _record_samples(records)
+                self._last_filter_warning = ""
+            return
+
         result = processor.ingest(records, reference_time=epoch_time)
         self._capture_new_products(result)
         self._update_initialization_status()
@@ -377,6 +407,7 @@ class RealtimeEkfStationWorker(Thread):
             self._last_epoch_time = epoch_time
             self._epochs_processed += 1
             self._observations_ingested += len(records)
+            self._reflectometry_epochs_ingested += 1
             self._last_epoch_summary = epoch_summary
             self._latest_skyplot = epoch_summary.get("satellites", [])
             self._latest_system_counts = epoch_summary.get("system_counts", {})
@@ -464,15 +495,85 @@ class RealtimeEkfStationWorker(Thread):
                 f"{self.station.reflectometry_config} is not configured for ir.estimation_mode=ekf"
             )
         xyz = _receiver_xyz(config)
-        if xyz is None:
-            raise ValueError("station.receiver_position.x_m/y_m/z_m is required for realtime RTCM geometry")
         self._reflector_config = config
+        self._last_reflectometry_epoch_time = None
+        self._coordinate_error = ""
+        if xyz is None:
+            self._processor = None
+            self._coordinate_source = "waiting_rtcm"
+            self._last_filter_warning = "Waiting for RTCM 1005/1006 station coordinates"
+            self._log("Receiver coordinates are blank; waiting for RTCM 1005/1006")
+            return
+        self._coordinate_source = _configured_coordinate_source(self.station.reflectometry_config)
+        self._create_reflectometry_processor(config)
+
+    def _create_reflectometry_processor(self, config: ReflectorConfig) -> None:
         self._processor = RealtimeProcessor(config)
         self._log(
             "Loaded reflectometry config "
             f"{self.station.reflectometry_config} with output interval "
             f"{config.ir.ekf.output_interval_seconds}s"
         )
+
+    def _apply_rtcm_receiver_position(self, xyz: Iterable[float], *, message_type: str) -> bool:
+        config = self._reflector_config
+        if config is None or _receiver_xyz(config) is not None:
+            return False
+        coordinates = _valid_receiver_xyz(xyz)
+        if coordinates is None:
+            with self.status_lock:
+                self._coordinate_error = f"RTCM {message_type} contained invalid station coordinates"
+            return False
+
+        position = config.station.receiver_position
+        position.x_m, position.y_m, position.z_m = coordinates
+        latitude_rad, longitude_rad, height_m = ecef2lla(coordinates)
+        position.latitude_deg = math.degrees(float(latitude_rad))
+        position.longitude_deg = math.degrees(float(longitude_rad))
+        position.height_m = float(height_m)
+        acquired_at = datetime.now(timezone.utc)
+        source = f"rtcm_{message_type}"
+        try:
+            _persist_receiver_position(
+                self.station.reflectometry_config,
+                position.as_dict(),
+                source=source,
+                message_type=message_type,
+                updated_at=acquired_at,
+            )
+        except Exception as exc:
+            with self.status_lock:
+                self._coordinate_error = str(exc)
+            self._log(f"RTCM {message_type} coordinates were decoded but could not be saved: {exc}")
+            return False
+
+        update_general_settings({"approx_rec_pos": coordinates})
+        self._create_reflectometry_processor(config)
+        with self.status_lock:
+            self._coordinate_source = source
+            self._coordinate_message_type = message_type
+            self._coordinate_acquired_at = acquired_at
+            self._coordinate_error = ""
+            self._last_filter_warning = "Waiting for the first reflectometry epoch"
+        self._log(
+            f"Receiver coordinates acquired from RTCM {message_type} and saved to "
+            f"{self.station.reflectometry_config}"
+        )
+        return True
+
+    def _should_ingest_reflectometry_epoch(self, epoch_time: datetime) -> bool:
+        interval_seconds = _sampling_interval_seconds(self._reflector_config)
+        previous = self._last_reflectometry_epoch_time
+        if previous is None or epoch_time <= previous:
+            self._last_reflectometry_epoch_time = epoch_time
+            return True
+        elapsed = (epoch_time - previous).total_seconds()
+        tolerance = min(0.25, interval_seconds * 0.01)
+        if elapsed + tolerance < interval_seconds:
+            self._sampling_skipped_epochs += 1
+            return False
+        self._last_reflectometry_epoch_time = epoch_time
+        return True
 
     def _validate_stream_config(self) -> None:
         obs = self.station.obs_settings
@@ -529,20 +630,48 @@ class RealtimeEkfStationWorker(Thread):
         processor = self._processor
         ekf = getattr(processor, "ekf_processor", None) if processor is not None else None
         if ekf is None:
+            waiting_for_coordinates = _receiver_xyz(self._reflector_config) is None if self._reflector_config else False
             return {
-                "mode": "not_ekf",
+                "mode": "waiting_coordinate" if waiting_for_coordinates else "not_ekf",
                 "rh_initialized": False,
-                "waiting_reason": "EKF processor is not available",
+                "waiting_reason": (
+                    "测站坐标为空，正在等待 RTCM 1005/1006"
+                    if waiting_for_coordinates
+                    else "EKF processor is not available"
+                ),
                 "arcs": [],
             }
         config = getattr(ekf, "config", None)
         required_lsp = int(getattr(config, "rh_init_min_samples", 0) or 0)
         required_arc = int(getattr(config, "init_min_samples", 0) or 0)
+        required_cycles = float(getattr(config, "rh_init_cycles", 2.0) or 2.0)
+        configured_init_max = getattr(config, "rh_init_max_height_m", None)
+        max_init_height = float(
+            configured_init_max
+            if configured_init_max is not None and _is_finite(configured_init_max)
+            else getattr(getattr(ekf, "ir_config", None), "max_reflector_height", 0.0) or 0.0
+        )
         arc_groups: dict[tuple[str, str], dict[str, Any]] = {}
         for arc_state in getattr(ekf, "arc_states", {}).values():
-            detrended_count = len(getattr(arc_state, "detrended_samples", []) or [])
+            detrended_samples = getattr(arc_state, "detrended_samples", []) or []
+            detrended_count = len(detrended_samples)
             sample_count = len(getattr(arc_state, "samples", []) or [])
             initialized = bool(getattr(arc_state, "initialized", False))
+            sin_values = [float(item[2]) for item in detrended_samples if len(item) > 2 and _is_finite(item[2])]
+            sin_span = max([0.0] + [abs(value - sin_values[0]) for value in sin_values]) if sin_values else 0.0
+            wavelength_m = _optional_float(getattr(arc_state, "wavelength_m", None))
+            required_sin_span = (
+                required_cycles * wavelength_m / (2.0 * max(max_init_height, 0.5))
+                if wavelength_m is not None and wavelength_m > 0
+                else None
+            )
+            cycle_progress = (
+                min(1.0, sin_span / required_sin_span)
+                if required_sin_span is not None and required_sin_span > 0
+                else 0.0
+            )
+            sample_ready = bool(required_lsp and detrended_count >= required_lsp)
+            lsp_ready = bool(not initialized and sample_ready and cycle_progress >= 1.0)
             key = getattr(arc_state, "key", ("", "", ""))
             group_key = _satellite_arc_key_from_tuple(key)
             group = arc_groups.setdefault(
@@ -557,6 +686,10 @@ class RealtimeEkfStationWorker(Thread):
                     "detrended_sample_count": 0,
                     "initialized": False,
                     "ready_lsp": False,
+                    "sample_ready": False,
+                    "lsp_sin_span": 0.0,
+                    "lsp_required_sin_span": None,
+                    "lsp_cycle_progress": 0.0,
                     "last_timestamp": None,
                     "last_elevation_deg": None,
                     "direction": "unknown",
@@ -566,10 +699,15 @@ class RealtimeEkfStationWorker(Thread):
             if signal and signal not in group["signals"]:
                 group["signals"].append(signal)
                 group["signal_count"] = len(group["signals"])
-            group["sample_count"] += sample_count
+            group["sample_count"] = max(int(group["sample_count"]), sample_count)
             group["detrended_sample_count"] = max(int(group["detrended_sample_count"]), detrended_count)
             group["initialized"] = bool(group["initialized"] or initialized)
-            group["ready_lsp"] = bool(group["ready_lsp"] or (not initialized and required_lsp and detrended_count >= required_lsp))
+            group["sample_ready"] = bool(group["sample_ready"] or sample_ready)
+            group["ready_lsp"] = bool(group["ready_lsp"] or lsp_ready)
+            if cycle_progress >= float(group["lsp_cycle_progress"]):
+                group["lsp_sin_span"] = sin_span
+                group["lsp_required_sin_span"] = required_sin_span
+                group["lsp_cycle_progress"] = cycle_progress
             last_timestamp = _iso(getattr(arc_state, "last_timestamp", None))
             if last_timestamp and (not group["last_timestamp"] or last_timestamp > group["last_timestamp"]):
                 group["last_timestamp"] = last_timestamp
@@ -579,8 +717,10 @@ class RealtimeEkfStationWorker(Thread):
         for arc in arcs:
             arc["signals"] = ",".join(arc.get("signals") or [])
         ready_lsp_count = sum(1 for arc in arcs if arc.get("ready_lsp"))
+        sample_ready_count = sum(1 for arc in arcs if arc.get("sample_ready"))
         initialized_arc_count = sum(1 for arc in arcs if arc.get("initialized"))
         max_lsp_samples = max([0] + [int(arc.get("detrended_sample_count") or 0) for arc in arcs])
+        max_cycle_progress = max([0.0] + [float(arc.get("lsp_cycle_progress") or 0.0) for arc in arcs])
         arcs.sort(key=lambda item: item.get("last_timestamp") or "", reverse=True)
         rh_initialized = bool(getattr(ekf, "rh_initialized", False))
         waiting_reason = ""
@@ -596,11 +736,14 @@ class RealtimeEkfStationWorker(Thread):
             waiting_reason = self._last_filter_warning or "No SNR records passed reflectometry filters"
         elif not arcs:
             waiting_reason = "Reflectometry records exist, waiting for EKF arc tracking"
-        elif ready_lsp_count <= 0:
+        elif sample_ready_count <= 0:
             waiting_reason = f"Waiting for one arc to reach {required_lsp} detrended samples"
+        elif ready_lsp_count <= 0:
+            waiting_reason = f"样本数已满足，等待高度角跨度覆盖 {required_cycles:g} 个干涉周期"
         else:
             waiting_reason = "LSP candidates are ready, waiting for stable RH estimate"
-        progress = 1.0 if rh_initialized else (min(1.0, max_lsp_samples / required_lsp) if required_lsp else 0.0)
+        sample_progress = min(1.0, max_lsp_samples / required_lsp) if required_lsp else 0.0
+        progress = 1.0 if rh_initialized else min(sample_progress, max_cycle_progress)
         return {
             "mode": "ekf",
             "rh_initialized": rh_initialized,
@@ -608,13 +751,30 @@ class RealtimeEkfStationWorker(Thread):
             "rh_initial_arc_count": self._rh_initial_arc_count,
             "required_lsp_samples": required_lsp,
             "required_arc_samples": required_arc,
+            "required_lsp_cycles": required_cycles,
             "max_lsp_samples": max_lsp_samples,
+            "max_cycle_progress": max_cycle_progress,
+            "sample_ready_arc_count": sample_ready_count,
             "ready_lsp_arc_count": ready_lsp_count,
             "tracked_arc_count": len(arcs),
             "initialized_arc_count": initialized_arc_count,
             "progress": progress,
             "waiting_reason": waiting_reason,
             "arcs": arcs[:60],
+        }
+
+    def _receiver_position_status_locked(self) -> dict[str, Any]:
+        config = self._reflector_config
+        position = getattr(getattr(config, "station", None), "receiver_position", None)
+        values = position.as_dict() if position is not None else {}
+        ready = _receiver_xyz(config) is not None if config is not None else False
+        return {
+            **values,
+            "status": "ready" if ready else ("waiting_rtcm" if config is not None else "not_loaded"),
+            "source": self._coordinate_source,
+            "rtcm_message_type": self._coordinate_message_type or None,
+            "acquired_at": _iso(self._coordinate_acquired_at),
+            "error": self._coordinate_error,
         }
 
     def _set_state(self, state: str) -> None:
@@ -688,11 +848,89 @@ def _normalize_product_arc_metadata(row: dict[str, Any]) -> None:
 
 
 def _receiver_xyz(config: ReflectorConfig) -> list[float] | None:
+    if config is None:
+        return None
     position = config.station.receiver_position
     xyz = [position.x_m, position.y_m, position.z_m]
     if any(value is None for value in xyz):
         return None
-    return [float(value) for value in xyz]
+    return _valid_receiver_xyz(xyz)
+
+
+def _valid_receiver_xyz(values: Iterable[float]) -> list[float] | None:
+    try:
+        coordinates = [float(value) for value in values]
+    except (TypeError, ValueError):
+        return None
+    if len(coordinates) != 3 or not all(math.isfinite(value) for value in coordinates):
+        return None
+    radius = math.sqrt(sum(value * value for value in coordinates))
+    if not (1_000_000.0 <= radius <= 100_000_000.0):
+        return None
+    return coordinates
+
+
+def _sampling_interval_seconds(config: ReflectorConfig | None) -> float:
+    value = getattr(getattr(config, "input", None), "sampling_interval", None)
+    try:
+        interval = float(value)
+    except (TypeError, ValueError):
+        interval = 1.0
+    return interval if math.isfinite(interval) and interval > 0 else 1.0
+
+
+def _message_identity(msg: object) -> str:
+    try:
+        return str(getattr(msg, "identity", "") or "")
+    except Exception:
+        return ""
+
+
+def _configured_coordinate_source(path: Path) -> str:
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        position = ((raw.get("station") or {}).get("receiver_position") or {})
+        source = str(position.get("source") or "config").strip().lower()
+        return source or "config"
+    except Exception:
+        return "config"
+
+
+def _persist_receiver_position(
+    path: Path,
+    position: dict[str, float | None],
+    *,
+    source: str,
+    message_type: str,
+    updated_at: datetime,
+) -> None:
+    path = Path(path)
+    with REFLECTOMETRY_CONFIG_WRITE_LOCK:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(raw, dict):
+            raise ValueError(f"Reflectometry config root must be a mapping: {path}")
+        station = raw.setdefault("station", {})
+        if not isinstance(station, dict):
+            raise ValueError("station config must be a mapping")
+        receiver_position = station.setdefault("receiver_position", {})
+        if not isinstance(receiver_position, dict):
+            raise ValueError("station.receiver_position must be a mapping")
+        receiver_position.update(position)
+        receiver_position["source"] = source
+        receiver_position["rtcm_message_type"] = str(message_type)
+        receiver_position["updated_at"] = updated_at.isoformat()
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(f"{path.suffix}.tmp")
+        try:
+            temporary.write_text(
+                yaml.safe_dump(raw, allow_unicode=True, sort_keys=False),
+                encoding="utf-8",
+            )
+            temporary.replace(path)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
 
 
 def _active_systems(config: ReflectorConfig) -> list[str]:
@@ -884,6 +1122,11 @@ def _optional_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _is_finite(value: Any) -> bool:
+    number = _optional_float(value)
+    return number is not None and math.isfinite(number)
 
 
 def _direction_label(value: Any) -> str:

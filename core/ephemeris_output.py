@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 from pathlib import Path
 from typing import Dict, Iterable, Mapping, Sequence
 
@@ -129,7 +130,14 @@ def _build_be2pos_input(eph: Mapping[str, object]):
 
 def _compute_clock_correction(eph: Mapping[str, object], transmit_time: float) -> float:
     if str(eph.get("satellite_id", "")).startswith("R"):
-        return -float(eph.get("tau_n", 0.0) or 0.0)
+        tau = float(eph.get("tau_n", 0.0) or 0.0)
+        gamma = float(eph.get("gamma_n", 0.0) or 0.0)
+        tb = float(eph.get("tb") or eph.get("toe") or eph.get("toc") or 0.0)
+        dt = _time_difference(transmit_time, tb)
+        reference_dt = dt
+        for _ in range(2):
+            dt = reference_dt - (tau + gamma * dt)
+        return tau + gamma * dt
 
     af0 = float(eph.get("af0", 0.0) or 0.0)
     af1 = float(eph.get("af1", 0.0) or 0.0)
@@ -343,6 +351,8 @@ class PreciseSp3Writer:
             position_m, clock_bias_s, _ssr_applied = states[satellite_id]
             x_m, y_m, z_m = [float(value) for value in position_m[:3]]
             clock_us = float(clock_bias_s) * 1.0e6
+            if not math.isfinite(clock_us) or abs(clock_us) >= 999999.0:
+                clock_us = 999999.999999
             self._handle.write(
                 f"P{satellite_id:<3}{x_m / 1000.0:14.6f}{y_m / 1000.0:14.6f}"
                 f"{z_m / 1000.0:14.6f}{clock_us:14.6f}\n"

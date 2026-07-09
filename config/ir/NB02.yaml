@@ -1,0 +1,39 @@
+station:
+  station_id: NB01
+  receiver_position:
+    x_m: -2890959.3639
+    y_m: 4725857.8175
+    z_m: 3150025.4074000004
+    source: rtcm_1006
+    latitude_deg: 29.78814911369472
+    longitude_deg: 121.45546778085424
+    height_m: 21.960523235611618
+    rtcm_message_type: '1006'
+    updated_at: '2026-06-21T12:42:32.878467+00:00'
+input:
+  constellations: []
+  signals: []
+  exclude_constellations: []
+  exclude_signals: []
+  sampling_interval: 30
+processing:
+  min_elevation_deg: 5
+  max_elevation_deg: 30
+ir:
+  ekf:
+    q_rh: 0
+    measurement_variance: 1.3055
+    initial_rh_m: 8
+    rh_init_min_samples: 30
+    init_min_samples: 12
+    rh_init_max_arcs: 8
+    output_interval_seconds: 60
+    output_window_seconds: 60
+    max_time_gap_seconds: 22.5
+  min_reflector_height: 2.836
+  max_reflector_height: 12.836
+  estimation_mode: ekf
+products:
+  sea_level_reference: 8.832
+geometry:
+  reflection_zones: []

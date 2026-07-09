@@ -284,7 +284,9 @@ function renderStationList() {
   for (const station of stations) {
     const health = station.stream_health || {};
     const latest = latestProductValue(station.latest_product, state.products);
-    const card = document.createElement("div");
+    const card = document.createElement("button");
+    card.type = "button";
+    card.dataset.stationName = station.name;
     card.className = `station-card${station.name === state.selected ? " active" : ""}`;
     card.onclick = () => selectStation(station.name);
     const badgeClass = statusClass(health.label || station.state, station.last_error);
@@ -337,6 +339,8 @@ function renderOverview() {
   const health = runtime.stream_health || {};
   const init = runtime.initialization || {};
   const epoch = runtime.epoch_summary || {};
+  const sampling = runtime.sampling || {};
+  const receiverPosition = runtime.receiver_position || {};
   const latestSea = latestProduct("sea_level");
 
   setText("stateValue", runtime.state || "-");
@@ -365,7 +369,9 @@ function renderOverview() {
   toggleInitPanel(init);
   const progress = Math.max(0, Math.min(1, Number(init.progress || 0)));
   if ($("initProgress")) $("initProgress").style.width = `${Math.round(progress * 100)}%`;
-  if ($("initBadge")) $("initBadge").textContent = init.rh_initialized ? "ready" : "LSP";
+  if ($("initBadge")) $("initBadge").textContent = init.rh_initialized
+    ? "EKF ready"
+    : (init.mode === "waiting_coordinate" ? "RTCM 坐标" : "LSP");
   if ($("initReason")) $("initReason").textContent = init.rh_initialized
     ? `LSP 初始化完成，初始 RH ${fmtNum(init.rh_initial_m, 3)} m，参与初始化弧段 ${init.rh_initial_arc_count || 0}`
     : (init.waiting_reason || "-");
@@ -373,6 +379,14 @@ function renderOverview() {
   if ($("maxLspSamplesInfo")) $("maxLspSamplesInfo").textContent = String(init.max_lsp_samples || 0);
   if ($("requiredSamplesInfo")) $("requiredSamplesInfo").textContent = String(init.required_lsp_samples || 0);
   if ($("initializedArcInfo")) $("initializedArcInfo").textContent = String(init.initialized_arc_count || 0);
+  if ($("cycleProgressInfo")) $("cycleProgressInfo").textContent = `${Math.round(Number(init.max_cycle_progress || 0) * 100)}% / ${fmtNum(init.required_lsp_cycles || 0, 1)} 周期`;
+  if ($("samplingInfo")) $("samplingInfo").textContent = `${fmtNum(sampling.interval_seconds || 0, 0)} s · ${sampling.ingested_epochs || 0} 历元`;
+  renderInitStages({
+    coordinateReady: receiverPosition.status === "ready",
+    streamReady: Number(runtime.messages_received || 0) > 0 && Number(runtime.epochs_processed || 0) > 0,
+    lspReady: Boolean(init.rh_initialized),
+    ekfReady: Number(runtime.products_emitted || 0) > 0
+  });
   if (state.activeTab === "overview") drawLspArcChart(init.arcs || []);
 
   const inversionSatelliteCount = epoch.inversion_satellite_count ?? uniqueCount(runtime.record_samples || [], "satellite");
@@ -414,6 +428,31 @@ function toggleInitPanel(init) {
   const panel = $("initPanel");
   if (!panel) return;
   panel.classList.toggle("lsp-ready", Boolean(init && init.rh_initialized));
+  if (!init) renderInitStages({});
+}
+
+function renderInitStages({ coordinateReady = false, streamReady = false, lspReady = false, ekfReady = false }) {
+  const stages = [
+    ["initCoordinateStage", coordinateReady, !coordinateReady],
+    ["initStreamStage", streamReady, coordinateReady && !streamReady],
+    ["initLspStage", lspReady, streamReady && !lspReady],
+    ["initEkfStage", ekfReady, lspReady && !ekfReady]
+  ];
+  for (const [id, ready, current] of stages) {
+    const node = $(id);
+    if (!node) continue;
+    node.classList.toggle("ready", Boolean(ready));
+    node.classList.toggle("current", Boolean(current));
+  }
+}
+
+function coordinateSourceLabel(source, status) {
+  if (status !== "ready") return "等待 RTCM";
+  const value = String(source || "config").toLowerCase();
+  if (value === "rtcm_1005") return "RTCM 1005";
+  if (value === "rtcm_1006") return "RTCM 1006";
+  if (value === "manual") return "手动配置";
+  return "配置文件";
 }
 
 function statusClass(label, hasError = false) {
@@ -458,7 +497,7 @@ function renderArcTable(arcs) {
     tr.innerHTML = `
       <td>${escapeHtml(arc.arc)}</td>
       <td>${escapeHtml(arc.sample_count || 0)}</td>
-      <td>${escapeHtml(arc.detrended_sample_count || 0)}</td>
+      <td>${escapeHtml(`${arc.detrended_sample_count || 0} / ${Math.round(Number(arc.lsp_cycle_progress || 0) * 100)}%`)}</td>
       <td>${escapeHtml(fmtNum(arc.last_elevation_deg, 2))}</td>
       <td>${escapeHtml(arc.signal_count || "")}</td>
     `;
@@ -497,7 +536,9 @@ function renderError(message) {
 }
 
 function stationGeo() {
-  const position = state.irConfig?.station?.receiver_position || {};
+  const runtimePosition = selectedRuntime()?.receiver_position || {};
+  const configuredPosition = state.irConfig?.station?.receiver_position || {};
+  const position = runtimePosition.status === "ready" ? runtimePosition : configuredPosition;
   const numeric = (value) => (value === null || value === undefined || value === "" ? NaN : Number(value));
   const lat = numeric(position.latitude_deg);
   const lon = numeric(position.longitude_deg);
@@ -505,7 +546,12 @@ function stationGeo() {
   return {
     lat: Number.isFinite(lat) ? lat : null,
     lon: Number.isFinite(lon) ? lon : null,
-    height: Number.isFinite(height) ? height : null
+    height: Number.isFinite(height) ? height : null,
+    x: numeric(position.x_m),
+    y: numeric(position.y_m),
+    z: numeric(position.z_m),
+    source: position.source || runtimePosition.source || "config",
+    status: runtimePosition.status || (Number.isFinite(numeric(position.x_m)) ? "ready" : "waiting_rtcm")
   };
 }
 
@@ -515,9 +561,13 @@ function renderStationLocation() {
   setText("stationLatInfo", hasLatLon ? `${fmtNum(geo.lat, 6)} deg` : "-");
   setText("stationLonInfo", hasLatLon ? `${fmtNum(geo.lon, 6)} deg` : "-");
   setText("stationHeightInfo", Number.isFinite(geo.height) ? `${fmtNum(geo.height, 3)} m` : "-");
+  setText("stationXInfo", Number.isFinite(geo.x) ? `${fmtNum(geo.x, 4)} m` : "-");
+  setText("stationYInfo", Number.isFinite(geo.y) ? `${fmtNum(geo.y, 4)} m` : "-");
+  setText("stationZInfo", Number.isFinite(geo.z) ? `${fmtNum(geo.z, 4)} m` : "-");
+  setText("stationCoordinateSource", coordinateSourceLabel(geo.source, geo.status));
   const badge = $("stationMapBadge");
   if (badge) {
-    badge.textContent = hasLatLon ? "OSM" : tr("noCoordinate");
+    badge.textContent = hasLatLon ? coordinateSourceLabel(geo.source, geo.status) : "等待 RTCM 1005/1006";
     badge.className = `badge ${hasLatLon ? "running" : "warning"}`;
   }
   drawStationMap(geo);
@@ -758,8 +808,13 @@ function fillIrForm() {
   const raw = state.irConfig || {};
   if (!form) return;
   form.elements.station_id.value = raw.station?.station_id || "";
+  const position = raw.station?.receiver_position || {};
+  form.elements.receiver_x_m.value = position.x_m ?? "";
+  form.elements.receiver_y_m.value = position.y_m ?? "";
+  form.elements.receiver_z_m.value = position.z_m ?? "";
   form.elements.exclude_constellations.value = listToText(raw.input?.exclude_constellations);
   form.elements.exclude_signals.value = listToText(raw.input?.exclude_signals);
+  form.elements.sampling_interval.value = raw.input?.sampling_interval ?? "";
   const zone = (raw.geometry?.reflection_zones || [])[0] || {};
   form.elements.min_elevation_deg.value = raw.processing?.min_elevation_deg ?? zone.min_elevation_deg ?? "";
   form.elements.max_elevation_deg.value = raw.processing?.max_elevation_deg ?? zone.max_elevation_deg ?? "";
@@ -790,10 +845,46 @@ function applyIrFormToRaw() {
   raw.geometry ||= {};
   raw.geometry.reflection_zones ||= [];
   raw.station.station_id = form.elements.station_id.value.trim();
+  raw.station.receiver_position ||= {};
+  const originalPosition = { ...raw.station.receiver_position };
+  const receiverValues = ["receiver_x_m", "receiver_y_m", "receiver_z_m"]
+    .map((name) => numberOrNull(form.elements[name].value));
+  const receiverValueCount = receiverValues.filter((value) => value !== null).length;
+  for (const name of ["receiver_x_m", "receiver_y_m", "receiver_z_m"]) {
+    form.elements[name].setCustomValidity("");
+  }
+  if (receiverValueCount !== 0 && receiverValueCount !== 3) {
+    const message = "ECEF X/Y/Z 必须全部填写或全部留空";
+    for (const name of ["receiver_x_m", "receiver_y_m", "receiver_z_m"]) {
+      form.elements[name].setCustomValidity(message);
+    }
+    form.reportValidity();
+    throw new Error(message);
+  }
+  const position = raw.station.receiver_position;
+  [position.x_m, position.y_m, position.z_m] = receiverValues;
+  if (receiverValueCount === 0) {
+    position.latitude_deg = null;
+    position.longitude_deg = null;
+    position.height_m = null;
+    position.source = "rtcm_auto";
+    delete position.rtcm_message_type;
+    delete position.updated_at;
+  } else {
+    const coordinateChanged = ["x_m", "y_m", "z_m"].some(
+      (key, index) => Number(originalPosition[key]) !== receiverValues[index]
+    );
+    if (coordinateChanged) {
+      position.source = "manual";
+      delete position.rtcm_message_type;
+      delete position.updated_at;
+    }
+  }
   raw.input.constellations = [];
   raw.input.signals = [];
   raw.input.exclude_constellations = textToList(form.elements.exclude_constellations.value);
   raw.input.exclude_signals = textToList(form.elements.exclude_signals.value);
+  raw.input.sampling_interval = numberOrNull(form.elements.sampling_interval.value);
   raw.processing.min_elevation_deg = numberOrNull(form.elements.min_elevation_deg.value);
   raw.processing.max_elevation_deg = numberOrNull(form.elements.max_elevation_deg.value);
   raw.ir.min_reflector_height = numberOrNull(form.elements.min_reflector_height.value);
@@ -1384,8 +1475,12 @@ function bindEvents() {
   $("irForm").onsubmit = async (event) => {
     event.preventDefault();
     if (!canAdmin()) return showTransientError(tr("viewerOnly"));
-    const raw = applyIrFormToRaw();
-    await saveIrConfig(raw);
+    try {
+      const raw = applyIrFormToRaw();
+      await saveIrConfig(raw);
+    } catch (error) {
+      showTransientError(error?.message || String(error));
+    }
   };
   $("postprocessForm").onsubmit = submitPostprocess;
   $("postprocessForm").elements.observation_file.addEventListener("change", updateFilePickers);
@@ -1663,6 +1758,7 @@ function textToList(value) {
 }
 
 function numberOrNull(value) {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }

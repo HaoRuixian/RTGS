@@ -2,66 +2,82 @@ server:
   host: 127.0.0.1
   port: 8090
   poll_seconds: 1.0
-
 storage:
-  output_dir: ../output/realtime_ekf_gnssir
+  output_dir: /output/realtime_ekf_gnssir
   write_jsonl: true
   write_csv: true
-
 stations:
-  - name: NBFH
+- name: NB01
+  enabled: true
+  reflectometry_config: D:\GNSS_ToolBox\RTGS\config\ir\NBFH.yaml
+  obs_settings:
+    source_type: NTRIP Server
     enabled: true
-    reflectometry_config: ir/NBFH.yaml
-
-    obs_settings:
-      host: grserg.top
-      port: 2101
-      mountpoint: NBFH
-      user: adminHRX
-      password: hao20030801
-      connect_timeout_seconds: 60
-      reconnect_delay_seconds: 5
-
-    eph_settings:
-      enabled: true
-      host: ntrip.data.gnss.ga.gov.au
-      port: 2101
-      mountpoint: BCEP00BKG0
-      user: hrx
-      password: Hao20030801@
-      connect_timeout_seconds: 15
-      reconnect_delay_seconds: 5
-
-    runtime:
-      auto_start: false
-      max_product_history: 1000
-
-  - name: SC02
+    host: grserg.top
+    port: 2101
+    mountpoint: NB01
+    user: adminHRX
+    password: hao20030801
+    serial_port: COM1
+    baudrate: 115200
+    databits: 8
+    stopbits: 1.0
+    parity: None
+    flowctrl: None
+    file_path: ''
+    replay_speed: 1.0
+    file_type: Auto Detect
+    final_results_only: false
+    user_agent: NTRIP RTGS EKF-GNSSIR/0.1
+    connect_timeout_seconds: 60.0
+    reconnect_delay_seconds: 5.0
+  eph_settings:
+    source_type: NTRIP Server
     enabled: true
-    reflectometry_config: ir/SC02.yaml
-
-    obs_settings:
-      source_type: NTRIP Server
-      enabled: true
-      host: ntrip.earthscope.org
-      port: 2101
-      mountpoint: SC02_RTCM3P3
-      user: keen_bell
-      password: NpwPoUk73wbRE7DS
-      connect_timeout_seconds: 60
-      reconnect_delay_seconds: 5
-
-    eph_settings:
-      source_type: NTRIP Server
-      enabled: true
-      host: ntrip.data.gnss.ga.gov.au
-      port: 2101
-      mountpoint: BCEP00BKG0
-      user: hrx
-      password: Hao20030801@
-      connect_timeout_seconds: 15
-      reconnect_delay_seconds: 5
-
-    runtime:
-      auto_start: false
-      max_product_history: 1000
+    host: ntrip.data.gnss.ga.gov.au
+    port: 2101
+    mountpoint: BCEP00BKG0
+    user: hrx
+    password: Hao20030801@
+    serial_port: COM1
+    baudrate: 115200
+    databits: 8
+    stopbits: 1.0
+    parity: None
+    flowctrl: None
+    file_path: ''
+    replay_speed: 1.0
+    file_type: Auto Detect
+    final_results_only: false
+    user_agent: NTRIP RTGS EKF-GNSSIR/0.1
+    connect_timeout_seconds: 15.0
+    reconnect_delay_seconds: 5.0
+  runtime:
+    auto_start: false
+    max_product_history: 9000
+- name: SC02
+  enabled: true
+  reflectometry_config: ir/SC02.yaml
+  obs_settings:
+    source_type: NTRIP Server
+    enabled: true
+    host: ntrip.earthscope.org
+    port: 2101
+    mountpoint: SC02_RTCM3P3
+    user: keen_bell
+    password: NpwPoUk73wbRE7DS
+    connect_timeout_seconds: 60
+    reconnect_delay_seconds: 5
+  eph_settings:
+    source_type: NTRIP Server
+    enabled: true
+    host: ntrip.data.gnss.ga.gov.au
+    port: 2101
+    mountpoint: BCEP00BKG0
+    user: hrx
+    password: Hao20030801@
+    connect_timeout_seconds: 15
+    reconnect_delay_seconds: 5
+  runtime:
+    auto_start: false
+    max_product_history: 1000

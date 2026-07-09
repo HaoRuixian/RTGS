@@ -25,16 +25,16 @@ obs_settings:
   file_type: Auto Detect
   final_results_only: false
   flowctrl: None
-  host: ntrip.earthscope.org
-  mountpoint: SC02_RTCM3P3
+  host: grserg.top
+  mountpoint: NB02
   parity: None
-  password: NpwPoUk73wbRE7DS
+  password: hao20030801
   port: '2101'
   replay_speed: 1.0
   serial_port: No ports found
   source_type: NTRIP Server
   stopbits: 1.0
-  user: keen_bell
+  user: adminHRX
 positioning_settings:
   cutoff_elevation_deg: 10.0
   fixed_std_pos: 2.5

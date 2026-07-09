@@ -10,9 +10,9 @@ from statistics import mean
 
 import numpy as np
 
-from core.reflectometry.config import ProductsConfig
-from core.reflectometry.models import ProductType
-from core.reflectometry.models import (
+from ..config import ProductsConfig
+from ..models import ProductType
+from ..models import (
     ArcSolution,
     ProductResult,
     ReflectorHeightResult,

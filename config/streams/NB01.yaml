@@ -25,16 +25,16 @@ obs_settings:
   file_type: Auto Detect
   final_results_only: false
   flowctrl: None
-  host: ntrip.earthscope.org
-  mountpoint: SC02_RTCM3P3
+  host: grserg.top
+  mountpoint: NB01
   parity: None
-  password: NpwPoUk73wbRE7DS
+  password: hao20030801
   port: '2101'
   replay_speed: 1.0
   serial_port: No ports found
   source_type: NTRIP Server
   stopbits: 1.0
-  user: keen_bell
+  user: adminHRX
 positioning_settings:
   cutoff_elevation_deg: 10.0
   fixed_std_pos: 2.5
@@ -58,21 +58,21 @@ positioning_settings:
 ssr_settings:
   baudrate: 115200
   databits: 8
-  enabled: true
+  enabled: false
   file_path: ''
   file_type: Auto Detect
   final_results_only: false
   flowctrl: None
-  host: ntrip.data.gnss.ga.gov.au
-  mountpoint: SSRA00CNE0
+  host: ''
+  mountpoint: ''
   parity: None
-  password: Hao20030801@
+  password: ''
   port: '2101'
   replay_speed: 1.0
-  serial_port: No ports found
+  serial_port: COM1
   source_type: NTRIP Server
-  stopbits: 1.0
-  user: hrx
+  stopbits: 1
+  user: ''
 target_systems:
 - G
 - R

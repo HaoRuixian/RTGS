@@ -60,17 +60,17 @@ ir:
     q_varphi: 0
     q_amplitude: 6.0e-5
     q_phase: 0
-    measurement_variance: 0.17262
+    measurement_variance: 0.17049
     robust_measurement_update: false
     initial_rh_m: 5.0
     initial_rh_variance: 1.0
     local_state_variance: 1.0
     init_min_samples: 20
     init_max_samples: 600
-    rh_init_min_height_m: 3
-    rh_init_max_height_m: 9
+    rh_init_min_height_m: 4
+    rh_init_max_height_m: 6
     rh_init_min_samples: 20
-    rh_init_min_arcs: 1
+    rh_init_min_arcs: 3
     rh_init_max_arcs: 8
     rh_init_max_samples_per_arc: 600
     rh_init_cycles: 2.0

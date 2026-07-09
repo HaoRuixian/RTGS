@@ -449,14 +449,25 @@ class RTCMHandler:
                 gps_seconds = epoch_time_s % GPS_WEEK_SECONDS
 
             elif sys_id == 'R':
-                # GLONASS: DF034 gives milliseconds of day (0..86400e3). Defined as UTC(SU)+3h
-                # Convert to seconds-of-week by using the latest non-GLONASS epoch as the
-                # day anchor. This keeps offline file conversion coherent across UTC day
-                # boundaries where GPS-like systems may already have advanced the timeline.
-                day_anchor = self._reference_utc_for_glonass_day()
-                day_index = self._utc_day_of_week(day_anchor)
+                # GLONASS MSM time is the composite DF416 day-of-week plus DF034
+                # milliseconds-of-day. DF416=7 means unknown, in which case the
+                # latest non-GLONASS epoch remains the safest day anchor.
+                try:
+                    transmitted_day = int(getattr(msg, "DF416", 7))
+                except (TypeError, ValueError):
+                    transmitted_day = 7
+                has_transmitted_day = 0 <= transmitted_day <= 6
+                if has_transmitted_day:
+                    day_index = transmitted_day
+                else:
+                    day_index = self._utc_day_of_week(self._reference_utc_for_glonass_day())
                 # Subtract 3 hours to convert UTC(SU)+3h -> UTC seconds-of-day
                 seconds_of_day = (epoch_time_s) - 3 * 3600.0
+                # During 00:00-03:00 GLONASS time, UTC is still on the
+                # previous day. DF416 has already advanced, so carry the
+                # subtraction into the transmitted day-of-week as well.
+                if has_transmitted_day and seconds_of_day < 0.0:
+                    day_index = (day_index - 1) % 7
                 # Ensure within 0..86400 range
                 seconds_of_day = seconds_of_day % (24 * 3600)
                 gps_seconds = (day_index * 24 * 3600) + seconds_of_day + 18
@@ -616,7 +627,7 @@ class RTCMHandler:
                         carrier_phase = ph_m * freq / CLIGHT
 
                 rr_fine = getattr(msg, f"DF404_{idx}", None)
-                doppler = 0.0
+                doppler = None
                 if (
                     has_doppler
                     and rough_rate is not None
@@ -638,7 +649,7 @@ class RTCMHandler:
                         snr=float(snr),
                         lock_time=lock_time,
                         half_cycle=half_cycle,
-                        doppler=float(doppler),
+                        doppler=None if doppler is None else float(doppler),
                     )
                     sat_state.signals[sig_id] = obs
 

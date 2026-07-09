@@ -170,7 +170,7 @@ def _iter_merged_epochs(messages: Iterable[tuple[bytes | None, object]], handler
 
 
 def _detect_sys_obs_types(epochs: Iterable[EpochObservation]) -> Dict[str, list[str]]:
-    signal_ids_by_system: Dict[str, set[str]] = {}
+    observation_codes_by_system: Dict[str, set[str]] = {}
 
     for epoch in epochs:
         for sat_id, sat_state in getattr(epoch, "satellites", {}).items():
@@ -178,30 +178,36 @@ def _detect_sys_obs_types(epochs: Iterable[EpochObservation]) -> Dict[str, list[
                 continue
 
             system = sat_id[0].upper()
-            for signal_id in getattr(sat_state, "signals", {}).keys():
+            for signal_id, signal_data in getattr(sat_state, "signals", {}).items():
                 normalized = str(signal_id).strip().upper()
                 if normalized:
-                    signal_ids_by_system.setdefault(system, set()).add(normalized)
+                    known_codes = observation_codes_by_system.setdefault(system, set())
+                    for prefix, attribute in (
+                        ("C", "pseudorange"),
+                        ("L", "phase"),
+                        ("D", "doppler"),
+                        ("S", "snr"),
+                    ):
+                        if getattr(signal_data, attribute, None) is not None:
+                            known_codes.add(f"{prefix}{normalized}")
 
-    return _build_sys_obs_types(signal_ids_by_system)
+    return _build_sys_obs_types(observation_codes_by_system)
 
 
-def _build_sys_obs_types(signal_ids_by_system: Dict[str, set[str]]) -> Dict[str, list[str]]:
-    if not signal_ids_by_system:
+def _build_sys_obs_types(observation_codes_by_system: Dict[str, set[str]]) -> Dict[str, list[str]]:
+    if not observation_codes_by_system:
         return _copy_default_sys_obs_types()
 
     sys_obs_types: Dict[str, list[str]] = {}
-    for system in sorted(signal_ids_by_system.keys()):
+    for system in sorted(observation_codes_by_system.keys()):
+        known_codes = observation_codes_by_system[system]
         obs_codes: list[str] = []
-        for signal_id in sorted(signal_ids_by_system[system]):
-            obs_codes.extend(
-                [
-                    f"C{signal_id}",
-                    f"L{signal_id}",
-                    f"D{signal_id}",
-                    f"S{signal_id}",
-                ]
-            )
+        signal_ids = sorted({code[1:] for code in known_codes if len(code) > 1})
+        for signal_id in signal_ids:
+            for prefix in ("C", "L", "D", "S"):
+                code = f"{prefix}{signal_id}"
+                if code in known_codes:
+                    obs_codes.append(code)
         if obs_codes:
             sys_obs_types[system] = obs_codes
 
@@ -348,7 +354,7 @@ def scan_rtcm_file(
     previous_epoch_ms: Optional[int] = None
     delta_counter: Counter[int] = Counter()
     reasonable_delta_counter: Counter[int] = Counter()
-    signal_ids_by_system: Dict[str, set[str]] = {}
+    observation_codes_by_system: Dict[str, set[str]] = {}
     stable_epoch_count = 0
 
     with input_path.open("rb") as stream:
@@ -378,13 +384,22 @@ def scan_rtcm_file(
                 if not sat_id:
                     continue
                 system = sat_id[0].upper()
-                for signal_id in getattr(sat_state, "signals", {}).keys():
+                for signal_id, signal_data in getattr(sat_state, "signals", {}).items():
                     normalized_signal = str(signal_id).strip().upper()
                     if normalized_signal:
-                        known_signals = signal_ids_by_system.setdefault(system, set())
-                        if normalized_signal not in known_signals:
-                            known_signals.add(normalized_signal)
-                            signal_changed = True
+                        known_codes = observation_codes_by_system.setdefault(system, set())
+                        for prefix, attribute in (
+                            ("C", "pseudorange"),
+                            ("L", "phase"),
+                            ("D", "doppler"),
+                            ("S", "snr"),
+                        ):
+                            if getattr(signal_data, attribute, None) is None:
+                                continue
+                            observation_code = f"{prefix}{normalized_signal}"
+                            if observation_code not in known_codes:
+                                known_codes.add(observation_code)
+                                signal_changed = True
 
             approx_position = getattr(handler, "last_station_coords", None)
             if approx_position:
@@ -412,7 +427,7 @@ def scan_rtcm_file(
                     break
 
     _update_summary_from_handler(summary, handler)
-    summary.sys_obs_types = _build_sys_obs_types(signal_ids_by_system)
+    summary.sys_obs_types = _build_sys_obs_types(observation_codes_by_system)
 
     selected_counter = reasonable_delta_counter or delta_counter
     if selected_counter:

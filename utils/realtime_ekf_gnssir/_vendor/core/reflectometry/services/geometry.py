@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Callable
 
-from core.reflectometry.config import GeometryConfig, ProcessingConfig, ReflectionZoneConfig
-from core.reflectometry.models import ObservationRecord
+from ..config import GeometryConfig, ProcessingConfig, ReflectionZoneConfig
+from ..models import ObservationRecord
 
 
 GeometryCallback = Callable[[ObservationRecord], tuple[float, float]]

@@ -30,7 +30,7 @@ class SignalData:
     pseudorange: float
     lock_time: int
     half_cycle: int
-    doppler: float
+    doppler: float | None
 
 
 @dataclass

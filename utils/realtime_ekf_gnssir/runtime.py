@@ -14,16 +14,12 @@ import time
 from typing import Any, Iterable
 from uuid import uuid4
 
-from ._vendor import install_aliases
-
-install_aliases()
-
 import yaml
 
-from core.geo_utils import ecef2lla
-from core.reflectometry.config import config_to_dict, load_config
+from ._vendor.core.geo_utils import ecef2lla
+from ._vendor.core.reflectometry.config import config_to_dict, load_config
 
-from .config import AppConfig, AppConfigStore, StationConfig
+from .config import AppConfig, AppConfigStore, REFLECTOMETRY_CONFIG_WRITE_LOCK, StationConfig
 from .station_worker import RealtimeEkfStationWorker
 
 
@@ -235,15 +231,17 @@ class RealtimeEkfRuntimeManager:
             raw = payload["config"]
         if not isinstance(raw, dict):
             raise ValueError("Reflectometry config payload must be an object")
+        _normalize_receiver_position_payload(raw)
         config = self.reload_config(force=True)
         station = self._find_station(config, name)
         if station is None:
             raise KeyError(f"Unknown station: {name}")
         path = station.reflectometry_config
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as handle:
-            yaml.safe_dump(raw, handle, allow_unicode=True, sort_keys=False)
-        load_config(path)
+        with REFLECTOMETRY_CONFIG_WRITE_LOCK:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("w", encoding="utf-8") as handle:
+                yaml.safe_dump(raw, handle, allow_unicode=True, sort_keys=False)
+            load_config(path)
         worker = self._workers.get(name)
         if worker is not None and worker.is_alive():
             self.logs.write(name, "Reflectometry config saved; restart the station to apply changes")
@@ -269,11 +267,11 @@ class RealtimeEkfRuntimeManager:
         if ephemeris_file is None or not ephemeris_file[1]:
             raise ValueError("RINEX/SP3 ephemeris file is required for GNSS-IR geometry")
 
-        from core.rinex_loader import FileEphemerisProvider, RinexObservationReader, read_rinex_observation_header
-        from core.reflectometry.outputs import ResultSerializer
-        from core.reflectometry.providers import ListObservationProvider
-        from core.reflectometry.rinex_batch import build_observation_records_from_epoch
-        from core.reflectometry.services.batch import BatchProcessor
+        from ._vendor.core.rinex_loader import FileEphemerisProvider, RinexObservationReader, read_rinex_observation_header
+        from ._vendor.core.reflectometry.outputs import ResultSerializer
+        from ._vendor.core.reflectometry.providers import ListObservationProvider
+        from ._vendor.core.reflectometry.rinex_batch import build_observation_records_from_epoch
+        from ._vendor.core.reflectometry.services.batch import BatchProcessor
 
         job_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8]
         job_dir = config.storage.output_dir / station.name / "postprocess" / job_id
@@ -429,6 +427,9 @@ class RealtimeEkfRuntimeManager:
     def _station_idle_snapshot(self, station: StationConfig | None) -> dict[str, Any]:
         if station is None:
             return {"state": "unknown", "alive": False}
+        receiver_position = _idle_receiver_position(station.reflectometry_config)
+        sampling_interval = _idle_sampling_interval(station.reflectometry_config)
+        waiting_for_coordinate = receiver_position.get("status") != "ready"
         return {
             "name": station.name,
             "enabled": station.enabled,
@@ -450,6 +451,13 @@ class RealtimeEkfRuntimeManager:
             "epochs_processed": 0,
             "observations_ingested": 0,
             "products_emitted": 0,
+            "receiver_position": receiver_position,
+            "sampling": {
+                "interval_seconds": sampling_interval,
+                "ingested_epochs": 0,
+                "skipped_epochs": 0,
+                "last_ingested_epoch_time": None,
+            },
             "rh_initialized": False,
             "rh_initial_m": None,
             "rh_initial_arc_count": 0,
@@ -477,9 +485,9 @@ class RealtimeEkfRuntimeManager:
             "signal_counts": {},
             "record_samples": [],
             "initialization": {
-                "mode": "ekf",
+                "mode": "waiting_coordinate" if waiting_for_coordinate else "ekf",
                 "rh_initialized": False,
-                "waiting_reason": "Station is idle",
+                "waiting_reason": "测站坐标为空，启动后将等待 RTCM 1005/1006" if waiting_for_coordinate else "Station is idle",
                 "progress": 0.0,
                 "arcs": [],
             },
@@ -552,6 +560,34 @@ def _idle_reflection_zones(path: Path) -> list[dict[str, Any]]:
             }
         )
     return zones
+
+
+def _idle_receiver_position(path: Path) -> dict[str, Any]:
+    try:
+        config = load_config(path)
+        raw = _read_yaml(path)
+    except Exception as exc:
+        return {"status": "not_loaded", "source": "config", "error": str(exc)}
+    position = config.station.receiver_position
+    values = position.as_dict()
+    ready = _receiver_xyz_from_config(config) is not None
+    raw_position = ((raw.get("station") or {}).get("receiver_position") or {})
+    return {
+        **values,
+        "status": "ready" if ready else "waiting_rtcm",
+        "source": str(raw_position.get("source") or ("config" if ready else "rtcm_auto")),
+        "rtcm_message_type": raw_position.get("rtcm_message_type"),
+        "acquired_at": raw_position.get("updated_at"),
+        "error": "",
+    }
+
+
+def _idle_sampling_interval(path: Path) -> float:
+    try:
+        value = float(load_config(path).input.sampling_interval)
+    except Exception:
+        return 1.0
+    return value if math.isfinite(value) and value > 0 else 1.0
 
 
 def _merge_product_rows(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -644,7 +680,14 @@ def _receiver_xyz_from_config(config: Any) -> list[float] | None:
     xyz = [getattr(position, "x_m", None), getattr(position, "y_m", None), getattr(position, "z_m", None)]
     if any(value is None for value in xyz):
         return None
-    return [float(value) for value in xyz]
+    try:
+        coordinates = [float(value) for value in xyz]
+    except (TypeError, ValueError):
+        return None
+    radius = math.sqrt(sum(value * value for value in coordinates))
+    if not all(math.isfinite(value) for value in coordinates):
+        return None
+    return coordinates if 1_000_000.0 <= radius <= 100_000_000.0 else None
 
 
 def _apply_receiver_xyz(config: Any, xyz: list[float]) -> None:
@@ -656,6 +699,51 @@ def _apply_receiver_xyz(config: Any, xyz: list[float]) -> None:
     position.latitude_deg = math.degrees(float(latitude_rad))
     position.longitude_deg = math.degrees(float(longitude_rad))
     position.height_m = float(height_m)
+
+
+def _normalize_receiver_position_payload(raw: dict[str, Any]) -> None:
+    """Normalize the Web-editable XYZ fields and support RTCM auto mode."""
+    station = raw.setdefault("station", {})
+    if not isinstance(station, dict):
+        raise ValueError("station config must be an object")
+    position = station.setdefault("receiver_position", {})
+    if not isinstance(position, dict):
+        raise ValueError("station.receiver_position must be an object")
+
+    xyz = [_coordinate_number(position.get(key)) for key in ("x_m", "y_m", "z_m")]
+    configured_count = sum(value is not None for value in xyz)
+    if configured_count == 0:
+        for key in ("x_m", "y_m", "z_m", "latitude_deg", "longitude_deg", "height_m"):
+            position[key] = None
+        position["source"] = "rtcm_auto"
+        position.pop("rtcm_message_type", None)
+        position.pop("updated_at", None)
+        return
+    if configured_count != 3:
+        raise ValueError("station.receiver_position x_m/y_m/z_m must all three be blank or all three be set")
+
+    coordinates = [float(value) for value in xyz if value is not None]
+    radius = math.sqrt(sum(value * value for value in coordinates))
+    if not (1_000_000.0 <= radius <= 100_000_000.0):
+        raise ValueError("station.receiver_position is not a valid ECEF coordinate")
+    position["x_m"], position["y_m"], position["z_m"] = coordinates
+    latitude_rad, longitude_rad, height_m = ecef2lla(coordinates)
+    position["latitude_deg"] = math.degrees(float(latitude_rad))
+    position["longitude_deg"] = math.degrees(float(longitude_rad))
+    position["height_m"] = float(height_m)
+    position["source"] = str(position.get("source") or "manual")
+
+
+def _coordinate_number(value: Any) -> float | None:
+    if value is None or (isinstance(value, str) and value.strip().lower() in {"", "auto", "none", "null"}):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("station.receiver_position coordinates must be numeric or blank") from exc
+    if not math.isfinite(number):
+        raise ValueError("station.receiver_position coordinates must be finite")
+    return number
 
 
 def _active_systems_for_reflectometry(config: Any) -> list[str]:

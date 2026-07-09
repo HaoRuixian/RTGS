@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from core.reflectometry.signal_utils import normalize_signal_id
+from .signal_utils import normalize_signal_id
 
 
 class SnrUnit(str, Enum):

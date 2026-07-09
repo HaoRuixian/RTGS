@@ -13,21 +13,21 @@ try:
 except Exception:  # pragma: no cover - optional CSV/DataFrame dependency
     pd = None
 
-from core.reflectometry.outputs import ResultSerializer
-from core.reflectometry.outputs import OutputManager
-from core.reflectometry.providers import ObservationProvider
-from core.reflectometry.config import ReflectorConfig
-from core.reflectometry.models import ArcDirection
-from core.reflectometry.models import ArcSolution, ObservationRequest, ProcessingRunResult, SnrSeries
-from core.reflectometry.logging_utils import configure_logging
-from core.reflectometry.services.arc_builder import ArcBuilder
-from core.reflectometry.services.ekf import EkfReflectometryProcessor
-from core.reflectometry.services.geometry import GeometryResolver
-from core.reflectometry.services.height_estimator import HeightEstimator
-from core.reflectometry.services.preprocessing import SnrPreprocessor
-from core.reflectometry.services.products import ProductConverter
-from core.reflectometry.services.quality import QualityController
-from core.reflectometry.services.spectrum import SpectrumAnalyzer
+from ..outputs import ResultSerializer
+from ..outputs import OutputManager
+from ..providers import ObservationProvider
+from ..config import ReflectorConfig
+from ..models import ArcDirection
+from ..models import ArcSolution, ObservationRequest, ProcessingRunResult, SnrSeries
+from ..logging_utils import configure_logging
+from .arc_builder import ArcBuilder
+from .ekf import EkfReflectometryProcessor
+from .geometry import GeometryResolver
+from .height_estimator import HeightEstimator
+from .preprocessing import SnrPreprocessor
+from .products import ProductConverter
+from .quality import QualityController
+from .spectrum import SpectrumAnalyzer
 
 
 def _require_pandas():

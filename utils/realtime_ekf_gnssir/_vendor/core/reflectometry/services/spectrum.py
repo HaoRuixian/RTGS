@@ -12,8 +12,8 @@ except Exception:  # pragma: no cover - optional spectral dependency
     lombscargle = None
     peak_widths = None
 
-from core.reflectometry.config import IrConfig
-from core.reflectometry.models import PeakCandidate, SnrSeries
+from ..config import IrConfig
+from ..models import PeakCandidate, SnrSeries
 
 
 @dataclass(slots=True)

@@ -8,12 +8,12 @@ from datetime import datetime, timedelta
 import logging
 from pathlib import Path
 
-from core.reflectometry.providers import ListObservationProvider
-from core.reflectometry.config import ReflectorConfig, minimum_required_arc_samples
-from core.reflectometry.models import ArcSolution, ObservationRecord, ProcessingRunResult, SnrSeries
-from core.reflectometry.services.batch import BatchProcessor
-from core.reflectometry.services.ekf import EkfReflectometryProcessor
-from core.reflectometry.services.geometry import GeometryResolver
+from ..providers import ListObservationProvider
+from ..config import ReflectorConfig, minimum_required_arc_samples
+from ..models import ArcSolution, ObservationRecord, ProcessingRunResult, SnrSeries
+from .batch import BatchProcessor
+from .ekf import EkfReflectometryProcessor
+from .geometry import GeometryResolver
 
 
 class RealtimeProcessor:

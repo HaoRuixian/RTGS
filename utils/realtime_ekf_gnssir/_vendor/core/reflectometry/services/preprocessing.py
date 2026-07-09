@@ -8,11 +8,11 @@ try:
 except Exception:  # pragma: no cover - optional smoothing dependency
     savgol_filter = None
 
-from core.geo_utils import get_freq
-from core.reflectometry.config import IrConfig, ProcessingConfig, minimum_required_arc_samples
-from core.reflectometry.models import SnrUnit
-from core.reflectometry.models import SatelliteArc, SnrSeries
-from core.reflectometry.signal_utils import normalize_signal_id
+from ...geo_utils import get_freq
+from ..config import IrConfig, ProcessingConfig, minimum_required_arc_samples
+from ..models import SnrUnit
+from ..models import SatelliteArc, SnrSeries
+from ..signal_utils import normalize_signal_id
 
 
 class SnrPreprocessor:

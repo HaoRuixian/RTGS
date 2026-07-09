@@ -16,8 +16,8 @@ try:
 except Exception:  # pragma: no cover - depends on environment
     np = None
 
-from core.data_models import EpochObservation, SatelliteState, SignalData
-from core.gnss_time import GNSSTime
+from .data_models import EpochObservation, SatelliteState, SignalData
+from .gnss_time import GNSSTime
 
 
 SECONDS_PER_WEEK = 7 * 24 * 3600.0
@@ -972,7 +972,7 @@ class RinexObservationReader:
                             sat_state.sat_clk_corr = float(state.clock_correction_s)
                             sat_state.sat_var = 0.0
                             if receiver_position is not None:
-                                from core.geo_utils import calculate_az_el
+                                from .geo_utils import calculate_az_el
 
                                 azimuth, elevation = calculate_az_el(state.position_ecef_m, receiver_position)
                                 sat_state.azimuth = float(azimuth)

@@ -9,8 +9,8 @@ from typing import Any, Callable, Iterable, Protocol
 
 import numpy as np
 
-from core.reflectometry.models import ObservationRecord, ObservationRequest, ReceiverPosition, SnrUnit
-from core.reflectometry.signal_utils import normalize_signal_id, signal_matches
+from .models import ObservationRecord, ObservationRequest, ReceiverPosition, SnrUnit
+from .signal_utils import normalize_signal_id, signal_matches
 
 
 class ObservationProvider(ABC):

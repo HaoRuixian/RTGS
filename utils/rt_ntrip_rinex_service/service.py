@@ -43,6 +43,7 @@ DEFAULT_SYS_OBS_TYPES = {
 }
 
 SUPPORTED_TIME_SYSTEMS = {"GPS", "UTC"}
+EPOCH_COMMIT_DELAY_EPOCHS = 2
 
 
 @dataclass(slots=True)
@@ -134,31 +135,37 @@ def _normalize_sys_obs_types(raw: Optional[dict]) -> Dict[str, List[str]]:
 
 
 def _detect_sys_obs_types_from_satellites(satellites: Optional[dict]) -> Dict[str, List[str]]:
-    signal_ids_by_system: Dict[str, set[str]] = {}
+    observation_codes_by_system: Dict[str, set[str]] = {}
     for sat_id, sat_state in (satellites or {}).items():
         if not sat_id:
             continue
         system = str(sat_id)[0].upper()
-        for signal_id in getattr(sat_state, "signals", {}).keys():
+        for signal_id, signal_data in getattr(sat_state, "signals", {}).items():
             normalized = str(signal_id).strip().upper()
             if normalized:
-                signal_ids_by_system.setdefault(system, set()).add(normalized)
+                known_codes = observation_codes_by_system.setdefault(system, set())
+                for prefix, attribute in (
+                    ("C", "pseudorange"),
+                    ("L", "phase"),
+                    ("D", "doppler"),
+                    ("S", "snr"),
+                ):
+                    if getattr(signal_data, attribute, None) is not None:
+                        known_codes.add(f"{prefix}{normalized}")
 
-    if not signal_ids_by_system:
+    if not observation_codes_by_system:
         return _copy_default_sys_obs_types()
 
     sys_obs_types: Dict[str, List[str]] = {}
-    for system in sorted(signal_ids_by_system.keys()):
+    for system in sorted(observation_codes_by_system.keys()):
+        known_codes = observation_codes_by_system[system]
         obs_codes: List[str] = []
-        for signal_id in sorted(signal_ids_by_system[system]):
-            obs_codes.extend(
-                [
-                    f"C{signal_id}",
-                    f"L{signal_id}",
-                    f"D{signal_id}",
-                    f"S{signal_id}",
-                ]
-            )
+        signal_ids = sorted({code[1:] for code in known_codes if len(code) > 1})
+        for signal_id in signal_ids:
+            for prefix in ("C", "L", "D", "S"):
+                code = f"{prefix}{signal_id}"
+                if code in known_codes:
+                    obs_codes.append(code)
         if obs_codes:
             sys_obs_types[system] = obs_codes
 
@@ -595,14 +602,14 @@ class RTNtripRinexStation(threading.Thread):
         self.stop_event = threading.Event()
         self.status_lock = threading.Lock()
         self._stream = None
-        self._current_epoch: Optional[EpochObservation] = None
-        self._current_epoch_key: Optional[int] = None
+        self._epoch_buffer: Dict[int, EpochObservation] = {}
+        self._latest_epoch_key: Optional[int] = None
+        self._last_written_epoch_key: Optional[int] = None
         self._last_written_epoch_time: Optional[datetime] = None
         self._active_writer: Optional[RINEX3Writer] = None
         self._active_file_start_time: Optional[datetime] = None
         self._resolved_sample_interval_seconds: Optional[int] = self.station.rinex.sample_interval_seconds
         self._last_epoch_time_for_detection: Optional[datetime] = None
-        self._pending_epochs: List[EpochObservation] = []
         self._primed_sys_obs_types: Optional[Dict[str, List[str]]] = None
         self._last_header_refresh_monotonic = 0.0
         self._last_fsync_monotonic = 0.0
@@ -718,6 +725,25 @@ class RTNtripRinexStation(threading.Thread):
         rinex_cfg = self.station.rinex
         return str(rinex_cfg.antenna_model or rinex_cfg.antenna_number or "").strip()
 
+    def _resolve_receiver_type(self) -> str:
+        descriptor = str(getattr(self.handler, "last_receiver_type_descriptor", "") or "").strip()
+        return descriptor or self.station.rinex.receiver_type
+
+    def _resolve_receiver_serial(self) -> str:
+        serial = str(getattr(self.handler, "last_receiver_serial_number", "") or "").strip()
+        return serial or self.station.rinex.receiver_number
+
+    def _resolve_receiver_version(self) -> str:
+        return str(getattr(self.handler, "last_receiver_firmware_version", "") or "").strip()
+
+    def _resolve_antenna_type(self) -> str:
+        descriptor = str(getattr(self.handler, "last_antenna_descriptor", "") or "").strip()
+        return descriptor or self.station.rinex.antenna_type
+
+    def _resolve_antenna_number(self) -> str:
+        serial = str(getattr(self.handler, "last_antenna_serial_number", "") or "").strip()
+        return serial or self._resolve_antenna_model()
+
     def _run_connection_cycle(self) -> None:
         ntrip = self.station.ntrip
         endpoint = f"{ntrip.host}:{ntrip.port}/{ntrip.mountpoint}"
@@ -744,31 +770,68 @@ class RTNtripRinexStation(threading.Thread):
             return
 
         epoch_data = self.handler.process_message(msg)
+        self._update_writer_position()
         if epoch_data is None:
             return
 
+        self._buffer_epoch(epoch_data)
+        self._drain_epoch_buffer(force=False)
+
+    def _buffer_epoch(self, epoch_data: EpochObservation) -> None:
         epoch_key = _epoch_key_millis(epoch_data)
-        if self._current_epoch is None:
-            self._current_epoch = epoch_data
-            self._current_epoch_key = epoch_key
+        if self._last_written_epoch_key is not None and epoch_key <= self._last_written_epoch_key:
             return
 
-        if epoch_key == self._current_epoch_key:
-            _merge_epoch_data(self._current_epoch, epoch_data)
+        existing = self._epoch_buffer.get(epoch_key)
+        is_new_epoch = existing is None
+        if existing is None:
+            self._epoch_buffer[epoch_key] = epoch_data
+        else:
+            _merge_epoch_data(existing, epoch_data)
+
+        if self._latest_epoch_key is None or epoch_key > self._latest_epoch_key:
+            self._latest_epoch_key = epoch_key
+
+        epoch_time = getattr(epoch_data, "utc_datetime", None)
+        if is_new_epoch and epoch_time is not None:
+            self._update_detected_sample_interval(epoch_time)
+            if self._resolved_sample_interval_seconds is not None and self._primed_sys_obs_types is None:
+                self._primed_sys_obs_types = _detect_sys_obs_types_from_epochs(self._epoch_buffer.values())
+
+    def _drain_epoch_buffer(self, *, force: bool) -> None:
+        if not self._epoch_buffer:
             return
 
-        completed_epoch = self._current_epoch
-        self._current_epoch = epoch_data
-        self._current_epoch_key = epoch_key
-        self._handle_epoch(completed_epoch)
+        if self._resolved_sample_interval_seconds is None:
+            if not force:
+                return
+            self._resolved_sample_interval_seconds = 1
+            self._primed_sys_obs_types = _detect_sys_obs_types_from_epochs(self._epoch_buffer.values())
+            self.log("Using fallback sample interval: 1s")
+
+        if self._active_writer is None and self.station.rinex.auto_detect_obs_types:
+            self._primed_sys_obs_types = _detect_sys_obs_types_from_epochs(self._epoch_buffer.values())
+
+        sorted_keys = sorted(self._epoch_buffer)
+        if force:
+            ready_keys = sorted_keys
+        else:
+            latest_key = self._latest_epoch_key if self._latest_epoch_key is not None else sorted_keys[-1]
+            delay_ms = max(
+                0,
+                int(round(float(self._resolved_sample_interval_seconds) * EPOCH_COMMIT_DELAY_EPOCHS * 1000.0)),
+            )
+            ready_keys = [key for key in sorted_keys if latest_key - key >= delay_ms]
+
+        for epoch_key in ready_keys:
+            epoch = self._epoch_buffer.pop(epoch_key, None)
+            if epoch is None:
+                continue
+            self._handle_epoch(epoch)
+            self._last_written_epoch_key = epoch_key
 
     def _flush_pending_epoch(self) -> None:
-        if self._current_epoch is None:
-            return
-        epoch = self._current_epoch
-        self._current_epoch = None
-        self._current_epoch_key = None
-        self._handle_epoch(epoch)
+        self._drain_epoch_buffer(force=True)
 
     def _handle_epoch(self, epoch_data: EpochObservation) -> None:
         satellites = dict(getattr(epoch_data, "satellites", {}) or {})
@@ -780,16 +843,6 @@ class RTNtripRinexStation(threading.Thread):
             return
 
         if self._resolved_sample_interval_seconds is None:
-            self._pending_epochs.append(epoch_data)
-            self._update_detected_sample_interval(epoch_time)
-            if self._resolved_sample_interval_seconds is None:
-                return
-
-            self._primed_sys_obs_types = _detect_sys_obs_types_from_epochs(self._pending_epochs)
-            pending_epochs = list(self._pending_epochs)
-            self._pending_epochs.clear()
-            for pending_epoch in pending_epochs:
-                self._write_epoch(pending_epoch)
             return
 
         self._write_epoch(epoch_data)
@@ -800,14 +853,15 @@ class RTNtripRinexStation(threading.Thread):
 
         current_time = _convert_utc_to_time_system(epoch_time, self.station.rinex.time_system)
         previous_time = self._last_epoch_time_for_detection
-        self._last_epoch_time_for_detection = current_time
         if previous_time is None:
+            self._last_epoch_time_for_detection = current_time
             return
 
         delta_seconds = (current_time - previous_time).total_seconds()
         if delta_seconds <= 0.0:
             return
 
+        self._last_epoch_time_for_detection = current_time
         rounded_seconds = max(1, int(round(delta_seconds)))
         self._resolved_sample_interval_seconds = rounded_seconds
         self.log(f"Detected sample interval: {rounded_seconds}s")
@@ -1001,7 +1055,7 @@ class RTNtripRinexStation(threading.Thread):
             file_time=aligned_epoch_time,
             header_interval_seconds=float(self._resolved_sample_interval_seconds or 1),
             time_system=rinex_cfg.time_system,
-            antenna_number=self._resolve_antenna_model(),
+            antenna_number=self._resolve_antenna_number(),
         )
         if not writer.open():
             raise RuntimeError(f"Failed to open RINEX file: {writer.filename}")
@@ -1012,9 +1066,11 @@ class RTNtripRinexStation(threading.Thread):
 
         if not writer.write_header(
             sys_obs_types=self._build_sys_obs_types(satellites),
-            receiver_type=rinex_cfg.receiver_type,
-            antenna_type=rinex_cfg.antenna_type,
-            antenna_number=self._resolve_antenna_model(),
+            receiver_type=self._resolve_receiver_type(),
+            antenna_type=self._resolve_antenna_type(),
+            antenna_number=self._resolve_antenna_number(),
+            receiver_serial=self._resolve_receiver_serial(),
+            receiver_version=self._resolve_receiver_version(),
         ):
             writer.close()
             raise RuntimeError(f"Failed to write RINEX header: {writer.filename}")
@@ -1034,6 +1090,19 @@ class RTNtripRinexStation(threading.Thread):
         approx_position = self._resolve_approx_position()
         if approx_position is not None:
             self._active_writer.set_approx_position(approx_position)
+        self._active_writer.receiver_type = self._resolve_receiver_type()
+        self._active_writer.receiver_serial = self._active_writer._format_a20(
+            self._resolve_receiver_serial()
+        ).strip()
+        self._active_writer.receiver_version = self._active_writer._format_a20(
+            self._resolve_receiver_version()
+        ).strip()
+        self._active_writer.antenna_type = self._active_writer._format_a20(
+            self._resolve_antenna_type()
+        ).strip()
+        self._active_writer.antenna_number = self._active_writer._format_a20(
+            self._resolve_antenna_number()
+        ).strip()
 
     def _close_writer(self) -> None:
         writer = self._active_writer

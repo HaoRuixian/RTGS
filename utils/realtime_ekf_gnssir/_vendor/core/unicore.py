@@ -18,9 +18,9 @@ import re
 import struct
 from typing import Iterable
 
-from core.data_models import EpochObservation, SatelliteState, SignalData
-from core.geo_utils import CLIGHT, get_freq
-from core.gnss_time import GNSSTime
+from .data_models import EpochObservation, SatelliteState, SignalData
+from .geo_utils import CLIGHT, get_freq
+from .gnss_time import GNSSTime
 
 
 UNICORE_BINARY_SYNC = b"\xaa\x44\xb5"
@@ -757,4 +757,3 @@ def current_unicore_ascii_crc(frame_without_crc: str) -> str:
     """
     payload = frame_without_crc[1:] if frame_without_crc.startswith("#") else frame_without_crc
     return f"{unicore_crc32(payload.encode('ascii')):08x}"
-

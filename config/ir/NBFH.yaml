@@ -1,12 +1,13 @@
 station:
   station_id: NBFH
   receiver_position:
-    latitude_deg: 29.788157
-    longitude_deg: 121.455481
-    height_m: 19.303
+    latitude_deg: 29.788156741686127
+    longitude_deg: 121.45548132767985
+    height_m: 19.303424552083015
     x_m: -2890959.0587
     y_m: 4725854.8085
     z_m: 3150024.8212
+    source: manual
   antenna_height: 8.836
   monument_height: 0.8
   environment_type: coastal

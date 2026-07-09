@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import argparse
 
-from core.config_paths import default_ir_config_path, ensure_config_directories
-from core.reflectometry.config import dump_example_config, load_config
+from ..config_paths import default_ir_config_path, ensure_config_directories
+from .config import dump_example_config, load_config
 
 
 def build_parser() -> argparse.ArgumentParser:

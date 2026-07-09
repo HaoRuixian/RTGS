@@ -6,7 +6,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from core.reflectometry.config import LoggingConfig
+from .config import LoggingConfig
 
 
 def configure_logging(config: LoggingConfig) -> logging.Logger:

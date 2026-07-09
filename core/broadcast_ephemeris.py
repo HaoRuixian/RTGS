@@ -191,9 +191,9 @@ class BroadcastEphemeris:
                 'Az': float(msg.DF119),          # Satellite Z acceleration (km/s²)
                 
                 # Clock correction parameters
-                'tau_n': float(msg.DF124),       # SV Clock Bias (seconds)
-                'gamma_n': float(msg.DF121),     # Relative Frequency Offset (dimensionless)
-                'delta_tau_n': float(getattr(msg, 'DF125', 0)),  # GLONASS-M only
+                'tau_n': -float(msg.DF124) * (2 ** -30),  # RINEX/SP3 clock bias (seconds)
+                'gamma_n': float(msg.DF121) * (2 ** -40),  # Relative frequency offset
+                'delta_tau_n': float(getattr(msg, 'DF125', 0)) * (2 ** -30),  # GLONASS-M only
                 
                 # Health status
                 'health': int(msg.DF104),        # Satellite Health (0=healthy, non-zero=unhealthy)

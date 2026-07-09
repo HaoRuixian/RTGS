@@ -72,13 +72,16 @@ class ConnectionSettings:
 @dataclass
 class GlobalConfig:
     """
-    全局配置容器，集中保存 OBS/EPH 数据流、接收机位置和定位参数。
+    全局配置容器，集中保存 OBS/EPH/SSR 数据流、接收机位置和定位参数。
     """
     # Observation stream settings
     obs_settings: ConnectionSettings = field(default_factory=ConnectionSettings)
     
     # Ephemeris stream settings
     eph_settings: ConnectionSettings = field(default_factory=lambda: ConnectionSettings(enabled=False))
+
+    # SSR correction stream settings
+    ssr_settings: ConnectionSettings = field(default_factory=lambda: ConnectionSettings(enabled=False))
     
     # Receiver approximate position (ECEF coordinates)
     approx_rec_pos: list[float] | None = field(default_factory=lambda: [0, 0, 0])
@@ -93,27 +96,29 @@ class GlobalConfig:
         获取指定数据流的连接配置。
 
         Args:
-            stream_type: ``OBS`` 表示观测流，``EPH`` 表示星历流。
+            stream_type: ``OBS`` 表示观测流，``EPH`` 表示星历流，``SSR`` 表示改正数流。
 
         Returns:
             指定数据流的连接配置。
 
         Raises:
-            ValueError: 当数据流类型不是 ``OBS`` 或 ``EPH`` 时抛出。
+            ValueError: 当数据流类型不是 ``OBS``、``EPH`` 或 ``SSR`` 时抛出。
         """
         if stream_type.upper() == 'OBS':
             return self.obs_settings
         if stream_type.upper() == 'EPH':
             return self.eph_settings
+        if stream_type.upper() == 'SSR':
+            return self.ssr_settings
 
-        raise ValueError(f"Invalid stream type: {stream_type}. Use 'OBS' or 'EPH'")
+        raise ValueError(f"Invalid stream type: {stream_type}. Use 'OBS', 'EPH', or 'SSR'")
 
     def update_settings(self, stream_type: str, settings: dict[str, Any]) -> None:
         """
         Update settings for specified stream type.
         
         Args:
-            stream_type: Either 'OBS' for observation stream or 'EPH' for ephemeris stream
+            stream_type: 'OBS' for observations, 'EPH' for broadcast ephemeris, or 'SSR' for corrections
             settings: Dictionary containing the settings to update
         """
         conn_settings = self.get_connection_settings(stream_type.upper())
@@ -166,6 +171,7 @@ class GlobalConfig:
         return {
             'obs_settings': asdict(self.obs_settings),
             'eph_settings': asdict(self.eph_settings),
+            'ssr_settings': asdict(self.ssr_settings),
             'approx_rec_pos': self.approx_rec_pos,
             'target_systems': self.target_systems,
             'positioning_settings': self.positioning_settings,
@@ -186,6 +192,13 @@ class GlobalConfig:
             for key, value in eph_dict.items():
                 if hasattr(self.eph_settings, key):
                     setattr(self.eph_settings, key, value)
+
+        # Load SSR settings
+        if 'ssr_settings' in config_dict:
+            ssr_dict = config_dict['ssr_settings']
+            for key, value in ssr_dict.items():
+                if hasattr(self.ssr_settings, key):
+                    setattr(self.ssr_settings, key, value)
         
         # Load general settings
         if 'approx_rec_pos' in config_dict:
@@ -252,7 +265,7 @@ def update_connection_settings(stream_type: str, settings: dict[str, Any]) -> No
     Convenience function to update connection settings.
     
     Args:
-        stream_type: Either 'OBS' for observation stream or 'EPH' for ephemeris stream
+        stream_type: 'OBS' for observations, 'EPH' for broadcast ephemeris, or 'SSR' for corrections
         settings: Dictionary containing the settings to update
     """
     global_config.update_settings(stream_type, settings)
@@ -263,7 +276,7 @@ def get_connection_settings(stream_type: str) -> ConnectionSettings:
     Convenience function to get connection settings.
     
     Args:
-        stream_type: Either 'OBS' for observation stream or 'EPH' for ephemeris stream
+        stream_type: 'OBS' for observations, 'EPH' for broadcast ephemeris, or 'SSR' for corrections
         
     Returns:
         ConnectionSettings object for the specified stream

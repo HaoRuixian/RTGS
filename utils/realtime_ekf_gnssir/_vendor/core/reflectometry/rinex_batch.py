@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from core.reflectometry.config import InputConfig
-from core.reflectometry.models import ObservationRecord, ReceiverPosition
-from core.reflectometry.signal_utils import normalize_signal_id, signal_matches
+from .config import InputConfig
+from .models import ObservationRecord, ReceiverPosition
+from .signal_utils import normalize_signal_id, signal_matches
 
 
 def signal_enabled_for_reflectometry(

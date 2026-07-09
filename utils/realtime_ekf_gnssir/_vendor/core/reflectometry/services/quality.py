@@ -6,8 +6,8 @@ from statistics import mean
 
 import numpy as np
 
-from core.reflectometry.config import IrConfig, ProcessingConfig, QcConfig, minimum_required_arc_samples
-from core.reflectometry.models import PeakCandidate, QualityMetrics, SatelliteArc, SnrSeries
+from ..config import IrConfig, ProcessingConfig, QcConfig, minimum_required_arc_samples
+from ..models import PeakCandidate, QualityMetrics, SatelliteArc, SnrSeries
 
 FATAL_QC_FLAGS = {
     "short_arc",

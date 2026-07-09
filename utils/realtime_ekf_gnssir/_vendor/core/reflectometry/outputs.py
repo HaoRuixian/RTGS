@@ -15,8 +15,8 @@ try:
 except Exception:  # pragma: no cover - optional CSV/DataFrame dependency
     pd = None
 
-from core.reflectometry.config import OutputConfig
-from core.reflectometry.models import ArcDirection, ArcSolution, ProcessingRunResult, ProductResult, ProductType
+from .config import OutputConfig
+from .models import ArcDirection, ArcSolution, ProcessingRunResult, ProductResult, ProductType
 
 
 def _require_pandas():

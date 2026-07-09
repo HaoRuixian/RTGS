@@ -16,7 +16,7 @@ class SignalData:
     pseudorange: float    # meters
     lock_time: int   
     half_cycle: int
-    doppler: float
+    doppler: Optional[float]
 
 @dataclass
 class SatelliteState:

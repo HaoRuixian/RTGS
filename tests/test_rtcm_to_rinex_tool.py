@@ -554,7 +554,7 @@ def test_rtcm_handler_decodes_msm6_extended_fields_without_doppler():
     assert sig.phase == pytest.approx((rough_range + 0.00003 * range_ms) * b1_hz / c)
     assert sig.snr == 42.5
     assert sig.lock_time == 120
-    assert sig.doppler == 0.0
+    assert sig.doppler is None
 
 
 def test_rtcm_handler_uses_glonass_msm5_frequency_channel():

@@ -34,6 +34,8 @@ from core.rinex3_writer import RINEX3Writer
 from core.ephemeris_output import BroadcastNavWriter, PreciseSp3Writer, build_sp3_states
 from core.rinex_loader import FileEphemerisProvider, RinexObservationReader, read_rinex_observation_header
 from core.mixed_gnss_reader import MixedGNSSReader
+from core.stream_settings import stream_source
+from ui.monitoring.formatting import format_optional_observation
 
 SSR_MESSAGE_IDS = {
     "1057", "1058", "1059", "1060", "1061", "1062",
@@ -93,7 +95,7 @@ class IOThread(threading.Thread):
         self.client = None
         self.msg_count = 0
         self.last_log_time = time.time()
-        self.source_type = settings.get('source', 'NTRIP Server')  # 'NTRIP Server' or 'Serial Port'
+        self.source_type = stream_source(settings)  # 'NTRIP Server' or 'Serial Port'
     
     def _safe_emit(self, signal_type: str, *args):
         """安全发送信号，处理信号源已删除的情况"""
@@ -611,7 +613,7 @@ class DataProcessingThread(threading.Thread):
                 if msg_id in SSR_MESSAGE_IDS:
                     self.ssr_count += 1
                     if not self.ssr_status_reported:
-                        self.signals.status_signal.emit("EPH_DATA", True)
+                        self.signals.status_signal.emit("SSR_DATA", True)
                         self.signals.log_signal.emit(f"[{self.name}] SSR corrections detected")
                         self.ssr_status_reported = True
                 
@@ -1347,7 +1349,7 @@ class LoggingThread(threading.Thread):
                     snr = getattr(sig, 'snr', 0) or 0
                     pr = getattr(sig, 'pseudorange', None)
                     ph = getattr(sig, 'phase', None)
-                    doppler = getattr(sig, 'doppler', 0) or 0
+                    doppler = getattr(sig, 'doppler', None)
                     
                     # Build value map for flexible field selection
                     # Include UTC time fields
@@ -1361,7 +1363,7 @@ class LoggingThread(threading.Thread):
                         'SNR (dBHz)': f"{snr:.1f}",
                         'Pseudorange (m)': f"{(pr if pr is not None else '')}",
                         'Phase (cyc)': f"{(ph if ph is not None else '')}",
-                        'Doppler (Hz)': f"{doppler:.3f}"
+                        'Doppler (Hz)': format_optional_observation(doppler, precision=3)
                     }
                     
                     row = [valmap.get(f, '') for f in fields]

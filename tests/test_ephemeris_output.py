@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
-from core.ephemeris_output import BroadcastNavWriter, PreciseSp3Writer
+import pytest
+
+from core.broadcast_ephemeris import BroadcastEphemeris
+from core.ephemeris_output import BroadcastNavWriter, PreciseSp3Writer, _compute_clock_correction
 
 
 def test_broadcast_nav_writer_writes_rinex_nav_record(tmp_path):
@@ -70,3 +74,58 @@ def test_precise_sp3_writer_writes_corrected_epoch_records(tmp_path):
     assert "PG01  20200.000000  14000.000000  21700.000000      1.000000" in text
     assert "PE11  23200.000000  12000.000000  19700.000000     -2.000000" in text
     assert text.rstrip().endswith("EOF")
+
+
+def test_precise_sp3_writer_clamps_invalid_clock_field(tmp_path):
+    path = tmp_path / "invalid_clock.sp3"
+    writer = PreciseSp3Writer(path, epoch_interval_seconds=5)
+    writer.write_epoch(
+        datetime(2026, 3, 26, 0, 0, 0, tzinfo=timezone.utc),
+        {"R01": ([20_200_000.0, 14_000_000.0, 21_700_000.0], 186_386.0, False)},
+    )
+    writer.close()
+
+    text = path.read_text(encoding="utf-8")
+    assert "PR01  20200.000000  14000.000000  21700.000000 999999.999999" in text
+
+
+def test_glonass_sp3_clock_uses_tau_and_gamma_with_rinex_sign():
+    clock = _compute_clock_correction(
+        {
+            "satellite_id": "R08",
+            "tau_n": 100.0e-6,
+            "gamma_n": 2.0e-10,
+            "tb": 10_000.0,
+        },
+        10_900.0,
+    )
+
+    assert clock == pytest.approx(100.180000036e-6)
+
+
+def test_rtcm_glonass_tau_is_normalized_to_rinex_clock_bias():
+    handler = BroadcastEphemeris()
+    msg = SimpleNamespace(
+        DF038=8,
+        DF040=7,
+        DF110=32,
+        DF107=0,
+        DF112=10_000.0,
+        DF115=12_000.0,
+        DF118=18_000.0,
+        DF111=0.1,
+        DF114=0.2,
+        DF117=0.3,
+        DF113=0.0,
+        DF116=0.0,
+        DF119=0.0,
+        DF124=-134_218,
+        DF121=330,
+        DF104=0,
+        DF105=1,
+    )
+
+    eph = handler.extract_glonass_ephemeris(msg)
+
+    assert eph["tau_n"] == pytest.approx(134_218 * (2 ** -30))
+    assert eph["gamma_n"] == pytest.approx(330 * (2 ** -40))

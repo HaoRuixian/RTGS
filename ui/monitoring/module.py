@@ -38,11 +38,13 @@ from matplotlib.figure import Figure
 import matplotlib.dates as mdates
 
 from ui.shared.colors import get_sys_color, get_signal_color
+from ui.monitoring.formatting import format_optional_observation
 from ui.monitoring.workers import IOThread, DataProcessingThread, RinexReplayThread, StreamSignals, LoggingThread
 from ui.monitoring.log_settings import LogSettingsDialog
 from core.rtcm_handler import RTCMHandler
 from core.ring_buffer import RingBuffer
 from core.global_config import get_global_config
+from core.stream_settings import is_file_stream_configured, is_realtime_stream_configured, stream_source
 from core.replay_ui_policy import (
     THROTTLED_GUI_INTERVAL_SECONDS,
     choose_gui_refresh_interval,
@@ -105,8 +107,9 @@ class MonitoringModule(QMainWindow):
         # Step 4: Create Qt signal/slot connections for thread communication
         # Signals emitted by IOThread and DataProcessingThread in workers.py
         self.signals = StreamSignals()
-        self.stream_status = {'OBS': False, 'EPH': False}
+        self.stream_status = {'OBS': False, 'EPH': False, 'SSR': False}
         self.eph_data_available = False
+        self.ssr_data_available = False
         self.signals.log_signal.connect(self.append_log)       # Thread → UI: log messages
         self.signals.epoch_signal.connect(self.process_gui_epoch)  # Thread → UI: new epoch data
         self.signals.status_signal.connect(self.update_status)  # Thread → UI: connection status
@@ -138,6 +141,19 @@ class MonitoringModule(QMainWindow):
             },
             'EPH_ENABLED': False,
             'EPH': {
+                'source': 'NTRIP Server',
+                'host': '',
+                'port': 2101,
+                'mountpoint': '',
+                'user': '',
+                'password': '',
+                'baudrate': 115200,
+                'file_path': '',
+                'replay_speed': 1.0,
+                'file_type': 'Auto Detect',
+            },
+            'SSR_ENABLED': False,
+            'SSR': {
                 'source': 'NTRIP Server',
                 'host': '',
                 'port': 2101,
@@ -283,7 +299,8 @@ class MonitoringModule(QMainWindow):
         # Data stream status indicators
         self.lbl_status_obs = QLabel("OBS: OFF")
         self.lbl_status_eph = QLabel("EPH: OFF")
-        for lbl in (self.lbl_status_obs, self.lbl_status_eph):
+        self.lbl_status_ssr = QLabel("SSR: OFF")
+        for lbl in (self.lbl_status_obs, self.lbl_status_eph, self.lbl_status_ssr):
             lbl.setProperty("class", "status")
             lbl.setStyleSheet(
                 "background-color: #ddd; padding: 4px 8px; border-radius: 4px;"
@@ -748,7 +765,7 @@ class MonitoringModule(QMainWindow):
                     snr = getattr(sig, 'snr', 0)
                     if snr == 0: 
                         continue  # Skip invalid/zero SNR signals
-                    doppler = getattr(sig, 'doppler', 0)
+                    doppler = getattr(sig, 'doppler', None)
                     
                     # Get pseudorange and phase (may be None/zero if not available)
                     pr = getattr(sig, 'pseudorange', 0)
@@ -768,7 +785,7 @@ class MonitoringModule(QMainWindow):
                         f"{snr:.1f}",                   # SNR [dB-Hz]
                         pr_str,                         # Pseudorange [meters]
                         ph_str,                         # Phase [cycles]
-                        f"{doppler:.3f}",               # Doppler [Hz]
+                        format_optional_observation(doppler, precision=3),  # Doppler [Hz]
                     ]
 
                     # Step 9: Add row to applicable tables based on constellation filter
@@ -1158,14 +1175,9 @@ class MonitoringModule(QMainWindow):
         # Step 7: Initialize OBS (Observation) stream thread pipeline
         # OBS streams provide raw observations (pseudorange, phase, SNR)
         # Check if OBS stream is configured (either NTRIP host or Serial port)
-        obs_configured = False
-        obs_source = self.settings['OBS'].get('source', 'NTRIP Server')
-        if obs_source == 'NTRIP Server' and self.settings['OBS'].get('host'):
-            obs_configured = True
-        elif obs_source == 'Serial Port' and self.settings['OBS'].get('port'):
-            obs_configured = True
-        elif obs_source == 'RINEX File' and self.settings['OBS'].get('file_path'):
-            obs_configured = True
+        obs_settings = self.settings['OBS']
+        obs_source = stream_source(obs_settings)
+        obs_configured = is_realtime_stream_configured(obs_settings) or is_file_stream_configured(obs_settings)
             
         if obs_configured:
             self.signals.log_signal.emit("Initializing OBS stream...")
@@ -1209,17 +1221,10 @@ class MonitoringModule(QMainWindow):
         # EPH streams provide navigation messages (satellite orbits, clocks)
         # Often obtained from separate NTRIP mount point or serial port
         if self.settings['EPH_ENABLED'] and obs_source != 'RINEX File':
-            eph_source = self.settings['EPH'].get('source', 'NTRIP Server')
-            eph_configured = False
-            
-            if eph_source == 'NTRIP Server' and self.settings['EPH'].get('host'):
-                eph_configured = True
-            elif eph_source == 'Serial Port' and self.settings['EPH'].get('port'):
-                eph_configured = True
-            elif eph_source == 'File' and self.settings['EPH'].get('file_path'):
-                eph_configured = True
-            
-            if eph_configured and eph_source != 'File':
+            eph_settings = self.settings['EPH']
+            eph_source = stream_source(eph_settings)
+
+            if is_realtime_stream_configured(eph_settings):
                 self.signals.log_signal.emit("Initializing EPH stream...")
                 
                 # Create pair of buffers for EPH stream
@@ -1231,7 +1236,7 @@ class MonitoringModule(QMainWindow):
                 self.logging_buffers['EPH'] = eph_logging_buffer
                 
                 # Create IOThread for EPH stream
-                io_thread = IOThread("EPH", self.settings['EPH'], eph_buffer, self.signals, eph_logging_buffer)
+                io_thread = IOThread("EPH", eph_settings, eph_buffer, self.signals, eph_logging_buffer)
                 io_thread.start()
                 self.io_threads.append(io_thread)
                 
@@ -1245,6 +1250,27 @@ class MonitoringModule(QMainWindow):
                 self.signals.log_signal.emit("EPH file source is supported through RINEX observation replay mode")
             else:
                 self.signals.log_signal.emit("EPH stream enabled but not configured")
+
+        if self.settings.get('SSR_ENABLED') and obs_source != 'RINEX File':
+            ssr_settings = self.settings.get('SSR', {})
+            if is_realtime_stream_configured(ssr_settings):
+                self.signals.log_signal.emit("Initializing SSR stream...")
+
+                ssr_buffer = RingBuffer(maxsize=1000)
+                ssr_logging_buffer = RingBuffer(maxsize=5000)
+                self.ring_buffers['SSR'] = ssr_buffer
+                self.logging_buffers['SSR'] = ssr_logging_buffer
+
+                io_thread = IOThread("SSR", ssr_settings, ssr_buffer, self.signals, ssr_logging_buffer)
+                io_thread.start()
+                self.io_threads.append(io_thread)
+
+                proc_thread = DataProcessingThread("SSR", ssr_buffer, self.handler, self.signals)
+                proc_thread.start()
+                self.processing_threads.append(proc_thread)
+                self.signals.log_signal.emit("SSR stream threads started")
+            else:
+                self.signals.log_signal.emit("SSR stream enabled but not configured")
         
         # Step 9: Log final status
         active_systems = ', '.join(sorted(self.active_systems))
@@ -1285,7 +1311,7 @@ class MonitoringModule(QMainWindow):
     @Slot(str, bool)
     def update_status(self, name, connected):
         """
-        Update OBS/EPH status indicators.
+        Update OBS/EPH/SSR status indicators.
         
         Procedure:
         1. Track raw OBS/EPH connection state from IO threads
@@ -1296,6 +1322,10 @@ class MonitoringModule(QMainWindow):
             self.eph_data_available = bool(connected)
             self._render_status_indicator("EPH")
             return
+        if name == "SSR_DATA":
+            self.ssr_data_available = bool(connected)
+            self._render_status_indicator("SSR")
+            return
 
         if name not in self.stream_status:
             return
@@ -1304,9 +1334,10 @@ class MonitoringModule(QMainWindow):
         self._render_status_indicator(name)
 
     def _reset_status_indicators(self):
-        """Reset OBS/EPH badges to OFF."""
-        self.stream_status = {'OBS': False, 'EPH': False}
+        """Reset OBS/EPH/SSR badges to OFF."""
+        self.stream_status = {'OBS': False, 'EPH': False, 'SSR': False}
         self.eph_data_available = False
+        self.ssr_data_available = False
         self._render_status_indicators()
 
     def _render_status_indicators(self):
@@ -1315,15 +1346,22 @@ class MonitoringModule(QMainWindow):
             self._render_status_indicator("OBS")
         if hasattr(self, 'lbl_status_eph'):
             self._render_status_indicator("EPH")
+        if hasattr(self, 'lbl_status_ssr'):
+            self._render_status_indicator("SSR")
 
     def _render_status_indicator(self, name: str):
         """Render one status badge from the tracked connection/data state."""
         if name == "OBS":
             lbl = self.lbl_status_obs
             connected = self.stream_status.get("OBS", False)
-        else:
+        elif name == "EPH":
             lbl = self.lbl_status_eph
             connected = self.stream_status.get("EPH", False) or self.eph_data_available
+        elif name == "SSR":
+            lbl = self.lbl_status_ssr
+            connected = self.stream_status.get("SSR", False) or self.ssr_data_available
+        else:
+            return
 
         color = "#2A692D" if connected else "#6D2F2B"
         lbl.setText(f"{name}: {'ON' if connected else 'OFF'}")

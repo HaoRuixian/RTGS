@@ -138,6 +138,11 @@ button:disabled {
   justify-content: flex-end;
 }
 
+.brand-block,
+.header-actions {
+  min-width: 0;
+}
+
 .header-actions button,
 #startBtn,
 #saveStationBtn,
@@ -170,11 +175,11 @@ button:disabled {
 
 .workbench {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
-  gap: 14px;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 10px;
   width: min(100%, 1920px);
   margin: 0 auto;
-  padding: 14px;
+  padding: 10px;
   min-height: calc(100vh - 62px);
 }
 
@@ -247,7 +252,7 @@ body.viewer-mode #postprocessTab select {
   align-self: start;
   max-height: calc(100vh - 90px);
   overflow: auto;
-  padding: 12px;
+  padding: 10px;
 }
 
 .sidebar-title,
@@ -256,6 +261,16 @@ body.viewer-mode #postprocessTab select {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.panel-title > * {
+  min-width: 0;
+}
+
+.panel-title .badge {
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar-title {
@@ -279,13 +294,17 @@ body.viewer-mode #postprocessTab select {
 
 .station-card {
   display: grid;
+  width: 100%;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 7px;
   background: var(--panel-soft);
+  color: var(--text);
   cursor: pointer;
+  font: inherit;
+  text-align: left;
   transition: background-color .14s ease, border-color .14s ease;
 }
 
@@ -321,13 +340,13 @@ body.viewer-mode #postprocessTab select {
 .status-strip {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
 .status-card {
-  min-height: 78px;
-  padding: 11px 12px;
+  min-height: 66px;
+  padding: 8px 10px;
 }
 
 .status-card span,
@@ -387,7 +406,7 @@ body.viewer-mode #postprocessTab select {
 .tab-panel {
   display: none;
   min-height: 520px;
-  padding: 12px;
+  padding: 9px;
 }
 
 .tab-panel.active {
@@ -395,8 +414,8 @@ body.viewer-mode #postprocessTab select {
 }
 
 .action-bar {
-  margin-bottom: 10px;
-  padding: 9px;
+  margin-bottom: 8px;
+  padding: 7px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-soft);
@@ -405,18 +424,24 @@ body.viewer-mode #postprocessTab select {
 .overview-grid {
   display: grid;
   grid-template-columns: repeat(12, minmax(0, 1fr));
-  gap: 10px;
+  gap: 8px;
 }
 
 .panel-card {
   grid-column: span 6;
   min-width: 0;
-  padding: 12px;
+  padding: 10px;
 }
 
 .panel-card.wide {
   grid-column: 1 / -1;
 }
+
+.stream-monitor-card { order: 1; }
+#initPanel { order: 2; }
+.station-map-card { order: 3; }
+.overview-quality-card { order: 4; }
+.overview-chart-card { order: 5; }
 
 .kv-grid,
 .quality-row {
@@ -451,10 +476,15 @@ body.viewer-mode #postprocessTab select {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.kv-grid.compact div {
+  min-height: 44px;
+  padding: 6px;
+}
+
 .station-map {
   position: relative;
-  min-height: 380px;
-  margin-top: 10px;
+  min-height: 210px;
+  margin-top: 8px;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -531,16 +561,16 @@ body.viewer-mode #postprocessTab select {
 
 .map-empty {
   display: grid;
-  min-height: 380px;
+  min-height: 210px;
   place-items: center;
   color: var(--muted);
 }
 
 .station-position-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  gap: 6px;
+  margin-top: 6px;
 }
 
 .map-scale {
@@ -566,8 +596,8 @@ body.viewer-mode #postprocessTab select {
 }
 
 .station-position-grid div {
-  min-height: 58px;
-  padding: 8px;
+  min-height: 48px;
+  padding: 6px;
   border: 1px solid #e1e9ef;
   border-radius: 6px;
   background: #f8fbfd;
@@ -630,8 +660,8 @@ body.viewer-mode #postprocessTab select {
 }
 
 .progress-track {
-  height: 8px;
-  margin-top: 12px;
+  height: 6px;
+  margin-top: 8px;
   overflow: hidden;
   border: 1px solid #d4dce4;
   border-radius: 999px;
@@ -649,9 +679,41 @@ body.viewer-mode #postprocessTab select {
 }
 
 .diagnostic-text {
-  min-height: 36px;
-  margin-top: 10px;
+  min-height: 28px;
+  margin-top: 6px;
   color: #4e5c66;
+}
+
+.init-stage-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+
+.init-stage-list li {
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: #f5f7f9;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.init-stage-list li.ready {
+  border-color: #c6ddcf;
+  background: var(--online-bg);
+  color: var(--online);
+}
+
+.init-stage-list li.current {
+  border-color: #bfd3e4;
+  background: var(--processing-bg);
+  color: var(--processing);
+  font-weight: 650;
 }
 
 .bar-list {
@@ -725,6 +787,11 @@ canvas {
   margin-top: 10px;
 }
 
+#lspArcCanvas {
+  height: 110px;
+  margin-top: 8px;
+}
+
 .split-tables {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -742,6 +809,32 @@ canvas {
 .form-grid label {
   display: grid;
   gap: 3px;
+}
+
+.coordinate-config {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.coordinate-config legend {
+  padding: 0 5px;
+  color: var(--heading);
+  font-weight: 650;
+}
+
+.coordinate-config p {
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.coordinate-input-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
 
 input,
@@ -1074,14 +1167,14 @@ tr:hover td {
 
 @media (min-width: 1680px) {
   .workbench {
-    grid-template-columns: 340px minmax(0, 1fr);
-    gap: 16px;
-    padding: 16px;
+    grid-template-columns: 280px minmax(0, 1fr);
+    gap: 10px;
+    padding: 10px;
   }
 
   .tab-panel,
   .panel-card {
-    padding: 14px;
+    padding: 10px;
   }
 }
 
@@ -1128,6 +1221,8 @@ tr:hover td {
   }
 
   .config-chip {
+    flex: 1 1 100%;
+    min-width: 0;
     max-width: 100%;
   }
 
@@ -1154,6 +1249,8 @@ tr:hover td {
   .form-grid,
   .form-section,
   .advanced-grid,
+  .coordinate-input-grid,
+  .init-stage-list,
   .station-position-grid,
   .quality-row,
   .kv-grid.compact {

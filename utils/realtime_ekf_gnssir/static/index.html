@@ -76,7 +76,7 @@
         </div>
 
         <div class="overview-grid">
-          <article class="panel-card">
+          <article class="panel-card stream-monitor-card">
             <div class="panel-title">
               <h3>Stream Monitor</h3>
               <span id="streamHealthBadge" class="badge">idle</span>
@@ -91,7 +91,7 @@
             </div>
           </article>
 
-          <article class="panel-card station-map-card wide">
+          <article class="panel-card station-map-card">
             <div class="panel-title">
               <h3 data-i18n="stationLocation">Station Location</h3>
               <span id="stationMapBadge" class="badge">OSM</span>
@@ -101,6 +101,10 @@
               <div><span data-i18n="latitude">Latitude</span><strong id="stationLatInfo">-</strong></div>
               <div><span data-i18n="longitude">Longitude</span><strong id="stationLonInfo">-</strong></div>
               <div><span data-i18n="height">Height</span><strong id="stationHeightInfo">-</strong></div>
+              <div><span>ECEF X</span><strong id="stationXInfo">-</strong></div>
+              <div><span>ECEF Y</span><strong id="stationYInfo">-</strong></div>
+              <div><span>ECEF Z</span><strong id="stationZInfo">-</strong></div>
+              <div><span>坐标来源</span><strong id="stationCoordinateSource">-</strong></div>
             </div>
           </article>
 
@@ -111,16 +115,24 @@
             </div>
             <div class="progress-track"><div id="initProgress" class="progress-fill"></div></div>
             <p id="initReason" class="diagnostic-text">-</p>
+            <ol class="init-stage-list" aria-label="初始化阶段">
+              <li id="initCoordinateStage">1 坐标</li>
+              <li id="initStreamStage">2 数据流</li>
+              <li id="initLspStage">3 LSP 初始 RH</li>
+              <li id="initEkfStage">4 EKF 输出</li>
+            </ol>
             <div class="kv-grid compact">
               <div><span>&#24359;&#27573;</span><strong id="arcCountInfo">0</strong></div>
               <div><span>&#26368;&#22823;&#26679;&#26412;</span><strong id="maxLspSamplesInfo">0</strong></div>
               <div><span>&#38656;&#35201;&#26679;&#26412;</span><strong id="requiredSamplesInfo">0</strong></div>
               <div><span>&#24050;&#21021;&#22987;&#21270;&#24359;</span><strong id="initializedArcInfo">0</strong></div>
+              <div><span>干涉周期覆盖</span><strong id="cycleProgressInfo">0%</strong></div>
+              <div><span>反演采样</span><strong id="samplingInfo">-</strong></div>
             </div>
             <canvas id="lspArcCanvas" width="620" height="150" class="mini-canvas"></canvas>
           </article>
 
-          <article class="panel-card wide">
+          <article class="panel-card wide overview-chart-card">
             <div class="panel-title">
               <h3>Water Level Time Series</h3>
               <span id="overviewProductCount" class="badge">0</span>
@@ -128,7 +140,7 @@
             <canvas id="overviewProductChart" width="960" height="260"></canvas>
           </article>
 
-          <article class="panel-card wide">
+          <article class="panel-card overview-quality-card">
             <div class="panel-title">
               <h3>Observation Quality</h3>
               <span id="recordCountBadge" class="badge">0 &#26465;&#35760;&#24405;</span>
@@ -160,7 +172,7 @@
             <span id="arcTableBadge" class="badge">0</span>
           </div>
           <div class="split-tables">
-            <div class="table-wrap"><table><thead><tr><th>&#21355;&#26143;&#24359;&#27573;</th><th>&#26679;&#26412;</th><th>LSP</th><th>&#39640;&#24230;&#35282;</th><th>&#20449;&#21495;&#25968;</th></tr></thead><tbody id="arcBody"></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>&#21355;&#26143;&#24359;&#27573;</th><th>&#26679;&#26412;</th><th>LSP 样本 / 周期</th><th>&#39640;&#24230;&#35282;</th><th>&#20449;&#21495;&#25968;</th></tr></thead><tbody id="arcBody"></tbody></table></div>
             <div class="table-wrap"><table><thead><tr><th>Sat</th><th>Sig</th><th>SNR</th><th>Az</th><th>El</th></tr></thead><tbody id="sampleBody"></tbody></table></div>
           </div>
         </article>
@@ -227,6 +239,15 @@
             </div>
             <form id="irForm" class="form-grid">
               <label>Station ID<input name="station_id"></label>
+              <fieldset class="coordinate-config">
+                <legend>测站 ECEF 坐标</legend>
+                <div class="coordinate-input-grid">
+                  <label>X m<input name="receiver_x_m" type="number" step="0.0001" inputmode="decimal"></label>
+                  <label>Y m<input name="receiver_y_m" type="number" step="0.0001" inputmode="decimal"></label>
+                  <label>Z m<input name="receiver_z_m" type="number" step="0.0001" inputmode="decimal"></label>
+                </div>
+                <p>XYZ 全部留空时进入自动模式：启动后从 RTCM 1005/1006 获取，并回写本配置文件。</p>
+              </fieldset>
               <label>&#28023;&#38754;&#22522;&#20934; m<input name="sea_level_reference" type="number" step="0.001"></label>
               <label>RH min<input name="min_reflector_height" type="number" step="0.001"></label>
               <label>RH max<input name="max_reflector_height" type="number" step="0.001"></label>
@@ -234,6 +255,7 @@
               <label>El max<input name="max_elevation_deg" type="number" step="0.1"></label>
               <label>&#25490;&#38500;&#31995;&#32479;<input name="exclude_constellations"></label>
               <label>&#25490;&#38500;&#20449;&#21495;<input name="exclude_signals"></label>
+              <label>算法采样间隔 s<input name="sampling_interval" type="number" min="1" step="1"></label>
               <label>&#36755;&#20986;&#38388;&#38548; s<input name="output_interval_seconds" type="number" min="1"></label>
               <details class="advanced-section">
                 <summary>&#39640;&#32423;&#21442;&#25968;</summary>

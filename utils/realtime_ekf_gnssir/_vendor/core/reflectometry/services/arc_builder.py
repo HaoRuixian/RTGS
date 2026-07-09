@@ -7,9 +7,9 @@ from datetime import datetime
 import math
 from statistics import mean
 
-from core.reflectometry.config import IrConfig, ProcessingConfig, minimum_required_arc_samples
-from core.reflectometry.models import ArcDirection
-from core.reflectometry.models import ArcStatistics, ObservationRecord, SatelliteArc
+from ..config import IrConfig, ProcessingConfig, minimum_required_arc_samples
+from ..models import ArcDirection
+from ..models import ArcStatistics, ObservationRecord, SatelliteArc
 
 
 class ArcBuilder:

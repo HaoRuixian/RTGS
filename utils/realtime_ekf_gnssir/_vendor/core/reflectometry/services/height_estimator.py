@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from core.reflectometry.services.spectrum import SpectrumAnalysisResult
-from core.reflectometry.models import ArcSolution, SatelliteArc, SnrSeries
-from core.reflectometry.services.quality import FATAL_QC_FLAGS, QualityController
+from .spectrum import SpectrumAnalysisResult
+from ..models import ArcSolution, SatelliteArc, SnrSeries
+from .quality import FATAL_QC_FLAGS, QualityController
 
 
 class HeightEstimator:

@@ -260,9 +260,10 @@ class MixedGNSSReader:
     def _read_bytes(self, size: int) -> bytes:
         if size <= 0:
             return b""
-        data = self._stream.read(size)
-        if len(data) == 0:
-            raise EOFError()
-        if 0 < len(data) < size:
-            raise EOFError()
-        return data
+        chunks = bytearray()
+        while len(chunks) < size:
+            chunk = self._stream.read(size - len(chunks))
+            if not chunk:
+                raise EOFError()
+            chunks.extend(chunk)
+        return bytes(chunks)

@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-from core.reflectometry.models import ReceiverPosition
+from .models import ReceiverPosition
 
 DEFAULT_CONFIG_YAML = """\
 station:

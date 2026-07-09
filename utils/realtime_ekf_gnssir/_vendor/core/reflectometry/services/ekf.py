@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 import math
 
 import numpy as np
 
-from core.geo_utils import get_freq
-from core.reflectometry.config import EkfConfig, IrConfig, ProductsConfig
-from core.reflectometry.models import ProductResult, ReflectorHeightResult, SeaLevelResult
-from core.reflectometry.models import ObservationRecord, SnrUnit
-from core.reflectometry.services.preprocessing import _resolve_wavelength
-from core.reflectometry.signal_utils import normalize_signal_id
+from ...geo_utils import get_freq
+from ..config import EkfConfig, IrConfig, ProductsConfig
+from ..models import ProductResult, ReflectorHeightResult, SeaLevelResult
+from ..models import ObservationRecord, SnrUnit
+from .preprocessing import _resolve_wavelength
+from ..signal_utils import normalize_signal_id
 
 
 @dataclass(slots=True)
@@ -127,7 +127,7 @@ class EkfReflectometryProcessor:
                 "innovation_rms": output.innovation_rms,
                 "window_start": output.window_start.isoformat() if output.window_start else None,
                 "window_end": output.window_end.isoformat() if output.window_end else None,
-                "windowing": "centered",
+                "windowing": "trailing",
                 "rh_initialization": "lsp_grid",
                 "rh_initial_arc_count": self.rh_initialization.arc_count if self.rh_initialization else 0,
                 "rh_initial_m": self.rh_initialization.reflector_height_m if self.rh_initialization else None,
@@ -567,24 +567,15 @@ class EkfReflectometryProcessor:
     def _maybe_emit_output(self, timestamp: datetime) -> EkfOutput | None:
         if not self.rh_initialized:
             return None
-        interval_seconds = int(self.config.output_interval_seconds)
-        interval = timedelta(seconds=float(interval_seconds))
-        half_window = timedelta(seconds=float(self.config.output_window_seconds) / 2.0)
-
-        if self._last_output_time is None:
-            output_time = _align_timestamp(timestamp - half_window, interval_seconds)
-        else:
-            output_time = self._last_output_time + interval
-
-        while timestamp >= output_time + interval + half_window:
-            output_time += interval
-
-        if timestamp < output_time + half_window:
+        interval = timedelta(seconds=float(self.config.output_interval_seconds))
+        if self._last_output_time is not None and timestamp < self._last_output_time + interval:
             return None
-        self._last_output_time = output_time
 
-        window_start = output_time - half_window
-        window_end = output_time + half_window
+        # Realtime products must be causal. A centered window made the first
+        # valid EKF point wait for future observations after RH initialization.
+        output_time = timestamp
+        window_end = timestamp
+        window_start = window_end - timedelta(seconds=float(self.config.output_window_seconds))
         window_points = [
             point
             for point in self.points
@@ -593,6 +584,7 @@ class EkfReflectometryProcessor:
         ]
         if not window_points:
             return None
+        self._last_output_time = output_time
         rh = float(np.mean([point.reflector_height_m for point in window_points]))
         covariance = float(np.mean([point.covariance_m2 for point in window_points]))
         active_arc_count = int(max(point.active_arc_count for point in window_points))
@@ -619,16 +611,6 @@ def _group_by_timestamp(observations: list[ObservationRecord]) -> list[tuple[dat
     for observation in sorted(observations, key=lambda item: item.timestamp):
         groups.setdefault(observation.timestamp, []).append(observation)
     return list(groups.items())
-
-
-def _align_timestamp(timestamp: datetime, interval_seconds: int) -> datetime:
-    if timestamp.tzinfo is None:
-        epoch_seconds = int(timestamp.replace(tzinfo=timezone.utc).timestamp())
-        aligned_epoch = epoch_seconds - epoch_seconds % interval_seconds
-        return datetime.utcfromtimestamp(aligned_epoch)
-    epoch_seconds = int(timestamp.timestamp())
-    aligned_epoch = epoch_seconds - epoch_seconds % interval_seconds
-    return datetime.fromtimestamp(aligned_epoch, tz=timestamp.tzinfo)
 
 
 def _idx_varphi(local_index: int, n_local: int) -> int:

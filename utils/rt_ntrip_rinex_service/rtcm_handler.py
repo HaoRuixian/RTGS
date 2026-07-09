@@ -29,6 +29,12 @@ class RTCMHandler:
         self.reference_utc = self._normalize_reference_utc(reference_utc)
         self.last_utc_by_system = {}
         self.compute_geometry = bool(compute_geometry)
+        self.last_reference_station_id = None
+        self.last_antenna_descriptor = ""
+        self.last_antenna_serial_number = ""
+        self.last_receiver_type_descriptor = ""
+        self.last_receiver_firmware_version = ""
+        self.last_receiver_serial_number = ""
 
     @staticmethod
     def _normalize_reference_utc(reference_utc):
@@ -153,6 +159,10 @@ class RTCMHandler:
                         self.last_station_coords = coords
                     except (ValueError, TypeError):
                         pass
+
+            # --- Station receiver/antenna descriptors ---
+            elif msg_id in ["1007", "1008", "1033"]:
+                self._handle_station_descriptor(msg)
             
             # --- RTCM 10403.3 Standard: Network RTK Correction Messages (1015-1017, 1037-1039) ---
             # These provide ionospheric and geometric corrections between reference stations
@@ -207,6 +217,51 @@ class RTCMHandler:
             pass
         
         return epoch_data
+
+    @staticmethod
+    def _extract_rtcm_text(msg, counter_attr, char_prefix):
+        """Extract pyrtcm grouped character fields such as DF030_01..DF030_N."""
+        try:
+            count = int(getattr(msg, counter_attr, 0) or 0)
+        except (TypeError, ValueError):
+            count = 0
+        if count <= 0:
+            return ""
+
+        chars = []
+        for idx in range(1, count + 1):
+            value = getattr(msg, f"{char_prefix}_{idx:02d}", "")
+            if value is None:
+                continue
+            chars.append(str(value))
+        return "".join(chars).strip()
+
+    def _handle_station_descriptor(self, msg) -> None:
+        """Capture RTCM 1007/1008/1033 metadata for RINEX header records."""
+        try:
+            self.last_reference_station_id = int(getattr(msg, "DF003"))
+        except (TypeError, ValueError, AttributeError):
+            pass
+
+        antenna_descriptor = self._extract_rtcm_text(msg, "DF029", "DF030")
+        if antenna_descriptor:
+            self.last_antenna_descriptor = antenna_descriptor
+
+        antenna_serial = self._extract_rtcm_text(msg, "DF032", "DF033")
+        if antenna_serial:
+            self.last_antenna_serial_number = antenna_serial
+
+        receiver_type = self._extract_rtcm_text(msg, "DF227", "DF228")
+        if receiver_type:
+            self.last_receiver_type_descriptor = receiver_type
+
+        receiver_firmware = self._extract_rtcm_text(msg, "DF229", "DF230")
+        if receiver_firmware:
+            self.last_receiver_firmware_version = receiver_firmware
+
+        receiver_serial = self._extract_rtcm_text(msg, "DF231", "DF232")
+        if receiver_serial:
+            self.last_receiver_serial_number = receiver_serial
 
     def _handle_unicore_obs(self, msg):
         """Convert a decoded Unicore raw-observation log into an epoch."""
@@ -377,14 +432,25 @@ class RTCMHandler:
                 gps_seconds = epoch_time_s % GPS_WEEK_SECONDS
 
             elif sys_id == 'R':
-                # GLONASS: DF034 gives milliseconds of day (0..86400e3). Defined as UTC(SU)+3h
-                # Convert to seconds-of-week by using the latest non-GLONASS epoch as the
-                # day anchor. This keeps offline file conversion coherent across UTC day
-                # boundaries where GPS-like systems may already have advanced the timeline.
-                day_anchor = self._reference_utc_for_glonass_day()
-                day_index = self._utc_day_of_week(day_anchor)
+                # GLONASS MSM time is the composite DF416 day-of-week plus DF034
+                # milliseconds-of-day. DF416=7 means unknown, in which case the
+                # latest non-GLONASS epoch remains the safest day anchor.
+                try:
+                    transmitted_day = int(getattr(msg, "DF416", 7))
+                except (TypeError, ValueError):
+                    transmitted_day = 7
+                has_transmitted_day = 0 <= transmitted_day <= 6
+                if has_transmitted_day:
+                    day_index = transmitted_day
+                else:
+                    day_index = self._utc_day_of_week(self._reference_utc_for_glonass_day())
                 # Subtract 3 hours to convert UTC(SU)+3h -> UTC seconds-of-day
                 seconds_of_day = (epoch_time_s) - 3 * 3600.0
+                # During 00:00-03:00 GLONASS time, UTC is still on the
+                # previous day. DF416 has already advanced, so carry the
+                # subtraction into the transmitted day-of-week as well.
+                if has_transmitted_day and seconds_of_day < 0.0:
+                    day_index = (day_index - 1) % 7
                 # Ensure within 0..86400 range
                 seconds_of_day = seconds_of_day % (24 * 3600)
                 gps_seconds = (day_index * 24 * 3600) + seconds_of_day + 18
@@ -544,7 +610,7 @@ class RTCMHandler:
                         carrier_phase = ph_m * freq / CLIGHT
 
                 rr_fine = getattr(msg, f"DF404_{idx}", None)
-                doppler = 0.0
+                doppler = None
                 if (
                     has_doppler
                     and rough_rate is not None
@@ -566,7 +632,7 @@ class RTCMHandler:
                         snr=float(snr),
                         lock_time=lock_time,
                         half_cycle=half_cycle,
-                        doppler=float(doppler),
+                        doppler=None if doppler is None else float(doppler),
                     )
                     sat_state.signals[sig_id] = obs
 

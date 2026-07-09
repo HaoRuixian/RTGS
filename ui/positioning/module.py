@@ -39,6 +39,7 @@ from core.ring_buffer import RingBuffer
 from core.rtcm_handler import RTCMHandler, get_shared_handler
 from core.positioning_models import PositioningMode, SolutionStatus
 from core.global_config import get_global_config
+from core.stream_settings import is_realtime_stream_configured, stream_source
 from core.replay_ui_policy import (
     THROTTLED_GUI_INTERVAL_SECONDS,
     choose_gui_refresh_interval,
@@ -111,6 +112,19 @@ class PositioningModule(QMainWindow):
             },
             'EPH_ENABLED': False,
             'EPH': {
+                'source': 'NTRIP Server',
+                'host': '',
+                'port': 2101,
+                'mountpoint': '',
+                'user': '',
+                'password': '',
+                'baudrate': 115200,
+                'file_path': '',
+                'replay_speed': 1.0,
+                'file_type': 'Auto Detect',
+            },
+            'SSR_ENABLED': False,
+            'SSR': {
                 'source': 'NTRIP Server',
                 'host': '',
                 'port': 2101,
@@ -214,6 +228,16 @@ class PositioningModule(QMainWindow):
         self.lbl_obs_status.setProperty("class", "status")
         self._set_status_badge(self.lbl_obs_status, "OBS: OFF", "#6D2F2B")
         top_bar.addWidget(self.lbl_obs_status)
+
+        self.lbl_eph_status = QLabel("EPH: OFF")
+        self.lbl_eph_status.setProperty("class", "status")
+        self._set_status_badge(self.lbl_eph_status, "EPH: OFF", "#6D2F2B")
+        top_bar.addWidget(self.lbl_eph_status)
+
+        self.lbl_ssr_status = QLabel("SSR: OFF")
+        self.lbl_ssr_status.setProperty("class", "status")
+        self._set_status_badge(self.lbl_ssr_status, "SSR: OFF", "#6D2F2B")
+        top_bar.addWidget(self.lbl_ssr_status)
         
         self.lbl_pos_status = QLabel("POS: IDLE")
         self.lbl_pos_status.setProperty("class", "status")
@@ -516,7 +540,7 @@ class PositioningModule(QMainWindow):
         self._apply_replay_ui_policy(announce=False)
         self._ensure_stream_target_systems_for_positioning()
         # Validate configuration minimal requirements
-        obs_source = self.settings.get('OBS', {}).get('source')
+        obs_source = stream_source(self.settings.get('OBS', {}))
         if not self.settings.get('OBS', {}).get('host') and obs_source == 'NTRIP Server':
             raise RuntimeError("Missing OBS NTRIP host configuration")
         if not self.settings.get('OBS', {}).get('port') and obs_source == 'Serial Port':
@@ -556,9 +580,11 @@ class PositioningModule(QMainWindow):
 
         # EPH stream
         if self.settings.get('EPH_ENABLED') and obs_source != 'RINEX File' and 'EPH' not in self.ring_buffers:
-            eph_source = self.settings['EPH'].get('source')
+            eph_source = stream_source(self.settings['EPH'])
             if eph_source == 'File':
                 self.append_log("EPH file source is supported through RINEX observation replay mode")
+            elif not is_realtime_stream_configured(self.settings['EPH']):
+                self.append_log("EPH stream enabled but not configured")
             else:
                 self.ring_buffers['EPH'] = RingBuffer(maxsize=500)
 
@@ -576,6 +602,27 @@ class PositioningModule(QMainWindow):
                 )
                 proc_thread_eph.start()
                 self.processing_threads.append(proc_thread_eph)
+
+        if self.settings.get('SSR_ENABLED') and obs_source != 'RINEX File' and 'SSR' not in self.ring_buffers:
+            if not is_realtime_stream_configured(self.settings.get('SSR', {})):
+                self.append_log("SSR stream enabled but not configured")
+            else:
+                self.ring_buffers['SSR'] = RingBuffer(maxsize=500)
+
+                io_thread_ssr = IOThread(
+                    'SSR', self.settings['SSR'],
+                    self.ring_buffers['SSR'],
+                    self.observer_signals
+                )
+                io_thread_ssr.start()
+                self.io_threads.append(io_thread_ssr)
+
+                proc_thread_ssr = DataProcessingThread(
+                    'SSR', self.ring_buffers['SSR'],
+                    self.rtcm_handler, self.observer_signals
+                )
+                proc_thread_ssr.start()
+                self.processing_threads.append(proc_thread_ssr)
 
         self.append_log("Data streams started")
 
@@ -622,6 +669,8 @@ class PositioningModule(QMainWindow):
             self.ring_buffers.clear()
             self.pending_solution = None
             self.update_stream_status('OBS', False)
+            self.update_stream_status('EPH', False)
+            self.update_stream_status('SSR', False)
 
             self.is_running = False
             self._refresh_start_button_text()
@@ -675,11 +724,21 @@ class PositioningModule(QMainWindow):
     @Slot(str)
     def update_stream_status(self, stream_name: str, connected: bool):
         """Update stream status indicator."""
-        if stream_name == 'OBS':
-            if connected:
-                self._set_status_badge(self.lbl_obs_status, "OBS: ON", "#2A692D")
-            else:
-                self._set_status_badge(self.lbl_obs_status, "OBS: OFF", "#6D2F2B")
+        display_name = {
+            'EPH_DATA': 'EPH',
+            'SSR_DATA': 'SSR',
+        }.get(stream_name, stream_name)
+        label_map = {
+            'OBS': self.lbl_obs_status,
+            'EPH': self.lbl_eph_status,
+            'SSR': self.lbl_ssr_status,
+        }
+        label = label_map.get(display_name)
+        if label is None:
+            return
+        color = "#2A692D" if connected else "#6D2F2B"
+        state = "ON" if connected else "OFF"
+        self._set_status_badge(label, f"{display_name}: {state}", color)
 
     @Slot(str, bool)
     def update_positioning_status(self, status_name: str, active: bool):

@@ -2,7 +2,9 @@
 
 RTGS is a desktop workbench for real-time GNSS data acquisition, signal quality monitoring, positioning, and environmental analysis. The application uses a PySide6 GUI on top of reusable GNSS processing modules for NTRIP, serial receiver input, RINEX replay, RTCM decoding, live visualization, and standards-oriented data export.
 
-![RTGS monitoring dashboard](assets/monitor.png)
+<p align="center">
+  <img src="./assets/monitor.png" alt="RTGS monitoring dashboard" width="100%">
+</p>
 
 ## Project Status
 
@@ -94,4 +96,3 @@ The monitoring module separates data acquisition, parsing, UI refresh, and file 
 
 - [Monitoring user guide](doc/USAGE.md)
 - PDF files in `doc/` are external references for RTCM, RINEX, and receiver-specific documentation.
-

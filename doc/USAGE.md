@@ -12,13 +12,17 @@ python gui_main.py
 
 The launcher displays four workbench entries. The completed production workflow is **Signal Quality Monitoring**.
 
-![RTGS launcher](../assets/launch.png)
+<p align="center">
+  <img src="../assets/launch.png" alt="RTGS launcher" width="100%">
+</p>
 
 ## 2. Open the Monitoring Workbench
 
 Select **Signal Quality Monitoring** to open the real-time monitoring window. The top toolbar provides navigation, data source configuration, logging configuration, GNSS system filters, and OBS/EPH/SSR status indicators.
 
-![Monitoring dashboard](../assets/monitor.png)
+<p align="center">
+  <img src="../assets/monitor.png" alt="Monitoring dashboard" width="100%">
+</p>
 
 Main areas:
 
@@ -60,7 +64,9 @@ For RINEX replay, adjust the replay speed in the configuration dialog. During la
 
 Click **Logging** in the top toolbar to open recording settings.
 
-![Logging configuration](../assets/log.png)
+<p align="center">
+  <img src="../assets/log.png" alt="Logging configuration" width="520">
+</p>
 
 Available settings:
 
@@ -92,4 +98,3 @@ Click **Start Recording** to begin recording. Use the same control area to stop 
 | EPH or SSR does not turn ON | These streams are optional. Enable them only when valid ephemeris or correction data is available. |
 | Recorded files are empty | Confirm OBS is receiving stable data before recording and check write permissions for the output directory. |
 | RINEX filenames look wrong | Check Station ID, Country Code, Data Type, split interval, and sampling interval settings. |
-

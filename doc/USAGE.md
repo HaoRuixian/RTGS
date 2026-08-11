@@ -16,10 +16,6 @@ The launcher displays the monitoring and analysis workbenches. The independent b
 python rtcm_batch_gui.py
 ```
 
-<p align="center">
-  <img src="../assets/launch.png" alt="RTGS launcher" width="100%">
-</p>
-
 ## 2. Open the Monitoring Workbench
 
 Select **Signal Quality Monitoring** to open the real-time monitoring window. The top toolbar provides navigation, data source configuration, logging configuration, GNSS system filters, and OBS/EPH/SSR status indicators.

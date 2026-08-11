@@ -24,6 +24,8 @@ def brdc2state(eph_data, sys_type, t_obs_gpst):
             result = SatPos_brdc_glo(t_obs_gpst, eph_data)
         elif sys_type == 'SBS':
             result = SatPos_brdc_sbas(t_obs_gpst, eph_data)
+        elif sys_type == 'C':
+            result = SatPos_brdc_bds(t_obs_gpst, eph_data)
         else:
             result = SatPos_brdc(t_obs_gpst, eph_data)
         
@@ -170,6 +172,172 @@ def SatPos_brdc(t, eph):
 
     sat_v[2] = math.sin(i) * dot_y1 + y1 * math.cos(i) * dot_i
 
+    return sat_p, sat_v
+
+
+def SatPos_brdc_bds(t, eph):
+    """
+    Compute BeiDou satellite position and velocity from broadcast ephemeris.
+
+    This follows BNC's t_ephBDS::position implementation: BeiDou uses its own
+    gravitational constant/earth rotation rate, and GEO spacecraft use the
+    additional 5 degree X-rotation plus earth-fixed Z-rotation.
+    """
+
+    try:
+        M0        = eph['M0']
+        roota     = eph['sqrtA']
+        deltan    = eph['Delta_n']
+        ecc       = eph['Eccentricity']
+        omega     = eph['omega']
+        cuc       = eph['Cuc']
+        cus       = eph['Cus']
+        crc       = eph['Crc']
+        crs       = eph['Crs']
+        i0        = eph['i0']
+        idot      = eph['IDOT']
+        cic       = eph['Cic']
+        cis       = eph['Cis']
+        Omega0    = eph['OMEGA0']
+        Omegadot  = eph['OMEGA_DOT']
+        toe       = eph['Toe']
+    except KeyError:
+        return None
+
+    gm_bds = 398.6004418e12
+    omega_bds = 7292115.0000e-11
+
+    A = roota * roota
+    if A <= 0.0:
+        return None
+
+    tk = check_t(t - toe)
+    n0 = math.sqrt(gm_bds / A**3)
+    n = n0 + deltan
+    M = M0 + n * tk
+
+    E = M
+    for _ in range(100):
+        E_old = E
+        E = M + ecc * math.sin(E)
+        if abs(E - E_old) * A <= 0.001:
+            break
+    else:
+        return None
+
+    v = math.atan2(math.sqrt(1.0 - ecc * ecc) * math.sin(E), math.cos(E) - ecc)
+    u0 = v + omega
+    sin2u0 = math.sin(2.0 * u0)
+    cos2u0 = math.cos(2.0 * u0)
+    r = A * (1.0 - ecc * math.cos(E)) + crc * cos2u0 + crs * sin2u0
+    i = i0 + idot * tk + cic * cos2u0 + cis * sin2u0
+    u = u0 + cuc * cos2u0 + cus * sin2u0
+    xp = r * math.cos(u)
+    yp = r * math.sin(u)
+
+    tanv2 = math.tan(v / 2.0)
+    dEdM = 1.0 / (1.0 - ecc * math.cos(E))
+    dotv = (
+        math.sqrt((1.0 + ecc) / (1.0 - ecc))
+        / (math.cos(E / 2.0) ** 2)
+        / (1.0 + tanv2 * tanv2)
+        * dEdM
+        * n
+    )
+    dotu = dotv + (-cuc * sin2u0 + cus * cos2u0) * 2.0 * dotv
+    doti = idot + (-cic * sin2u0 + cis * cos2u0) * 2.0 * dotv
+    dotr = A * ecc * math.sin(E) * dEdM * n + (-crc * sin2u0 + crs * cos2u0) * 2.0 * dotv
+    dotx = dotr * math.cos(u) - r * math.sin(u) * dotu
+    doty = dotr * math.sin(u) + r * math.cos(u) * dotu
+
+    toesec = float(toe) - 14.0
+    i_max_geo = math.radians(10.0)
+
+    if i0 > i_max_geo:
+        OM = Omega0 + (Omegadot - omega_bds) * tk - omega_bds * toesec
+        sinom = math.sin(OM)
+        cosom = math.cos(OM)
+        sini = math.sin(i)
+        cosi = math.cos(i)
+
+        sat_p = np.array(
+            [
+                xp * cosom - yp * cosi * sinom,
+                xp * sinom + yp * cosi * cosom,
+                yp * sini,
+            ],
+            dtype=float,
+        )
+
+        dotom = Omegadot - Const.WE_WGS84
+        sat_v = np.array(
+            [
+                cosom * dotx - cosi * sinom * doty - xp * sinom * dotom
+                - yp * cosi * cosom * dotom + yp * sini * sinom * doti,
+                sinom * dotx + cosi * cosom * doty + xp * cosom * dotom
+                - yp * cosi * sinom * dotom - yp * sini * cosom * doti,
+                sini * doty + yp * cosi * doti,
+            ],
+            dtype=float,
+        )
+        return sat_p, sat_v
+
+    OM = Omega0 + Omegadot * tk - omega_bds * toesec
+    ll = omega_bds * tk
+    sinom = math.sin(OM)
+    cosom = math.cos(OM)
+    sini = math.sin(i)
+    cosi = math.cos(i)
+
+    x = xp * cosom - yp * cosi * sinom
+    y = xp * sinom + yp * cosi * cosom
+    z = yp * sini
+    x1 = np.array([x, y, z], dtype=float)
+
+    rx_angle = math.radians(-5.0)
+    crx = math.cos(rx_angle)
+    srx = math.sin(rx_angle)
+    rx = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, crx, srx],
+            [0.0, -srx, crx],
+        ],
+        dtype=float,
+    )
+    cll = math.cos(ll)
+    sll = math.sin(ll)
+    rz = np.array(
+        [
+            [cll, sll, 0.0],
+            [-sll, cll, 0.0],
+            [0.0, 0.0, 1.0],
+        ],
+        dtype=float,
+    )
+    sat_p = rz @ rx @ x1
+
+    dotom = Omegadot
+    vx = (
+        cosom * dotx - cosi * sinom * doty - xp * sinom * dotom
+        - yp * cosi * cosom * dotom + yp * sini * sinom * doti
+    )
+    vy = (
+        sinom * dotx + cosi * cosom * doty + xp * cosom * dotom
+        - yp * cosi * sinom * dotom - yp * sini * cosom * doti
+    )
+    vz = sini * doty + yp * cosi * doti
+    v1 = np.array([vx, vy, vz], dtype=float)
+
+    rdot_z = omega_bds * np.array(
+        [
+            [-sll, cll, 0.0],
+            [-cll, -sll, 0.0],
+            [0.0, 0.0, 0.0],
+        ],
+        dtype=float,
+    )
+    sat_v = rz @ rx @ v1 + rdot_z @ rx @ x1
     return sat_p, sat_v
 
 

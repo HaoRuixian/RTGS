@@ -28,7 +28,14 @@ def _default_positioning_settings() -> dict[str, Any]:
         # 默认让启用的星座都参与 SPP；需要保守 GPS-only 时可在定位设置中开启。
         "gnss_systems": ["G", "R", "E", "C", "J", "I"],
         "prefer_gps_only": False,
+        "allow_gps_fallback": False,
+        # BNC PPP does not mix broadcast-only satellites into an SSR-corrected
+        # solution.  Keep the same behavior once SSR orbit/clock corrections
+        # are present.
+        "require_ssr_corrections": True,
         "weight_mode": "elevation",
+        "code_sigma_m": 1.0,
+        "system_code_weight_factors": {"R": 5.0},
         "use_smoothing": False,
         "smoothing_window": 10,
         "random_walk": 0.0,

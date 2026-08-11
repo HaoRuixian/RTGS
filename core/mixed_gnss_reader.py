@@ -15,6 +15,10 @@ from socket import socket
 
 from pynmeagps import SocketWrapper
 from pyrtcm import RTCMReader
+try:
+    from pyrtcm import calc_crc24q
+except ImportError:  # pragma: no cover - compatibility for mocked pyrtcm in tests
+    calc_crc24q = None
 
 from core.gnss_time import GNSSTime
 from core.unicore import (
@@ -68,6 +72,15 @@ class SBASRawMessage:
     def __post_init__(self) -> None:
         self.sbas_type = getbitu(self.msg, 8, 6)
         self.identity = f"SBAS_RAW_{self.sbas_type}"
+
+
+@dataclass(frozen=True)
+class RawRTCMMessage:
+    """Raw RTCM frame for message types not decoded by pyrtcm."""
+
+    raw: bytes
+    identity: str
+    protocol: str = "RTCM"
 
 
 class MixedGNSSReader:
@@ -149,6 +162,8 @@ class MixedGNSSReader:
             msg = RTCMReader.parse(raw)
         except Exception:
             msg = None
+        if _rtcm_message_number(raw) == 4076 and _rtcm_crc_ok(raw):
+            msg = RawRTCMMessage(raw=raw, identity="4076")
         return raw, msg
 
     def _read_unicore_ascii(self, prefix: bytes):
@@ -267,3 +282,21 @@ class MixedGNSSReader:
                 raise EOFError()
             chunks.extend(chunk)
         return bytes(chunks)
+
+
+def _rtcm_message_number(raw: bytes) -> int | None:
+    if len(raw) < 5 or raw[0] != RTCM_PREAMBLE:
+        return None
+    try:
+        return getbitu(raw, 24, 12)
+    except Exception:
+        return None
+
+
+def _rtcm_crc_ok(raw: bytes) -> bool:
+    if len(raw) < 6:
+        return False
+    if calc_crc24q is None:
+        return True
+    expected = int.from_bytes(raw[-3:], "big")
+    return int(calc_crc24q(raw[:-3])) == expected

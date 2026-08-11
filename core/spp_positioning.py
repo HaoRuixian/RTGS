@@ -22,6 +22,8 @@ WGS84_SEMI_MAJOR_AXIS_M = 6378137.0
 GPS_L1_FREQUENCY_HZ = 1575.42e6
 MIN_ERROR_ELEVATION_RAD = math.radians(5.0)
 DEFAULT_CLOCK_CONSTRAINT_VARIANCE = 0.01
+BNC_BANCROFT_BLUNDER_THRESHOLD_M = 1500.0
+BNC_DEFAULT_CODE_SIGMA_M = 1.0
 MAX_GDOP = 30.0
 SECONDS_PER_WEEK = 604800.0
 RTKLIB_NX = 9
@@ -54,6 +56,7 @@ GNSS_SYSTEM_ALIASES = {
     "SBS": "S",
     "S": "S",
 }
+MULTI_GNSS_OFFSET_ORDER = ("R", "E", "C", "I", "J")
 
 
 def _finite_float(value, default: Optional[float] = None) -> Optional[float]:
@@ -84,6 +87,18 @@ def _rtklib_time_difference(time_sow: float, reference_sow: float) -> float:
     elif dt < -SECONDS_PER_WEEK / 2.0:
         dt += SECONDS_PER_WEEK
     return dt
+
+
+def _ephemeris_iod(eph: Dict) -> Optional[int]:
+    for key in ("iode", "iod_nav", "aode", "iodc"):
+        value = eph.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 @dataclass
@@ -138,6 +153,7 @@ class SPPPositioner:
     DEFAULT_TROPOSPHERE_MODEL = "Sastamoinen"
     DEFAULT_MAX_PDOP = 10.0
     DEFAULT_PREFER_GPS_ONLY = False
+    DEFAULT_CODE_SIGMA_M = BNC_DEFAULT_CODE_SIGMA_M
 
     MAX_ITERATIONS = 10
     CONVERGENCE_THRESHOLD = 1e-4
@@ -172,8 +188,18 @@ class SPPPositioner:
             )
         )
         self.WEIGHT_MODE = config.get("weight_mode", self.DEFAULT_WEIGHT_MODE)
+        self.code_sigma_m = float(config.get("code_sigma_m", self.DEFAULT_CODE_SIGMA_M))
+        self.system_code_weight_factors = {
+            str(system).upper(): float(factor)
+            for system, factor in dict(config.get("system_code_weight_factors", {"R": 5.0})).items()
+        }
         self.gnss_systems = self.normalize_gnss_systems(config.get("gnss_systems", ["G", "R", "E", "C", "J", "I"]))
         self.prefer_gps_only = bool(config.get("prefer_gps_only", self.DEFAULT_PREFER_GPS_ONLY))
+        self.allow_gps_fallback = bool(config.get("allow_gps_fallback", False))
+        self.require_ssr_corrections = bool(config.get("require_ssr_corrections", True))
+        self.gross_outlier_threshold_m = float(
+            config.get("gross_outlier_threshold_m", BNC_BANCROFT_BLUNDER_THRESHOLD_M)
+        )
         self.uncertain_std_pos = float(config.get("uncertain_std_pos", 5.0))
         self.fixed_std_pos = float(config.get("fixed_std_pos", 2.5))
         self.max_pdop = float(config.get("max_pdop", self.DEFAULT_MAX_PDOP))
@@ -181,25 +207,30 @@ class SPPPositioner:
         self._last_extract_reject_counts: Dict[str, int] = {}
         self._last_solver_failure_reason = ""
 
-    def _find_signal(self, pr_list: List[Tuple[str, float]], bands: List[str]) -> Tuple[Optional[str], float]:
-        for band in bands:
+    def _find_signal(self, pr_list: List[Tuple[str, float]], priorities: List[str]) -> Tuple[Optional[str], float]:
+        for priority in priorities:
+            if len(priority) > 1:
+                for sig_id, value in pr_list:
+                    if sig_id == priority:
+                        return sig_id, float(value)
+                continue
             for sig_id, value in pr_list:
-                if sig_id.startswith(band):
+                if sig_id.startswith(priority):
                     return sig_id, float(value)
         return None, 0.0
 
     def _select_primary_signal(self, sat_key: str, pr_list: List[Tuple[str, float]]) -> Tuple[Optional[str], float]:
         system = sat_key[0]
-        primary_bands = {
-            "G": ["1"],
-            "R": ["1"],
-            "E": ["1"],
-            "C": ["2", "1"],
-            "J": ["1"],
-            "I": ["5", "1"],
-            "S": ["1"],
+        primary_priorities = {
+            "G": ["1W", "1C", "1P", "1S", "1L", "1X", "1"],
+            "R": ["1P", "1C", "1"],
+            "E": ["1C", "1B", "1X", "1"],
+            "C": ["2I", "2Q", "2X", "2", "1D", "1P", "1X", "1"],
+            "J": ["1C", "1S", "1L", "1X", "1"],
+            "I": ["5A", "5B", "5C", "5X", "5", "1"],
+            "S": ["1C", "1"],
         }
-        return self._find_signal(pr_list, primary_bands.get(system, ["1"]))
+        return self._find_signal(pr_list, primary_priorities.get(system, ["1"]))
 
     def get_tgd_for_sys(self, sys: str, sat_key: str, sig_id: str) -> float:
         """Return the broadcast group delay correction in meters."""
@@ -212,7 +243,11 @@ class SPPPositioner:
                 return float(eph.get("TGD", 0.0) or 0.0) * self.CLIGHT
 
             if sys == "R":
-                return -float(eph.get("tau_n", 0.0) or 0.0) * self.CLIGHT
+                # GLONASS tau_n is the satellite clock term and is already
+                # applied in _compute_satellite_clock_correction().  Treating it
+                # as a code group delay corrupts single-frequency fallbacks by
+                # hundreds of metres or more.
+                return 0.0
 
             if sys == "E":
                 band = sig_id[:1]
@@ -235,6 +270,19 @@ class SPPPositioner:
             return 0.0
 
         return 0.0
+
+    def _get_code_bias(self, sat_key: str, sig_id: str) -> float:
+        ssr_store = getattr(self.handler, "ssr_corrections", None)
+        if ssr_store is None or not hasattr(ssr_store, "get_code_biases"):
+            return 0.0
+        try:
+            biases = ssr_store.get_code_biases(sat_key)
+        except Exception:
+            return 0.0
+        try:
+            return float(biases.get(sig_id, 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
 
     def _calculate_ionospheric_delay(
         self,
@@ -271,57 +319,49 @@ class SPPPositioner:
         """Return corrected pseudorange and measurement variance."""
         system = sat_key[0]
 
-        primary_bands = {
-            "G": ["1"],
-            "R": ["1"],
-            "E": ["1"],
-            "C": ["2", "1"],
-            "J": ["1"],
-            "I": ["5", "1"],
-            "S": ["1"],
+        primary_priorities = {
+            "G": ["1W", "1C", "1P", "1S", "1L", "1X", "1"],
+            "R": ["1P", "1C", "1"],
+            "E": ["1C", "1B", "1X", "1"],
+            "C": ["2I", "2Q", "2X", "2", "1D", "1P", "1X", "1"],
+            "J": ["1C", "1S", "1L", "1X", "1"],
+            "I": ["5A", "5B", "5C", "5X", "5", "1"],
+            "S": ["1C", "1"],
         }
-        secondary_bands = {
-            "G": ["2", "5"],
-            "R": ["2", "3"],
-            "E": ["7", "5"],
-            "C": ["7", "6", "5"],
-            "J": ["2", "5"],
-            "I": ["9", "1"],
-            "S": ["5"],
+        secondary_priorities = {
+            "G": ["2W", "2S", "2L", "2X", "2P", "2C", "2", "5Q", "5I", "5X", "5"],
+            "R": ["2P", "2C", "2", "3I", "3Q", "3X", "3"],
+            "E": ["5Q", "5I", "5X", "5", "7Q", "7I", "7X", "7"],
+            "C": ["6I", "6Q", "6X", "6", "7I", "7Q", "7D", "7P", "7X", "7", "5D", "5P", "5X", "5"],
+            "J": ["2S", "2L", "2X", "2", "5Q", "5I", "5X", "5"],
+            "I": ["9A", "9B", "9C", "9X", "9", "1"],
+            "S": ["5I", "5Q", "5X", "5"],
         }
 
-        sig1_id, p1 = self._find_signal(pr_list, primary_bands.get(system, ["1"]))
+        sig1_id, p1 = self._find_signal(pr_list, primary_priorities.get(system, ["1"]))
         if sig1_id is None or p1 <= 0.0:
             return 0.0, 0.0
+        p1 += self._get_code_bias(sat_key, sig1_id)
 
         if self.ionosphere_option != "IFLC":
             tgd = self.get_tgd_for_sys(system, sat_key, sig1_id)
-            if system == "R":
-                f1, _ = get_freq(sig1_id, sat_key, fcn)
-                f2, _ = get_freq("2C", sat_key, fcn)
-                if f1 > 0.0 and f2 > 0.0 and abs(f1 - f2) > 0.0:
-                    gamma = (f1 / f2) ** 2
-                    return p1 - tgd / (gamma - 1.0), 0.3 ** 2
-            return p1 - tgd, 0.3 ** 2
+            return p1 - tgd, self.code_sigma_m ** 2
 
-        sig2_id, p2 = self._find_signal(pr_list, secondary_bands.get(system, ["2"]))
+        sig2_id, p2 = self._find_signal(pr_list, secondary_priorities.get(system, ["2"]))
         if sig2_id is None or p2 <= 0.0:
             tgd = self.get_tgd_for_sys(system, sat_key, sig1_id)
-            if system == "R":
-                f1, _ = get_freq(sig1_id, sat_key, fcn)
-                f2, _ = get_freq("2C", sat_key, fcn)
-                if f1 > 0.0 and f2 > 0.0 and abs(f1 - f2) > 0.0:
-                    gamma = (f1 / f2) ** 2
-                    return p1 - tgd / (gamma - 1.0), 0.3 ** 2
-            return p1 - tgd, 0.3 ** 2
+            return p1 - tgd, self.code_sigma_m ** 2
+        p2 += self._get_code_bias(sat_key, sig2_id)
 
         f1, _ = get_freq(sig1_id, sat_key, fcn)
         f2, _ = get_freq(sig2_id, sat_key, fcn)
         if f1 <= 0.0 or f2 <= 0.0 or abs(f1 - f2) < 1e-9:
             tgd = self.get_tgd_for_sys(system, sat_key, sig1_id)
-            return p1 - tgd, 0.3 ** 2
+            return p1 - tgd, self.code_sigma_m ** 2
 
         gamma = (f1 / f2) ** 2
+        coeff1 = -gamma / (1.0 - gamma)
+        coeff2 = 1.0 / (1.0 - gamma)
 
         if system == "E" and sig2_id.startswith("7"):
             eph = self._fetch_ephemeris(sat_key)
@@ -341,7 +381,8 @@ class SPPPositioner:
             tgd2 = self.get_tgd_for_sys(system, sat_key, sig2_id)
             p_if -= (tgd2 - gamma * tgd1) / (1.0 - gamma)
 
-        return p_if, (0.3 * 3.0) ** 2
+        code_variance = (coeff1 * coeff1 + coeff2 * coeff2) * self.code_sigma_m ** 2
+        return p_if, code_variance
 
     def _fetch_ephemeris(self, satellite_id: str) -> Optional[Dict]:
         if self.handler is None:
@@ -394,37 +435,43 @@ class SPPPositioner:
         elevation_rad: float,
         snr: Optional[float] = None,
         pstd: Optional[float] = None,
+        code_variance: Optional[float] = None,
     ) -> float:
-        """Approximate pseudorange measurement variance, aligned with RTKLIB's `varerr`."""
-        system_factor = {
-            "G": 1.0,
-            "R": 1.5,
-            "S": 2.0,
-            "E": 1.0,
-            "C": 1.0,
-            "J": 1.0,
-            "I": 1.0,
-        }.get(sat_key[0], 1.0)
+        """Approximate BNC PPP code-observation variance in m^2."""
+        system = sat_key[0]
+        system_factor = self.system_code_weight_factors.get(
+            system,
+            {
+                "G": 1.0,
+                "S": 2.0,
+                "E": 1.0,
+                "J": 1.0,
+                "I": 1.0,
+            }.get(system, 1.0),
+        )
 
         elevation_rad = max(float(elevation_rad), MIN_ERROR_ELEVATION_RAD)
+        elevation_deg = math.degrees(elevation_rad)
+
+        if code_variance is None or code_variance <= 0.0 or not math.isfinite(float(code_variance)):
+            variance = self.code_sigma_m ** 2
+        else:
+            variance = float(code_variance)
 
         if self.WEIGHT_MODE == "equal":
-            variance = 1.0 ** 2
+            pass
+        elif self.WEIGHT_MODE == "elevation":
+            # BNC t_pppSatObs::sigma(): cEle = 1 + |90 - elevation_deg|^3 * 4e-6.
+            elevation_factor = 1.0 + abs(90.0 - elevation_deg) ** 3 * 0.000004
+            variance *= elevation_factor ** 2
         else:
-            err_a = 0.3
-            err_b = 0.3
-            variance = err_a ** 2 + err_b ** 2 / max(math.sin(elevation_rad), 1e-3)
-
             if self.WEIGHT_MODE == "snr" and snr is not None and snr > 0.0:
                 snr_max = 52.0
-                snr_factor = 0.3
+                snr_factor = 1.0
                 variance += snr_factor ** 2 * math.pow(10.0, 0.1 * max(snr_max - float(snr), 0.0))
 
         if pstd is not None and pstd > 0.0:
             variance += float(pstd) ** 2
-
-        if self.ionosphere_option == "IFLC":
-            variance *= 3.0 ** 2
 
         return (system_factor ** 2) * variance
 
@@ -542,12 +589,37 @@ class SPPPositioner:
         return initial_guess
 
     def _select_reference_system(self, observations: List[Dict]) -> str:
+        counts = self._system_counts(observations)
+        if counts.get("G", 0) > 0:
+            return "G"
+
+        for system in self.gnss_systems:
+            if counts.get(system, 0) > 0:
+                return system
+
+        for system, count in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
+            if count > 0:
+                return system
+
         return "G"
 
     def _build_state_layout(self, observations: List[Dict]) -> Tuple[str, Dict[str, int], int]:
-        # RTKLIB pntpos.c uses a fixed 4+5 state vector when QZSDT is enabled:
-        # receiver xyz, GPS clock, then GLO/GAL/BDS/IRN/QZS offsets to GPS.
-        return self._select_reference_system(observations), dict(RTKLIB_SYSTEM_STATE_INDICES), RTKLIB_NX
+        # Estimate only inter-system clock offsets that are observable in this
+        # epoch.  Keeping absent constellations out of the state vector avoids
+        # forcing mixed-GNSS epochs back to GPS-only just because I/J/R/E/C were
+        # configured but not all present in the measurements.
+        reference_system = self._select_reference_system(observations)
+        counts = self._system_counts(observations)
+        state_indices: Dict[str, int] = {}
+        next_index = 4
+        for system in MULTI_GNSS_OFFSET_ORDER:
+            if system == reference_system:
+                continue
+            if counts.get(system, 0) <= 0:
+                continue
+            state_indices[system] = next_index
+            next_index += 1
+        return reference_system, state_indices, next_index
 
     def _solve_observation_set(
         self,
@@ -559,7 +631,46 @@ class SPPPositioner:
         if initial_guess is None:
             self._last_solver_failure_reason = "initial position unavailable"
             return None
-        return self._solve_least_squares(observations, initial_guess, epoch_obs)
+
+        working_observations = list(observations)
+        excluded_outliers: List[Tuple[str, float]] = []
+        max_attempts = max(1, len(working_observations) - self.MIN_SATELLITES + 1)
+        solution: Optional[PositioningResult] = None
+
+        for _ in range(max_attempts):
+            solution = self._solve_least_squares(working_observations, initial_guess, epoch_obs)
+            if solution is None:
+                return None
+
+            threshold = self.gross_outlier_threshold_m
+            if threshold <= 0.0 or not solution.residuals or not solution.used_satellites:
+                break
+
+            residual_abs = [abs(float(value)) for value in solution.residuals]
+            max_index = int(np.argmax(residual_abs))
+            max_residual_abs = residual_abs[max_index]
+            if max_residual_abs <= threshold:
+                break
+
+            sat_to_remove = solution.used_satellites[max_index]
+            candidate_observations = [
+                obs for obs in working_observations if str(obs["sat_key"]) != sat_to_remove
+            ]
+            _, _, candidate_state_count = self._build_state_layout(candidate_observations)
+            if len(candidate_observations) < max(self.MIN_SATELLITES, candidate_state_count):
+                break
+
+            excluded_outliers.append((sat_to_remove, float(solution.residuals[max_index])))
+            working_observations = candidate_observations
+
+        if solution is not None and excluded_outliers:
+            details = ", ".join(f"{sat}:{residual:.1f}m" for sat, residual in excluded_outliers)
+            if solution.quality_reason:
+                solution.quality_reason += f"; gross outliers removed {details}"
+            else:
+                solution.quality_reason = f"gross outliers removed {details}"
+            self.last_diagnostics["excluded_outliers"] = excluded_outliers
+        return solution
 
     def _solution_source_for_observations(self, observations: List[Dict], original_count: int) -> str:
         counts = self._system_counts(observations)
@@ -607,7 +718,7 @@ class SPPPositioner:
             self.last_diagnostics["solver_failure_reason"] = self._last_solver_failure_reason
             solution_source = self._solution_source_for_observations(observations, original_observation_count)
             fallback_reason = ""
-            if solution is None and not self.prefer_gps_only:
+            if solution is None and self.allow_gps_fallback:
                 gps_observations = [obs for obs in observations if obs["sat_key"].startswith("G")]
                 if len(gps_observations) >= self.MIN_SATELLITES and len(gps_observations) < len(observations):
                     fallback_solution = self._solve_observation_set(gps_observations, approx_position, epoch_obs)
@@ -718,6 +829,12 @@ class SPPPositioner:
         return sys_type, payload
 
     def _compute_satellite_clock_correction(self, eph: Dict, transmit_time: float) -> float:
+        if str(eph.get("satellite_id", "")).startswith("R") or str(eph.get("system", "")).upper().startswith("GLO"):
+            tau_n = float(eph.get("tau_n", 0.0) or 0.0)
+            gamma_n = float(eph.get("gamma_n", 0.0) or 0.0)
+            tb = float(eph.get("tb") or eph.get("toc") or eph.get("Toc") or 0.0)
+            return tau_n + gamma_n * _rtklib_time_difference(transmit_time, tb)
+
         af0 = float(eph.get("af0", 0.0) or 0.0)
         af1 = float(eph.get("af1", 0.0) or 0.0)
         af2 = float(eph.get("af2", 0.0) or 0.0)
@@ -816,10 +933,14 @@ class SPPPositioner:
                     sat_vel_arr,
                     clock_bias_s=sat_clock_correction,
                     transmit_time=transmit_time,
+                    ephemeris_iod=_ephemeris_iod(eph),
                 )
                 corrected_position = _finite_vector3(corrected_state.position_m)
                 if corrected_position is not None:
                     sat_pos_arr = corrected_position
+                corrected_velocity = _finite_vector3(corrected_state.velocity_mps)
+                if corrected_velocity is not None:
+                    sat_vel_arr = corrected_velocity
                 sat_clock_correction = float(corrected_state.clock_bias_s)
                 if corrected_state.applied:
                     sat_pos_source = "SSR"
@@ -837,6 +958,7 @@ class SPPPositioner:
     def _extract_observations(self, epoch_obs) -> List[Dict]:
         observations: List[Dict] = []
         reject_counts: Dict[str, int] = {}
+        ssr_required = self._ssr_corrections_required()
 
         def reject(sat_key: str, reason: str) -> None:
             system = str(sat_key)[0] if sat_key else "?"
@@ -873,6 +995,9 @@ class SPPPositioner:
             if sat_pos is None or sat_clk_corr is None:
                 reject(sat_key, "no-position-clock")
                 continue
+            if ssr_required and not bool(getattr(satellite, "ssr_applied", False)):
+                reject(sat_key, "ssr-required")
+                continue
 
             primary_signal_id, raw_pseudorange = self._select_primary_signal(sat_key, pr_list)
             if primary_signal_id is None or raw_pseudorange <= 0.0 or not math.isfinite(raw_pseudorange):
@@ -907,6 +1032,20 @@ class SPPPositioner:
 
         self._last_extract_reject_counts = reject_counts
         return observations
+
+    def _ssr_corrections_required(self) -> bool:
+        if not self.require_ssr_corrections:
+            return False
+        ssr_store = getattr(self.handler, "ssr_corrections", None)
+        if ssr_store is None:
+            return False
+        try:
+            if hasattr(ssr_store, "has_orbit_clock_corrections"):
+                return bool(ssr_store.has_orbit_clock_corrections())
+            snapshot = ssr_store.snapshot()
+            return bool(snapshot.orbit and snapshot.clock)
+        except Exception:
+            return False
 
     def _calculate_tropospheric_delay(
         self,
@@ -964,21 +1103,30 @@ class SPPPositioner:
         measurement_residuals: List[float] = []
         measurement_satellites: List[str] = []
         clock_mask_present = [False] * (nx - 3)
+        filter_counts: Dict[str, int] = {}
+        apply_elevation_mask = iteration > 0
+
+        def reject(reason: str) -> None:
+            filter_counts[reason] = filter_counts.get(reason, 0) + 1
 
         for obs in observations:
             sat_pos = obs["sat_pos"]
             rho, line_of_sight = self._geodist(sat_pos, rec_pos)
             if rho is None or line_of_sight is None:
+                reject("geodist")
                 continue
             if not math.isfinite(rho) or not np.all(np.isfinite(line_of_sight)):
+                reject("non-finite-geodist")
                 continue
 
             az_deg, el_deg = calculate_az_el(sat_pos, rec_pos)
             if not math.isfinite(float(az_deg)) or not math.isfinite(float(el_deg)):
+                reject("non-finite-az-el")
                 continue
             az_rad = math.radians(float(az_deg))
             el_rad = math.radians(float(el_deg))
-            if el_deg < self.MIN_ELEVATION:
+            if apply_elevation_mask and el_deg < self.MIN_ELEVATION:
+                reject("low-elevation")
                 continue
 
             try:
@@ -1005,6 +1153,7 @@ class SPPPositioner:
 
             corrected_pr, code_bias_var = self.calculate_prange(obs["sat_key"], obs["pr_list"], obs["fcn"])
             if corrected_pr <= 0.0 or not math.isfinite(corrected_pr):
+                reject("bad-prange")
                 continue
             code_bias_var = _finite_float(code_bias_var, 0.0) or 0.0
 
@@ -1016,6 +1165,7 @@ class SPPPositioner:
                 + tropo_delay
             )
             if not math.isfinite(residual):
+                reject("non-finite-residual")
                 continue
 
             design_row = np.zeros(nx, dtype=float)
@@ -1033,12 +1183,17 @@ class SPPPositioner:
 
             variance = (
                 float(obs["sat_var"])
-                + float(code_bias_var)
-                + self.var_err(obs["sat_key"], el_rad, snr=obs.get("snr"))
+                + self.var_err(
+                    obs["sat_key"],
+                    el_rad,
+                    snr=obs.get("snr"),
+                    code_variance=code_bias_var,
+                )
                 + float(iono_var)
                 + float(tropo_var)
             )
             if not math.isfinite(variance):
+                reject("non-finite-variance")
                 continue
             variance = max(variance, 1e-6)
 
@@ -1065,6 +1220,7 @@ class SPPPositioner:
             "measurement_H": np.asarray(measurement_rows, dtype=float).reshape((-1, nx)),
             "measurement_v": np.asarray(measurement_residuals, dtype=float),
             "measurement_satellites": measurement_satellites,
+            "filter_counts": filter_counts,
         }
 
     def _solve_least_squares(self, observations: List[Dict], approx_position: np.ndarray, epoch_obs) -> Optional[PositioningResult]:
@@ -1101,7 +1257,8 @@ class SPPPositioner:
             if model["measurement_H"].shape[0] < self.MIN_SATELLITES:
                 self._last_solver_failure_reason = (
                     f"not enough measurements after elevation/code filtering: "
-                    f"{model['measurement_H'].shape[0]} < {self.MIN_SATELLITES}"
+                    f"{model['measurement_H'].shape[0]} < {self.MIN_SATELLITES}; "
+                    f"filters={model.get('filter_counts', {})}"
                 )
                 return None
             if h_mat.shape[0] < nx:
@@ -1167,7 +1324,8 @@ class SPPPositioner:
 
         if measurement_h.shape[0] < self.MIN_SATELLITES:
             self._last_solver_failure_reason = (
-                f"not enough final measurements: {measurement_h.shape[0]} < {self.MIN_SATELLITES}"
+                f"not enough final measurements: {measurement_h.shape[0]} < {self.MIN_SATELLITES}; "
+                f"filters={final_model.get('filter_counts', {})}"
             )
             return None
 

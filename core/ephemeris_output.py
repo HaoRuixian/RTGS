@@ -49,6 +49,18 @@ def _time_difference(time_sow: float, reference_sow: float) -> float:
     return dt
 
 
+def _ephemeris_iod(eph: Mapping[str, object]) -> int | None:
+    for key in ("iode", "iod_nav", "aode", "iodc"):
+        value = eph.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _finite_vector3(values: object):
     try:
         arr = np.asarray(values, dtype=float).reshape(-1)
@@ -184,10 +196,14 @@ def build_sp3_states(
                 velocity,
                 clock_bias_s=clock,
                 transmit_time=gps_sow,
+                ephemeris_iod=_ephemeris_iod(eph),
             )
             corrected_position = _finite_vector3(corrected.position_m)
             if corrected_position is not None:
                 position = corrected_position
+            corrected_velocity = _finite_vector3(corrected.velocity_mps)
+            if corrected_velocity is not None:
+                velocity = corrected_velocity
             clock = float(corrected.clock_bias_s)
             ssr_applied = bool(corrected.applied)
         states[sat_id] = (position.tolist(), clock, ssr_applied)

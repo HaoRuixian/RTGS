@@ -12,6 +12,24 @@ import numpy as np
 
 LIGHT_SPEED = 299_792_458.0
 SECONDS_PER_WEEK = 604_800.0
+SSR_UPDATE_INTERVAL_SECONDS = (
+    1.0,
+    2.0,
+    5.0,
+    10.0,
+    15.0,
+    30.0,
+    60.0,
+    120.0,
+    240.0,
+    300.0,
+    600.0,
+    900.0,
+    1800.0,
+    3600.0,
+    7200.0,
+    10800.0,
+)
 
 
 @dataclass(slots=True)
@@ -56,6 +74,7 @@ class AppliedSsrState:
 
     position_m: np.ndarray
     clock_bias_s: float
+    velocity_mps: np.ndarray | None = None
     applied: bool = False
     orbit_applied: bool = False
     clock_applied: bool = False
@@ -68,7 +87,7 @@ class SsrSnapshot:
     orbit: Dict[str, SsrOrbitCorrection] = field(default_factory=dict)
     clock: Dict[str, SsrClockCorrection] = field(default_factory=dict)
     code_biases: Dict[str, Dict[str, float]] = field(default_factory=dict)
-    ura: Dict[str, int] = field(default_factory=dict)
+    ura: Dict[str, float] = field(default_factory=dict)
 
 
 def _time_difference(time_sow: float, reference_sow: float) -> float:
@@ -78,6 +97,18 @@ def _time_difference(time_sow: float, reference_sow: float) -> float:
         dt -= SECONDS_PER_WEEK
     elif dt < -SECONDS_PER_WEEK / 2.0:
         dt += SECONDS_PER_WEEK
+    return dt
+
+
+def _ssr_time_delta(time_sow: float, reference_sow: float, update_interval: int | None) -> float:
+    """Return BNC-compatible SSR extrapolation time delta."""
+    dt = _time_difference(time_sow, reference_sow)
+    try:
+        index = int(update_interval) if update_interval is not None else 0
+    except (TypeError, ValueError):
+        index = 0
+    if 0 < index < len(SSR_UPDATE_INTERVAL_SECONDS):
+        dt -= 0.5 * SSR_UPDATE_INTERVAL_SECONDS[index]
     return dt
 
 
@@ -107,8 +138,9 @@ class SsrCorrectionStore:
         self.max_clock_age_seconds = float(max_clock_age_seconds)
         self._orbit: Dict[str, SsrOrbitCorrection] = {}
         self._clock: Dict[str, SsrClockCorrection] = {}
+        self._base_clock: Dict[str, SsrClockCorrection] = {}
         self._code_biases: Dict[str, Dict[str, float]] = {}
-        self._ura: Dict[str, int] = {}
+        self._ura: Dict[str, float] = {}
         self._lock = threading.Lock()
 
     def update_orbit(self, correction: SsrOrbitCorrection) -> None:
@@ -117,20 +149,34 @@ class SsrCorrectionStore:
 
     def update_clock(self, correction: SsrClockCorrection) -> None:
         with self._lock:
-            existing = self._clock.get(correction.satellite_id)
-            if existing and correction.high_rate_clock_m and not correction.delta_clock_m:
-                correction.delta_clock_m = existing.delta_clock_m
-                correction.delta_clock_rate_mps = existing.delta_clock_rate_mps
-                correction.delta_clock_accel_mps2 = existing.delta_clock_accel_mps2
+            self._base_clock[correction.satellite_id] = correction
             self._clock[correction.satellite_id] = correction
+
+    def update_high_rate_clock(self, correction: SsrClockCorrection) -> None:
+        with self._lock:
+            base = self._base_clock.get(correction.satellite_id)
+            if base is None:
+                return
+            self._clock[correction.satellite_id] = SsrClockCorrection(
+                satellite_id=correction.satellite_id,
+                epoch_time=correction.epoch_time,
+                update_interval=correction.update_interval,
+                iod_ssr=correction.iod_ssr,
+                provider_id=correction.provider_id,
+                solution_id=correction.solution_id,
+                delta_clock_m=base.delta_clock_m,
+                delta_clock_rate_mps=base.delta_clock_rate_mps,
+                delta_clock_accel_mps2=base.delta_clock_accel_mps2,
+                high_rate_clock_m=correction.high_rate_clock_m,
+            )
 
     def update_code_biases(self, satellite_id: str, code_biases: Mapping[str, float]) -> None:
         with self._lock:
             self._code_biases[satellite_id] = {str(key): float(value) for key, value in code_biases.items()}
 
-    def update_ura(self, satellite_id: str, ura: int) -> None:
+    def update_ura(self, satellite_id: str, ura: float) -> None:
         with self._lock:
-            self._ura[satellite_id] = int(ura)
+            self._ura[satellite_id] = float(ura)
 
     def get_orbit(self, satellite_id: str) -> Optional[SsrOrbitCorrection]:
         with self._lock:
@@ -144,9 +190,14 @@ class SsrCorrectionStore:
         with self._lock:
             return dict(self._code_biases.get(satellite_id, {}))
 
-    def get_ura(self, satellite_id: str) -> Optional[int]:
+    def get_ura(self, satellite_id: str) -> Optional[float]:
         with self._lock:
             return self._ura.get(satellite_id)
+
+    def has_orbit_clock_corrections(self) -> bool:
+        """Return True once SSR orbit and clock streams are both populated."""
+        with self._lock:
+            return bool(self._orbit and self._clock)
 
     def snapshot(self) -> SsrSnapshot:
         with self._lock:
@@ -161,6 +212,7 @@ class SsrCorrectionStore:
         with self._lock:
             self._orbit.clear()
             self._clock.clear()
+            self._base_clock.clear()
             self._code_biases.clear()
             self._ura.clear()
 
@@ -172,6 +224,7 @@ class SsrCorrectionStore:
         *,
         clock_bias_s: float,
         transmit_time: float,
+        ephemeris_iod: int | None = None,
     ) -> AppliedSsrState:
         """Apply fresh SSR corrections to a broadcast satellite state."""
         position = _finite_vector3(position_m)
@@ -182,6 +235,7 @@ class SsrCorrectionStore:
             velocity = np.zeros(3, dtype=float)
 
         corrected_position = position.copy()
+        corrected_velocity = velocity.copy()
         corrected_clock = float(clock_bias_s)
         orbit_applied = False
         clock_applied = False
@@ -190,38 +244,90 @@ class SsrCorrectionStore:
             orbit = self._orbit.get(satellite_id)
             clock = self._clock.get(satellite_id)
 
-        if orbit is not None:
-            orbit_dt = _time_difference(transmit_time, orbit.epoch_time)
-            if abs(orbit_dt) <= self.max_orbit_age_seconds:
-                rac_delta = np.array(
-                    [
-                        orbit.delta_radial_m + orbit.dot_delta_radial_mps * orbit_dt,
-                        orbit.delta_along_track_m + orbit.dot_delta_along_track_mps * orbit_dt,
-                        orbit.delta_cross_track_m + orbit.dot_delta_cross_track_mps * orbit_dt,
-                    ],
-                    dtype=float,
-                )
-                transform = self._rac_to_ecef(position, velocity)
-                if transform is not None and np.all(np.isfinite(rac_delta)):
-                    corrected_position = position - transform @ rac_delta
-                    orbit_applied = True
+        if orbit is None or clock is None:
+            return AppliedSsrState(
+                position_m=corrected_position,
+                clock_bias_s=corrected_clock,
+                velocity_mps=corrected_velocity,
+            )
 
-        if clock is not None:
-            clock_dt = _time_difference(transmit_time, clock.epoch_time)
-            if abs(clock_dt) <= self.max_clock_age_seconds:
-                correction_m = (
-                    clock.delta_clock_m
-                    + clock.delta_clock_rate_mps * clock_dt
-                    + clock.delta_clock_accel_mps2 * clock_dt * clock_dt
-                    + clock.high_rate_clock_m
+        if ephemeris_iod is not None and orbit.iod is not None:
+            try:
+                if int(ephemeris_iod) != int(orbit.iod):
+                    return AppliedSsrState(
+                        position_m=corrected_position,
+                        clock_bias_s=corrected_clock,
+                        velocity_mps=corrected_velocity,
+                    )
+            except (TypeError, ValueError):
+                return AppliedSsrState(
+                    position_m=corrected_position,
+                    clock_bias_s=corrected_clock,
+                    velocity_mps=corrected_velocity,
                 )
-                if math.isfinite(correction_m):
-                    corrected_clock += correction_m / LIGHT_SPEED
-                    clock_applied = True
+
+        orbit_age = _time_difference(transmit_time, orbit.epoch_time)
+        clock_age = _time_difference(transmit_time, clock.epoch_time)
+        if abs(orbit_age) > self.max_orbit_age_seconds or abs(clock_age) > self.max_clock_age_seconds:
+            return AppliedSsrState(
+                position_m=corrected_position,
+                clock_bias_s=corrected_clock,
+                velocity_mps=corrected_velocity,
+            )
+
+        orbit_dt = _ssr_time_delta(transmit_time, orbit.epoch_time, orbit.update_interval)
+        rac_delta = np.array(
+            [
+                orbit.delta_radial_m + orbit.dot_delta_radial_mps * orbit_dt,
+                orbit.delta_along_track_m + orbit.dot_delta_along_track_mps * orbit_dt,
+                orbit.delta_cross_track_m + orbit.dot_delta_cross_track_mps * orbit_dt,
+            ],
+            dtype=float,
+        )
+        transform = self._rac_to_ecef(position, velocity)
+        if transform is None or not np.all(np.isfinite(rac_delta)):
+            return AppliedSsrState(
+                position_m=corrected_position,
+                clock_bias_s=corrected_clock,
+                velocity_mps=corrected_velocity,
+            )
+
+        clock_dt = _ssr_time_delta(transmit_time, clock.epoch_time, clock.update_interval)
+        correction_m = (
+            clock.delta_clock_m
+            + clock.delta_clock_rate_mps * clock_dt
+            + clock.delta_clock_accel_mps2 * clock_dt * clock_dt
+            + clock.high_rate_clock_m
+        )
+        if not math.isfinite(correction_m):
+            return AppliedSsrState(
+                position_m=corrected_position,
+                clock_bias_s=corrected_clock,
+                velocity_mps=corrected_velocity,
+            )
+
+        corrected_position = position - transform @ rac_delta
+        velocity_transform = self._rac_to_ecef(corrected_position, velocity)
+        if velocity_transform is None:
+            velocity_transform = transform
+        rate_delta = np.array(
+            [
+                orbit.dot_delta_radial_mps,
+                orbit.dot_delta_along_track_mps,
+                orbit.dot_delta_cross_track_mps,
+            ],
+            dtype=float,
+        )
+        if np.all(np.isfinite(rate_delta)):
+            corrected_velocity = velocity - velocity_transform @ rate_delta
+        corrected_clock += correction_m / LIGHT_SPEED
+        orbit_applied = True
+        clock_applied = True
 
         return AppliedSsrState(
             position_m=corrected_position,
             clock_bias_s=corrected_clock,
+            velocity_mps=corrected_velocity,
             applied=orbit_applied or clock_applied,
             orbit_applied=orbit_applied,
             clock_applied=clock_applied,

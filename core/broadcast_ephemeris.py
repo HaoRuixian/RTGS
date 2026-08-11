@@ -164,6 +164,8 @@ class BroadcastEphemeris:
             tk_m = (tk_raw >> 1) & 0x3F
             tk_s = (tk_raw & 0x01) * 30
             tk_seconds = tk_h * 3600 + tk_m * 60 + tk_s - 3 * 60 * 60
+            gpst_day = GNSSTime.gps_day_of_week() * 24 * 3600
+            gpst_leap = float(GNSSTime.LEAP_SECONDS)
             
             eph = {
                 'system': 'GLONASS',
@@ -173,8 +175,8 @@ class BroadcastEphemeris:
                 'frequency_channel': freq_chn,
                 
                 # Time parameters (in seconds within day)
-                'tb': tb_seconds + GNSSTime.gps_day_of_week() * 24*3600,                # Time of Ephemeris (Tb in seconds of day)
-                'tk': tk_seconds + GNSSTime.gps_day_of_week() * 24*3600,                # Time within 15-minute frame
+                'tb': tb_seconds + gpst_day + gpst_leap,                # Time of Ephemeris (Tb in GPST seconds of week)
+                'tk': tk_seconds + gpst_day + gpst_leap,                # Time within 15-minute frame in GPST seconds of week
                 'tb_seconds': tb_seconds,        # Reference time
                 
                 # Cartesian State Vector (Position and Velocity in km and km/s)
@@ -362,9 +364,10 @@ class BroadcastEphemeris:
                 'af1': float(msg.DF495),         # SV Clock Drift (s/s)
                 'af2': float(msg.DF494),         # SV Clock Drift Rate (s/s²)
                 
-                # Physical Corrections (Group Delays)
-                'TGD1': float(msg.DF513),        # Group Delay Differential B1-B3 (seconds)
-                'TGD2': float(msg.DF514),        # Group Delay Differential B2-B3 (seconds)
+                # Physical Corrections (Group Delays). pyrtcm exposes RTCM
+                # 1042 DF513/DF514 in nanoseconds; store seconds internally.
+                'TGD1': float(msg.DF513) * 1e-9,  # Group Delay Differential B1-B3
+                'TGD2': float(msg.DF514) * 1e-9,  # Group Delay Differential B2-B3
                 
                 # Health and accuracy
                 'ura': int(msg.DF490),          # User Range Accuracy Index

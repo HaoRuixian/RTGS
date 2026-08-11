@@ -86,6 +86,8 @@ class PositioningConfigDialog(QDialog):
         self.gnss_qzss = QCheckBox("QZSS (J)")
         self.gnss_irnss = QCheckBox("NavIC (I)")
         self.prefer_gps_only = QCheckBox("Prefer GPS-only for basic SPP")
+        self.allow_gps_fallback = QCheckBox("Allow GPS fallback if multi-GNSS fails")
+        self.require_ssr_corrections = QCheckBox("Require SSR orbit/clock corrections")
 
         default_systems = ["G", "R", "E", "C", "J", "I"]
         gnss_systems = self.settings.get("gnss_systems", default_systems)
@@ -96,6 +98,8 @@ class PositioningConfigDialog(QDialog):
         self.gnss_qzss.setChecked("J" in gnss_systems)
         self.gnss_irnss.setChecked("I" in gnss_systems)
         self.prefer_gps_only.setChecked(bool(self.settings.get("prefer_gps_only", False)))
+        self.allow_gps_fallback.setChecked(bool(self.settings.get("allow_gps_fallback", False)))
+        self.require_ssr_corrections.setChecked(bool(self.settings.get("require_ssr_corrections", True)))
 
         gnss_layout.addRow("Available Systems:", self.gnss_gps)
         gnss_layout.addRow("", self.gnss_glonass)
@@ -104,6 +108,8 @@ class PositioningConfigDialog(QDialog):
         gnss_layout.addRow("", self.gnss_qzss)
         gnss_layout.addRow("", self.gnss_irnss)
         gnss_layout.addRow("", self.prefer_gps_only)
+        gnss_layout.addRow("", self.allow_gps_fallback)
+        gnss_layout.addRow("", self.require_ssr_corrections)
 
         gnss_group.setLayout(gnss_layout)
         layout.addWidget(gnss_group)
@@ -192,7 +198,11 @@ class PositioningConfigDialog(QDialog):
             "troposphere_model": "Sastamoinen",
             "gnss_systems": ["G", "R", "E", "C", "J", "I"],
             "prefer_gps_only": False,
+            "allow_gps_fallback": False,
+            "require_ssr_corrections": True,
             "weight_mode": "elevation",
+            "code_sigma_m": 1.0,
+            "system_code_weight_factors": {"R": 5.0},
             "use_smoothing": False,
             "smoothing_window": 10,
             "random_walk": 0.0,
@@ -212,6 +222,8 @@ class PositioningConfigDialog(QDialog):
         self.gnss_qzss.setChecked("J" in defaults["gnss_systems"])
         self.gnss_irnss.setChecked("I" in defaults["gnss_systems"])
         self.prefer_gps_only.setChecked(defaults["prefer_gps_only"])
+        self.allow_gps_fallback.setChecked(defaults["allow_gps_fallback"])
+        self.require_ssr_corrections.setChecked(defaults["require_ssr_corrections"])
         self.weight_mode.setCurrentData(defaults["weight_mode"])
         self.use_smoothing.setChecked(defaults["use_smoothing"])
         self.smoothing_window.setValue(defaults["smoothing_window"])
@@ -247,7 +259,11 @@ class PositioningConfigDialog(QDialog):
             "troposphere_model": self.tropo_model.currentData(),
             "gnss_systems": gnss_systems if gnss_systems else ["G"],
             "prefer_gps_only": self.prefer_gps_only.isChecked(),
+            "allow_gps_fallback": self.allow_gps_fallback.isChecked(),
+            "require_ssr_corrections": self.require_ssr_corrections.isChecked(),
             "weight_mode": self.weight_mode.currentData(),
+            "code_sigma_m": 1.0,
+            "system_code_weight_factors": {"R": 5.0},
             "use_smoothing": self.use_smoothing.isChecked(),
             "smoothing_window": int(self.smoothing_window.value()),
             "random_walk": float(self.random_walk.value()),

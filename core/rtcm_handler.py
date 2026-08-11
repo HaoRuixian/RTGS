@@ -61,6 +61,134 @@ SSR_MESSAGE_DEFINITIONS = {
     "1263": {"kind": "high_rate_clock", "system": "C", "time": "DF465", "sat": "DF488"},
 }
 
+
+IGS_SSR_MESSAGE_DEFINITIONS = {
+    21: {"kind": "orbit", "system": "G"},
+    22: {"kind": "clock", "system": "G"},
+    23: {"kind": "combined", "system": "G"},
+    24: {"kind": "high_rate_clock", "system": "G"},
+    25: {"kind": "code_bias", "system": "G"},
+    27: {"kind": "ura", "system": "G"},
+    41: {"kind": "orbit", "system": "R"},
+    42: {"kind": "clock", "system": "R"},
+    43: {"kind": "combined", "system": "R"},
+    44: {"kind": "high_rate_clock", "system": "R"},
+    45: {"kind": "code_bias", "system": "R"},
+    47: {"kind": "ura", "system": "R"},
+    61: {"kind": "orbit", "system": "E"},
+    62: {"kind": "clock", "system": "E"},
+    63: {"kind": "combined", "system": "E"},
+    64: {"kind": "high_rate_clock", "system": "E"},
+    65: {"kind": "code_bias", "system": "E"},
+    67: {"kind": "ura", "system": "E"},
+    81: {"kind": "orbit", "system": "J"},
+    82: {"kind": "clock", "system": "J"},
+    83: {"kind": "combined", "system": "J"},
+    84: {"kind": "high_rate_clock", "system": "J"},
+    85: {"kind": "code_bias", "system": "J"},
+    87: {"kind": "ura", "system": "J"},
+    101: {"kind": "orbit", "system": "C"},
+    102: {"kind": "clock", "system": "C"},
+    103: {"kind": "combined", "system": "C"},
+    104: {"kind": "high_rate_clock", "system": "C"},
+    105: {"kind": "code_bias", "system": "C"},
+    107: {"kind": "ura", "system": "C"},
+    121: {"kind": "orbit", "system": "S"},
+    122: {"kind": "clock", "system": "S"},
+    123: {"kind": "combined", "system": "S"},
+    124: {"kind": "high_rate_clock", "system": "S"},
+    125: {"kind": "code_bias", "system": "S"},
+    127: {"kind": "ura", "system": "S"},
+}
+
+
+SSR_SIGNAL_RINEX_RTCM = {
+    "G": {
+        0: "1C", 1: "1P", 2: "1W", 5: "2C", 6: "2D", 7: "2S", 8: "2L", 9: "2X",
+        10: "2P", 11: "2W", 14: "5I", 15: "5Q", 16: "5X", 17: "1S", 18: "1L", 19: "1X",
+    },
+    "R": {
+        0: "1C", 1: "1P", 2: "2C", 3: "2P", 4: "4A", 5: "4B", 6: "4X",
+        7: "6A", 8: "6B", 9: "6X", 10: "3I", 11: "3Q", 12: "3X",
+    },
+    "E": {
+        0: "1A", 1: "1B", 2: "1C", 3: "1X", 4: "1Z", 5: "5I", 6: "5Q", 7: "5X",
+        8: "7I", 9: "7Q", 10: "7X", 11: "8I", 12: "8Q", 13: "8X",
+        14: "6A", 15: "6B", 16: "6C", 17: "6X", 18: "6Z",
+    },
+    "J": {
+        0: "1C", 1: "1S", 2: "1L", 3: "2S", 4: "2L", 5: "2X", 6: "5I", 7: "5Q",
+        8: "5X", 9: "6S", 10: "6L", 11: "6X", 12: "1X",
+    },
+    "S": {0: "1C", 1: "5I", 2: "5Q", 3: "5X"},
+    "C": {
+        0: "2I", 1: "2Q", 2: "2X", 3: "6I", 4: "6Q", 5: "6X", 6: "7I", 7: "7Q",
+        8: "7X", 9: "1D", 10: "1P", 11: "1X", 12: "5D", 13: "5P", 14: "5X", 15: "1A",
+        18: "6A",
+    },
+}
+
+SSR_SIGNAL_RINEX_IGS = {
+    "G": {
+        0: "1C", 1: "1P", 2: "1W", 3: "1S", 4: "1L", 5: "2C", 6: "2D", 7: "2S",
+        8: "2L", 10: "2P", 11: "2W", 14: "5I", 15: "5Q",
+    },
+    "R": {
+        0: "1C", 1: "1P", 2: "2C", 3: "2P", 4: "4A", 5: "4B", 6: "6A", 7: "6B",
+        8: "3I", 9: "3Q",
+    },
+    "E": {
+        0: "1A", 1: "1B", 2: "1C", 5: "5I", 6: "5Q", 8: "7I", 9: "7Q",
+        14: "6A", 15: "6B", 16: "6C",
+    },
+    "J": {
+        0: "1C", 1: "1S", 2: "1L", 3: "2S", 4: "2L", 6: "5I", 7: "5Q",
+        9: "6S", 10: "6L", 17: "6E",
+    },
+    "S": {0: "1C", 1: "5I", 2: "5Q"},
+    "C": {
+        0: "2I", 1: "2Q", 3: "6I", 4: "6Q", 6: "7I", 7: "7Q",
+        9: "1D", 10: "1P", 12: "5D", 13: "5P", 15: "1A", 18: "6A",
+    },
+}
+
+
+def _getbitu(buff: bytes, pos: int, length: int) -> int:
+    bits = 0
+    for index in range(pos, pos + length):
+        bits = (bits << 1) | ((buff[index // 8] >> (7 - index % 8)) & 1)
+    return bits
+
+
+def _getbits(buff: bytes, pos: int, length: int) -> int:
+    value = _getbitu(buff, pos, length)
+    sign_bit = 1 << (length - 1)
+    if value & sign_bit:
+        value -= 1 << length
+    return value
+
+
+class _BitReader:
+    def __init__(self, data: bytes, start_bit: int, end_bit: int) -> None:
+        self.data = data
+        self.pos = start_bit
+        self.end_bit = end_bit
+
+    def unsigned(self, length: int) -> int:
+        if self.pos + length > self.end_bit:
+            raise ValueError("SSR message ended before all fields were decoded")
+        value = _getbitu(self.data, self.pos, length)
+        self.pos += length
+        return value
+
+    def signed(self, length: int, scale: float) -> float:
+        if self.pos + length > self.end_bit:
+            raise ValueError("SSR message ended before all fields were decoded")
+        value = _getbits(self.data, self.pos, length)
+        self.pos += length
+        return float(value) * scale
+
+
 class RTCMHandler:
     def __init__(self, reference_utc=None, compute_geometry=True):
         self.broadcast_eph = get_shared_broadcast_ephemeris()
@@ -225,7 +353,10 @@ class RTCMHandler:
             # Note: Message 1230 is GLONASS L1/L2 Code-Phase Biases, NOT ionospheric correction
             elif msg_id == "1230":
                 return self._handle_glo_code_phase_bias(msg, epoch_data)
-                
+
+            elif msg_id == "4076":
+                return self._handle_igs_ssr_message(msg, epoch_data)
+
             elif msg_id in SSR_MESSAGE_DEFINITIONS:
                 return self._handle_ssr_message(msg, epoch_data)
             
@@ -1106,6 +1237,20 @@ class RTCMHandler:
         """Convert pyrtcm SSR millimetre-domain fields to meters."""
         return RTCMHandler._to_float(value) * 0.001
 
+    @staticmethod
+    def _ssr_ura_to_value(ura: int | float) -> float:
+        try:
+            raw = int(ura)
+        except (TypeError, ValueError):
+            return 0.0
+        if raw == 0:
+            return 0.0
+        if raw >= 63:
+            return 5.5
+        urac = raw >> 3
+        urav = raw & 7
+        return (math.pow(3.0, urac) * (1.0 + urav / 4.0) - 1.0) / 1000.0
+
     def _ssr_epoch_time(self, msg, definition: dict) -> float:
         raw_time = self._to_float(getattr(msg, definition["time"], 0.0))
         system = definition["system"]
@@ -1114,14 +1259,34 @@ class RTCMHandler:
         if system == "R":
             day_anchor = self._reference_utc_for_glonass_day()
             day_index = self._utc_day_of_week(day_anchor)
-            return day_index * 86400.0 + (raw_time % 86400.0)
+            seconds_of_day = raw_time - 3.0 * 3600.0 + GNSSTime.LEAP_SECONDS
+            day_offset = math.floor(seconds_of_day / 86400.0)
+            seconds_of_day = seconds_of_day % 86400.0
+            day_index = (day_index + int(day_offset)) % 7
+            return day_index * 86400.0 + seconds_of_day
         return raw_time
+
+    def _igs_ssr_epoch_time(self, raw_time: float, system: str) -> float:
+        if system == "C":
+            return (raw_time + 14.0) % (7 * 24 * 3600)
+        if system == "R":
+            return (raw_time + GNSSTime.LEAP_SECONDS) % (7 * 24 * 3600)
+        return raw_time % (7 * 24 * 3600)
 
     @staticmethod
     def _satellite_id(system: str, prn: int) -> str:
         if system == "J" and prn >= 193:
             prn -= 192
         return f"{system}{int(prn):02d}"
+
+    @staticmethod
+    def _ssr_signal_to_rinex(system: str, signal_id, *, igs: bool = False) -> str:
+        try:
+            raw_id = int(signal_id)
+        except (TypeError, ValueError):
+            return str(signal_id)
+        mapping = SSR_SIGNAL_RINEX_IGS if igs else SSR_SIGNAL_RINEX_RTCM
+        return mapping.get(system, {}).get(raw_id, str(raw_id))
 
     def _handle_ssr_message(self, msg, epoch_data=None):
         definition = SSR_MESSAGE_DEFINITIONS.get(str(getattr(msg, "identity", "")))
@@ -1184,11 +1349,12 @@ class RTCMHandler:
             )
             if is_high_rate:
                 correction.high_rate_clock_m = self._mm_to_m(self._get_group_attr(msg, "DF390", index))
+                self.ssr_corrections.update_high_rate_clock(correction)
             else:
                 correction.delta_clock_m = self._mm_to_m(self._get_group_attr(msg, "DF376", index))
                 correction.delta_clock_rate_mps = self._mm_to_m(self._get_group_attr(msg, "DF377", index))
                 correction.delta_clock_accel_mps2 = self._mm_to_m(self._get_group_attr(msg, "DF378", index))
-            self.ssr_corrections.update_clock(correction)
+                self.ssr_corrections.update_clock(correction)
 
     def _cache_ssr_code_biases(self, msg, definition: dict) -> None:
         count = self._to_int(getattr(msg, "DF387", 0))
@@ -1205,7 +1371,7 @@ class RTCMHandler:
                 signal_id = self._get_group_attr(msg, signal_attr, sat_index, bias_index)
                 if signal_id is None:
                     continue
-                biases[str(signal_id)] = self._to_float(
+                biases[self._ssr_signal_to_rinex(definition["system"], signal_id)] = self._to_float(
                     self._get_group_attr(msg, "DF383", sat_index, bias_index)
                 )
             if biases:
@@ -1222,7 +1388,164 @@ class RTCMHandler:
                 continue
             self.ssr_corrections.update_ura(
                 self._satellite_id(definition["system"], prn),
-                self._to_int(self._get_group_attr(msg, "DF389", index)),
+                self._ssr_ura_to_value(self._get_group_attr(msg, "DF389", index)),
+            )
+
+    def _handle_igs_ssr_message(self, msg, epoch_data=None):
+        raw = getattr(msg, "raw", None)
+        if raw is None:
+            raw = getattr(msg, "payload", None)
+        if raw is None:
+            return epoch_data
+        raw = bytes(raw)
+        if len(raw) < 9:
+            return epoch_data
+
+        payload_len = ((raw[1] & 0x03) << 8) | raw[2]
+        payload_end_bit = (3 + payload_len) * 8
+        reader = _BitReader(raw, 24, payload_end_bit)
+        rtcm_type = reader.unsigned(12)
+        if rtcm_type != 4076:
+            return epoch_data
+        reader.unsigned(3)  # IGS SSR version
+        subtype = reader.unsigned(8)
+        definition = IGS_SSR_MESSAGE_DEFINITIONS.get(subtype)
+        if definition is None:
+            return epoch_data
+
+        kind = definition["kind"]
+        if kind == "orbit":
+            self._cache_igs_ssr_orbit(reader, definition)
+        elif kind == "clock":
+            self._cache_igs_ssr_clock(reader, definition, is_high_rate=False)
+        elif kind == "combined":
+            self._cache_igs_ssr_combined(reader, definition)
+        elif kind == "high_rate_clock":
+            self._cache_igs_ssr_clock(reader, definition, is_high_rate=True)
+        elif kind == "code_bias":
+            self._cache_igs_ssr_code_biases(reader, definition)
+        elif kind == "ura":
+            self._cache_igs_ssr_ura(reader, definition)
+        return epoch_data
+
+    def _read_igs_ssr_header(self, reader: _BitReader, system: str, *, has_datum: bool = False) -> dict:
+        raw_epoch = float(reader.unsigned(20))
+        header = {
+            "epoch_time": self._igs_ssr_epoch_time(raw_epoch, system),
+            "update_interval": reader.unsigned(4),
+            "multiple_message": reader.unsigned(1),
+            "iod_ssr": reader.unsigned(4),
+            "provider_id": reader.unsigned(16),
+            "solution_id": reader.unsigned(4),
+        }
+        if has_datum:
+            header["datum"] = reader.unsigned(1)
+        header["count"] = reader.unsigned(6)
+        return header
+
+    def _cache_igs_ssr_orbit(self, reader: _BitReader, definition: dict) -> None:
+        system = definition["system"]
+        header = self._read_igs_ssr_header(reader, system, has_datum=True)
+        for _ in range(header["count"]):
+            prn = reader.unsigned(6)
+            correction = SsrOrbitCorrection(
+                satellite_id=self._satellite_id(system, prn),
+                epoch_time=header["epoch_time"],
+                iod=reader.unsigned(8),
+                update_interval=header["update_interval"],
+                iod_ssr=header["iod_ssr"],
+                provider_id=header["provider_id"],
+                solution_id=header["solution_id"],
+                datum=header.get("datum", 0),
+                delta_radial_m=reader.signed(22, 1.0 / 10000.0),
+                delta_along_track_m=reader.signed(20, 1.0 / 2500.0),
+                delta_cross_track_m=reader.signed(20, 1.0 / 2500.0),
+                dot_delta_radial_mps=reader.signed(21, 1.0 / 1000000.0),
+                dot_delta_along_track_mps=reader.signed(19, 1.0 / 250000.0),
+                dot_delta_cross_track_mps=reader.signed(19, 1.0 / 250000.0),
+            )
+            self.ssr_corrections.update_orbit(correction)
+
+    def _cache_igs_ssr_clock(self, reader: _BitReader, definition: dict, *, is_high_rate: bool) -> None:
+        system = definition["system"]
+        header = self._read_igs_ssr_header(reader, system)
+        for _ in range(header["count"]):
+            prn = reader.unsigned(6)
+            correction = SsrClockCorrection(
+                satellite_id=self._satellite_id(system, prn),
+                epoch_time=header["epoch_time"],
+                update_interval=header["update_interval"],
+                iod_ssr=header["iod_ssr"],
+                provider_id=header["provider_id"],
+                solution_id=header["solution_id"],
+            )
+            if is_high_rate:
+                correction.high_rate_clock_m = reader.signed(22, 1.0 / 10000.0)
+                self.ssr_corrections.update_high_rate_clock(correction)
+            else:
+                correction.delta_clock_m = reader.signed(22, 1.0 / 10000.0)
+                correction.delta_clock_rate_mps = reader.signed(21, 1.0 / 1000000.0)
+                correction.delta_clock_accel_mps2 = reader.signed(27, 1.0 / 50000000.0)
+                self.ssr_corrections.update_clock(correction)
+
+    def _cache_igs_ssr_combined(self, reader: _BitReader, definition: dict) -> None:
+        system = definition["system"]
+        header = self._read_igs_ssr_header(reader, system, has_datum=True)
+        for _ in range(header["count"]):
+            prn = reader.unsigned(6)
+            sat_id = self._satellite_id(system, prn)
+            iod = reader.unsigned(8)
+            orbit = SsrOrbitCorrection(
+                satellite_id=sat_id,
+                epoch_time=header["epoch_time"],
+                iod=iod,
+                update_interval=header["update_interval"],
+                iod_ssr=header["iod_ssr"],
+                provider_id=header["provider_id"],
+                solution_id=header["solution_id"],
+                datum=header.get("datum", 0),
+                delta_radial_m=reader.signed(22, 1.0 / 10000.0),
+                delta_along_track_m=reader.signed(20, 1.0 / 2500.0),
+                delta_cross_track_m=reader.signed(20, 1.0 / 2500.0),
+                dot_delta_radial_mps=reader.signed(21, 1.0 / 1000000.0),
+                dot_delta_along_track_mps=reader.signed(19, 1.0 / 250000.0),
+                dot_delta_cross_track_mps=reader.signed(19, 1.0 / 250000.0),
+            )
+            clock = SsrClockCorrection(
+                satellite_id=sat_id,
+                epoch_time=header["epoch_time"],
+                update_interval=header["update_interval"],
+                iod_ssr=header["iod_ssr"],
+                provider_id=header["provider_id"],
+                solution_id=header["solution_id"],
+                delta_clock_m=reader.signed(22, 1.0 / 10000.0),
+                delta_clock_rate_mps=reader.signed(21, 1.0 / 1000000.0),
+                delta_clock_accel_mps2=reader.signed(27, 1.0 / 50000000.0),
+            )
+            self.ssr_corrections.update_orbit(orbit)
+            self.ssr_corrections.update_clock(clock)
+
+    def _cache_igs_ssr_code_biases(self, reader: _BitReader, definition: dict) -> None:
+        system = definition["system"]
+        header = self._read_igs_ssr_header(reader, system)
+        for _ in range(header["count"]):
+            prn = reader.unsigned(6)
+            bias_count = reader.unsigned(5)
+            biases = {}
+            for _ in range(bias_count):
+                signal_id = reader.unsigned(5)
+                biases[self._ssr_signal_to_rinex(system, signal_id, igs=True)] = reader.signed(14, 1.0 / 100.0)
+            if biases:
+                self.ssr_corrections.update_code_biases(self._satellite_id(system, prn), biases)
+
+    def _cache_igs_ssr_ura(self, reader: _BitReader, definition: dict) -> None:
+        system = definition["system"]
+        header = self._read_igs_ssr_header(reader, system)
+        for _ in range(header["count"]):
+            prn = reader.unsigned(6)
+            self.ssr_corrections.update_ura(
+                self._satellite_id(system, prn),
+                self._ssr_ura_to_value(reader.unsigned(6)),
             )
     
     # =========================================================================

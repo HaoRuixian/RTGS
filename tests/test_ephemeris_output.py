@@ -7,6 +7,7 @@ import pytest
 
 from core.broadcast_ephemeris import BroadcastEphemeris
 from core.ephemeris_output import BroadcastNavWriter, PreciseSp3Writer, _compute_clock_correction
+from core.gnss_time import GNSSTime
 
 
 def test_broadcast_nav_writer_writes_rinex_nav_record(tmp_path):
@@ -103,7 +104,8 @@ def test_glonass_sp3_clock_uses_tau_and_gamma_with_rinex_sign():
     assert clock == pytest.approx(100.180000036e-6)
 
 
-def test_rtcm_glonass_tau_is_normalized_to_rinex_clock_bias():
+def test_rtcm_glonass_tau_is_normalized_to_rinex_clock_bias(monkeypatch):
+    monkeypatch.setattr(GNSSTime, "gps_day_of_week", classmethod(lambda cls: 5))
     handler = BroadcastEphemeris()
     msg = SimpleNamespace(
         DF038=8,
@@ -129,3 +131,5 @@ def test_rtcm_glonass_tau_is_normalized_to_rinex_clock_bias():
 
     assert eph["tau_n"] == pytest.approx(134_218 * (2 ** -30))
     assert eph["gamma_n"] == pytest.approx(330 * (2 ** -40))
+    assert eph["tb"] == pytest.approx(5 * 86_400 + 32 * 900 - 3 * 3600 + 18)
+    assert eph["tk"] == pytest.approx(5 * 86_400 - 3 * 3600 + 18)

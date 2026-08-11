@@ -140,8 +140,19 @@ class PositioningThread(threading.Thread):
             self.positioner.gnss_systems = SPPPositioner.normalize_gnss_systems(settings["gnss_systems"])
         if "prefer_gps_only" in settings:
             self.positioner.prefer_gps_only = bool(settings["prefer_gps_only"])
+        if "allow_gps_fallback" in settings:
+            self.positioner.allow_gps_fallback = bool(settings["allow_gps_fallback"])
+        if "require_ssr_corrections" in settings:
+            self.positioner.require_ssr_corrections = bool(settings["require_ssr_corrections"])
         if "weight_mode" in settings:
             self.positioner.WEIGHT_MODE = settings["weight_mode"]
+        if "code_sigma_m" in settings:
+            self.positioner.code_sigma_m = float(settings["code_sigma_m"])
+        if "system_code_weight_factors" in settings:
+            self.positioner.system_code_weight_factors = {
+                str(system).upper(): float(factor)
+                for system, factor in dict(settings["system_code_weight_factors"]).items()
+            }
         if "uncertain_std_pos" in settings:
             self.positioner.uncertain_std_pos = float(settings["uncertain_std_pos"])
         if "fixed_std_pos" in settings:

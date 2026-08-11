@@ -72,6 +72,7 @@ class RINEX3Writer:
         antenna_number: str = "",
         receiver_serial: str = "",
         receiver_version: str = "",
+        flush_each_epoch: bool = True,
     ):
         """
         Initialize RINEX3 writer.
@@ -93,6 +94,8 @@ class RINEX3Writer:
                 ``country``, ``year_day``, ``hour_min``, ``period``, ``interval``,
                 ``datatype``.
             file_time: UTC time used for long filename generation.
+            flush_each_epoch: Flush after every epoch for live capture safety.
+                Offline batch conversion can disable this for higher throughput.
         """
         self.station_code = str(station_code)[:4].upper().ljust(4, "0")
         self.receiver_number = str(receiver_number)[:2].upper().ljust(2, "0")
@@ -113,6 +116,7 @@ class RINEX3Writer:
         self.antenna_number = self._format_a20(antenna_number).strip()
         self.receiver_serial = self._format_a20(receiver_serial if receiver_serial else receiver_number).strip()
         self.receiver_version = self._format_a20(receiver_version).strip()
+        self.flush_each_epoch = bool(flush_each_epoch)
 
         self.output_directory = "."
         if filename.lower().endswith(".rnx"):
@@ -413,7 +417,8 @@ class RINEX3Writer:
             for sat_data in sat_obs_list:
                 self._write_satellite_observations(sat_data)
 
-            self.file_handle.flush()
+            if self.flush_each_epoch:
+                self.file_handle.flush()
             return True
         except (OSError, TypeError, ValueError, AttributeError) as exc:
             LOGGER.exception("Error writing observation epoch: %s", exc)
@@ -441,6 +446,10 @@ class RINEX3Writer:
             system = sat_id[0]
             if system not in self.GNSS_SYSTEMS:
                 continue
+            expected_obs_codes = set(self.sys_obs_types.get(system, ()))
+            filter_obs_codes = bool(self.sys_obs_types)
+            if filter_obs_codes and not expected_obs_codes:
+                continue
 
             try:
                 prn = int(sat_id[1:])
@@ -453,11 +462,15 @@ class RINEX3Writer:
 
             obs_list: List[Dict] = []
             for sig_id, sig_data in signals.items():
-                if getattr(sig_data, "pseudorange", None) is not None:
+                if (
+                    not filter_obs_codes or f"C{sig_id}" in expected_obs_codes
+                ) and getattr(sig_data, "pseudorange", None) is not None:
                     obs_list.append(
                         {"code": f"C{sig_id}", "value": sig_data.pseudorange, "lli": None, "snr": None}
                     )
-                if getattr(sig_data, "phase", None) is not None:
+                if (
+                    not filter_obs_codes or f"L{sig_id}" in expected_obs_codes
+                ) and getattr(sig_data, "phase", None) is not None:
                     obs_list.append(
                         {
                             "code": f"L{sig_id}",
@@ -466,11 +479,15 @@ class RINEX3Writer:
                             "snr": self._get_snr_flag(sig_data),
                         }
                     )
-                if getattr(sig_data, "doppler", None) is not None:
+                if (
+                    not filter_obs_codes or f"D{sig_id}" in expected_obs_codes
+                ) and getattr(sig_data, "doppler", None) is not None:
                     obs_list.append(
                         {"code": f"D{sig_id}", "value": sig_data.doppler, "lli": None, "snr": None}
                     )
-                if getattr(sig_data, "snr", None) is not None:
+                if (
+                    not filter_obs_codes or f"S{sig_id}" in expected_obs_codes
+                ) and getattr(sig_data, "snr", None) is not None:
                     obs_list.append(
                         {"code": f"S{sig_id}", "value": sig_data.snr, "lli": None, "snr": None}
                     )

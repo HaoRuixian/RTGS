@@ -1037,7 +1037,8 @@ class MonitoringModule(QMainWindow):
             merged_satellites=self.merged_satellites,
             signals=self.signals,
             logging_buffer=self.logging_buffer_ref,
-            get_latest_epoch=lambda: self.latest_epoch_data
+            get_latest_epoch=lambda: self.latest_epoch_data,
+            handler=getattr(self, 'handler', None),
         )
         self.logging_active = True
         self.logging_thread.start()

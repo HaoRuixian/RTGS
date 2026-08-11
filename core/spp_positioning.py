@@ -1,4 +1,4 @@
-"""RTKLIB-style single point positioning (SPP) with pseudorange observations."""
+"""Single point positioning with pseudorange observations."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ import numpy as np
 from core.BE2pos import brdc2state
 from core.broadcast_ephemeris import get_var_ura
 from core.geo_utils import calculate_az_el, ecef2lla, get_freq, ionospheric_model, tropsphere_model
+from core.ssr import ephemeris_iod_for_ssr
 
 
 logger = logging.getLogger(__name__)
@@ -22,12 +23,12 @@ WGS84_SEMI_MAJOR_AXIS_M = 6378137.0
 GPS_L1_FREQUENCY_HZ = 1575.42e6
 MIN_ERROR_ELEVATION_RAD = math.radians(5.0)
 DEFAULT_CLOCK_CONSTRAINT_VARIANCE = 0.01
-BNC_BANCROFT_BLUNDER_THRESHOLD_M = 1500.0
-BNC_DEFAULT_CODE_SIGMA_M = 1.0
+BANCROFT_BLUNDER_THRESHOLD_M = 1500.0
+STANDARD_CODE_SIGMA_M = 1.0
 MAX_GDOP = 30.0
 SECONDS_PER_WEEK = 604800.0
-RTKLIB_NX = 9
-RTKLIB_SYSTEM_STATE_INDICES = {
+SPP_STATE_DIMENSION = 9
+SYSTEM_STATE_INDICES = {
     "R": 4,  # GLONASS-GPS time offset
     "E": 5,  # Galileo-GPS time offset
     "C": 6,  # BeiDou-GPS time offset
@@ -80,25 +81,13 @@ def _finite_vector3(values) -> Optional[np.ndarray]:
     return vec.copy()
 
 
-def _rtklib_time_difference(time_sow: float, reference_sow: float) -> float:
+def _wrapped_time_difference(time_sow: float, reference_sow: float) -> float:
     dt = float(time_sow) - float(reference_sow)
     if dt > SECONDS_PER_WEEK / 2.0:
         dt -= SECONDS_PER_WEEK
     elif dt < -SECONDS_PER_WEEK / 2.0:
         dt += SECONDS_PER_WEEK
     return dt
-
-
-def _ephemeris_iod(eph: Dict) -> Optional[int]:
-    for key in ("iode", "iod_nav", "aode", "iodc"):
-        value = eph.get(key)
-        if value is None:
-            continue
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            continue
-    return None
 
 
 @dataclass
@@ -139,6 +128,12 @@ class PositioningResult:
     solution_source: str = ""
     fallback_reason: str = ""
     quality_reason: str = ""
+    # Zenith troposphere components (filled by PPP; SPP leaves them at zero).
+    ztd: float = 0.0
+    zhd: float = 0.0
+    zwd: float = 0.0
+    ambiguity_ratio: float = 0.0
+    ambiguity_fixed_count: int = 0
 
 
 class SPPPositioner:
@@ -153,7 +148,7 @@ class SPPPositioner:
     DEFAULT_TROPOSPHERE_MODEL = "Sastamoinen"
     DEFAULT_MAX_PDOP = 10.0
     DEFAULT_PREFER_GPS_ONLY = False
-    DEFAULT_CODE_SIGMA_M = BNC_DEFAULT_CODE_SIGMA_M
+    DEFAULT_CODE_SIGMA_M = STANDARD_CODE_SIGMA_M
 
     MAX_ITERATIONS = 10
     CONVERGENCE_THRESHOLD = 1e-4
@@ -189,6 +184,10 @@ class SPPPositioner:
         )
         self.WEIGHT_MODE = config.get("weight_mode", self.DEFAULT_WEIGHT_MODE)
         self.code_sigma_m = float(config.get("code_sigma_m", self.DEFAULT_CODE_SIGMA_M))
+        # Broadcast URA no longer describes an orbit/clock state after SSR has
+        # been applied.  Use the SSR URA when the stream provides it and a
+        # conservative decimetre sigma otherwise.
+        self.ssr_default_sigma_m = float(config.get("ppp_ssr_default_sigma_m", 0.10))
         self.system_code_weight_factors = {
             str(system).upper(): float(factor)
             for system, factor in dict(config.get("system_code_weight_factors", {"R": 5.0})).items()
@@ -198,7 +197,7 @@ class SPPPositioner:
         self.allow_gps_fallback = bool(config.get("allow_gps_fallback", False))
         self.require_ssr_corrections = bool(config.get("require_ssr_corrections", True))
         self.gross_outlier_threshold_m = float(
-            config.get("gross_outlier_threshold_m", BNC_BANCROFT_BLUNDER_THRESHOLD_M)
+            config.get("gross_outlier_threshold_m", BANCROFT_BLUNDER_THRESHOLD_M)
         )
         self.uncertain_std_pos = float(config.get("uncertain_std_pos", 5.0))
         self.fixed_std_pos = float(config.get("fixed_std_pos", 2.5))
@@ -222,7 +221,7 @@ class SPPPositioner:
     def _select_primary_signal(self, sat_key: str, pr_list: List[Tuple[str, float]]) -> Tuple[Optional[str], float]:
         system = sat_key[0]
         primary_priorities = {
-            "G": ["1W", "1C", "1P", "1S", "1L", "1X", "1"],
+            "G": ["1C", "1W", "1P", "1S", "1L", "1X", "1"],
             "R": ["1P", "1C", "1"],
             "E": ["1C", "1B", "1X", "1"],
             "C": ["2I", "2Q", "2X", "2", "1D", "1P", "1X", "1"],
@@ -320,7 +319,7 @@ class SPPPositioner:
         system = sat_key[0]
 
         primary_priorities = {
-            "G": ["1W", "1C", "1P", "1S", "1L", "1X", "1"],
+            "G": ["1C", "1W", "1P", "1S", "1L", "1X", "1"],
             "R": ["1P", "1C", "1"],
             "E": ["1C", "1B", "1X", "1"],
             "C": ["2I", "2Q", "2X", "2", "1D", "1P", "1X", "1"],
@@ -437,7 +436,7 @@ class SPPPositioner:
         pstd: Optional[float] = None,
         code_variance: Optional[float] = None,
     ) -> float:
-        """Approximate BNC PPP code-observation variance in m^2."""
+        """Return the PPP code-observation variance in square meters."""
         system = sat_key[0]
         system_factor = self.system_code_weight_factors.get(
             system,
@@ -461,7 +460,7 @@ class SPPPositioner:
         if self.WEIGHT_MODE == "equal":
             pass
         elif self.WEIGHT_MODE == "elevation":
-            # BNC t_pppSatObs::sigma(): cEle = 1 + |90 - elevation_deg|^3 * 4e-6.
+            # Cubic zenith-distance weighting for low-elevation observations.
             elevation_factor = 1.0 + abs(90.0 - elevation_deg) ** 3 * 0.000004
             variance *= elevation_factor ** 2
         else:
@@ -833,14 +832,14 @@ class SPPPositioner:
             tau_n = float(eph.get("tau_n", 0.0) or 0.0)
             gamma_n = float(eph.get("gamma_n", 0.0) or 0.0)
             tb = float(eph.get("tb") or eph.get("toc") or eph.get("Toc") or 0.0)
-            return tau_n + gamma_n * _rtklib_time_difference(transmit_time, tb)
+            return tau_n + gamma_n * _wrapped_time_difference(transmit_time, tb)
 
         af0 = float(eph.get("af0", 0.0) or 0.0)
         af1 = float(eph.get("af1", 0.0) or 0.0)
         af2 = float(eph.get("af2", 0.0) or 0.0)
         toc = float(eph.get("toc") or eph.get("Toc") or 0.0)
 
-        dt = _rtklib_time_difference(transmit_time, toc)
+        dt = _wrapped_time_difference(transmit_time, toc)
         saved_dt = dt
         for _ in range(2):
             dt = saved_dt - (af0 + af1 * dt + af2 * dt * dt)
@@ -855,7 +854,7 @@ class SPPPositioner:
             try:
                 semi_major_axis = float(sqrt_a) ** 2
                 mean_motion = math.sqrt(3.986005e14 / (semi_major_axis ** 3)) + float(delta_n)
-                tk = _rtklib_time_difference(transmit_time, float(toe))
+                tk = _wrapped_time_difference(transmit_time, float(toe))
                 mean_anomaly = float(m0) + mean_motion * tk
                 eccentric_anomaly = mean_anomaly
                 for _ in range(10):
@@ -925,6 +924,7 @@ class SPPPositioner:
             if sat_clock_correction is None:
                 continue
             sat_pos_source = "BROADCAST"
+            ssr_state_sigma_m = None
             ssr_store = getattr(self.handler, "ssr_corrections", None)
             if ssr_store is not None and hasattr(ssr_store, "apply_to_state"):
                 corrected_state = ssr_store.apply_to_state(
@@ -933,7 +933,7 @@ class SPPPositioner:
                     sat_vel_arr,
                     clock_bias_s=sat_clock_correction,
                     transmit_time=transmit_time,
-                    ephemeris_iod=_ephemeris_iod(eph),
+                    ephemeris_iod=ephemeris_iod_for_ssr(eph),
                 )
                 corrected_position = _finite_vector3(corrected_state.position_m)
                 if corrected_position is not None:
@@ -944,12 +944,23 @@ class SPPPositioner:
                 sat_clock_correction = float(corrected_state.clock_bias_s)
                 if corrected_state.applied:
                     sat_pos_source = "SSR"
+                    get_ura = getattr(ssr_store, "get_ura", None)
+                    if callable(get_ura):
+                        ssr_state_sigma_m = _finite_float(get_ura(sat_key))
+                    if ssr_state_sigma_m is None or ssr_state_sigma_m <= 0.0:
+                        ssr_state_sigma_m = max(self.ssr_default_sigma_m, 0.001)
+                satellite.ssr_rejection_reason = str(
+                    getattr(corrected_state, "rejection_reason", "") or ""
+                )
             sat_variance = get_var_ura(eph)
             sat_variance = _finite_float(sat_variance, 30.0 ** 2)
             if sat_variance is None or sat_variance <= 0.0:
                 sat_variance = 30.0 ** 2
+            if ssr_state_sigma_m is not None:
+                sat_variance = float(ssr_state_sigma_m) ** 2
 
             satellite.sat_pos_ecef = sat_pos_arr.tolist()
+            satellite.sat_vel_ecef = sat_vel_arr.tolist()
             satellite.sat_clk_corr = sat_clock_correction
             satellite.sat_var = sat_variance
             satellite.sat_pos_source = sat_pos_source
@@ -991,12 +1002,14 @@ class SPPPositioner:
                 continue
 
             sat_pos = _finite_vector3(getattr(satellite, "sat_pos_ecef", None))
+            sat_vel = _finite_vector3(getattr(satellite, "sat_vel_ecef", None))
             sat_clk_corr = _finite_float(getattr(satellite, "sat_clk_corr", None))
             if sat_pos is None or sat_clk_corr is None:
                 reject(sat_key, "no-position-clock")
                 continue
             if ssr_required and not bool(getattr(satellite, "ssr_applied", False)):
-                reject(sat_key, "ssr-required")
+                ssr_reason = str(getattr(satellite, "ssr_rejection_reason", "") or "")
+                reject(sat_key, f"ssr-{ssr_reason}" if ssr_reason else "ssr-required")
                 continue
 
             primary_signal_id, raw_pseudorange = self._select_primary_signal(sat_key, pr_list)
@@ -1019,6 +1032,7 @@ class SPPPositioner:
                 {
                     "sat_key": sat_key,
                     "sat_pos": sat_pos,
+                    "sat_vel": sat_vel,
                     "sat_clock_correction_s": sat_clk_corr,
                     "sat_var": sat_var,
                     "pr_list": pr_list,

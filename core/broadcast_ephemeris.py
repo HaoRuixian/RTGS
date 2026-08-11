@@ -38,7 +38,7 @@ class BroadcastEphemeris:
 
     @staticmethod
     def _getbits(buff: bytes, pos: int, length: int) -> int:
-        """Extract signed bits using RTKLIB's two's-complement convention."""
+        """Extract signed two's-complement bits."""
         value = getbitu(buff, pos, length)
         if length <= 0:
             return 0
@@ -328,7 +328,7 @@ class BroadcastEphemeris:
                 'PRN': prn,
                 
                 # Time parameters
-                'week': gps_toe_week,            # GPS week after RTKLIB bdt2gpst conversion
+                'week': gps_toe_week,            # GPS week after BDT-to-GPST conversion
                 'bds_week': bds_week,            # BeiDou Week Number
                 'toe': gps_toe,                  # Time of Ephemeris in GPST seconds-of-week
                 'toc': gps_toc,                  # Time of Clock in GPST seconds-of-week
@@ -488,14 +488,14 @@ class BroadcastEphemeris:
             return None
 
     # ========================================================================
-    # SBAS Raw Navigation (RTKLIB sbsmsg_t / Type 9)
+    # SBAS raw navigation message / Type 9
     # ========================================================================
 
     def extract_sbas_ephemeris(self, msg) -> Optional[Dict]:
         """
         Extract SBAS GEO navigation parameters from a raw SBAS message.
 
-        The input message mirrors RTKLIB's ``sbsmsg_t`` and is currently fed by
+        The input message contains the fields required by the decoder and is fed by
         UBX-RXM-SFRBX decoding in the serial pipeline.
         """
         try:
@@ -508,7 +508,7 @@ class BroadcastEphemeris:
             week = int(msg.week)
             tow = int(msg.tow)
 
-            # RTKLIB decode_sbstype9(): reference epoch within the nearest day.
+            # Type 9 reference epoch within the nearest day.
             t = getbitu(frame, 22, 13) * 16 - tow % 86400
             if t <= -43200:
                 t += 86400
@@ -781,7 +781,7 @@ def get_var_ura(eph: Optional[Dict]) -> Optional[float]:
     # ---------------------------------------------------------
     elif sys == 'GLONASS':
         # GLONASS 广播星历通常不包含 URA 索引
-        # RTKLIB 通常根据其频率或健康状况给一个经验方差
+        # Use an empirical variance based on frequency and health
         # 默认给定一个比 GPS 稍大的标准差 (例如 5.0m - 10.0m)
         return 10.0 ** 2
         

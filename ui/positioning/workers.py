@@ -18,6 +18,7 @@ import numpy as np
 from typing import Optional
 
 from PySide6.QtCore import QObject, Signal
+from core.ppp_positioning import PPPPositioner
 from core.spp_positioning import SPPPositioner, PositioningResult
 from core.positioning_models import (
     PositioningSolution, PositioningMode, SolutionStatus, PositionTrack
@@ -25,6 +26,9 @@ from core.positioning_models import (
 from core.global_config import get_global_config
 from core.ring_buffer import RingBuffer
 import logging
+from core.geo_utils import ecef2lla
+from core.gnss_time import GNSSTime
+from core.native_rtk import NativeRTKRunner
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +46,7 @@ class PositioningSignals(QObject):
     solution_signal = Signal(object)  # PositioningSolution
     log_signal = Signal(str)
     status_signal = Signal(str, bool)  # (status_name, is_active)
+    stream_status_signal = Signal(str, bool)  # OBS/BASE/EPH native RTK streams
 
 
 class PositioningThread(threading.Thread):
@@ -79,21 +84,38 @@ class PositioningThread(threading.Thread):
         
         # Configuration
         config = get_global_config()
-        pos_config = config.get_positioning_settings()
+        pos_config = dict(config.get_positioning_settings())
+        pos_config["ppp_ssr_mountpoint"] = str(config.ssr_settings.mountpoint or "")
+        if not str(pos_config.get("ppp_station_id", "") or "").strip():
+            pos_config["ppp_station_id"] = str(config.obs_settings.mountpoint or "")[:4].upper()
         
-        # Initialize SPPPositioner with configuration
-        self.positioner = SPPPositioner(ephemeris_handler=handler, config=pos_config)
+        # Initialize positioning engines with shared ephemeris/SSR caches.
+        self.spp_positioner = SPPPositioner(ephemeris_handler=handler, config=pos_config)
+        self.ppp_positioner = PPPPositioner(ephemeris_handler=handler, config=pos_config)
+        self.positioner = self.spp_positioner
         self.position_track = PositionTrack()
         
-        apr = config.approx_rec_pos
-        if apr is None:
-            self.approx_position = None
-        else:
-            try:
-                self.approx_position = np.array(apr, dtype=float)
-            except Exception:
-                self.approx_position = None
-        if self.approx_position is None or np.all(self.approx_position == 0):
+        self._configured_reference_position = self._valid_reference_position(
+            config.approx_rec_pos
+        )
+        self.reference_position = (
+            None
+            if self._configured_reference_position is None
+            else self._configured_reference_position.copy()
+        )
+        self.reference_source = "stream-config" if self.reference_position is not None else ""
+        self.ppp_independent_mode = bool(
+            pos_config.get("ppp_independent_mode", False)
+        )
+        self.approx_position = (
+            None
+            if self.ppp_independent_mode or self.reference_position is None
+            else self.reference_position.copy()
+        )
+        self.ppp_use_config_initial_position = bool(
+            pos_config.get("ppp_use_config_initial_position", False)
+        )
+        if self.approx_position is None:
             # Let SPP compute the first coarse position from satellite geometry.
             self.approx_position = None
         
@@ -115,6 +137,88 @@ class PositioningThread(threading.Thread):
         self.last_diagnostic_log_time = 0.0
         self.last_solution_source = ""
 
+    @staticmethod
+    def _valid_reference_position(values) -> Optional[np.ndarray]:
+        try:
+            position = np.asarray(values, dtype=float).reshape(-1)[:3]
+        except Exception:
+            return None
+        if position.size != 3 or not np.all(np.isfinite(position)):
+            return None
+        if np.linalg.norm(position) < 3_000_000.0:
+            return None
+        return position.copy()
+
+    def _refresh_reference_position(self) -> None:
+        """Refresh accuracy truth without accepting a live RTCM overwrite."""
+        if self._configured_reference_position is not None:
+            self.reference_position = self._configured_reference_position.copy()
+            self.reference_source = "stream-config"
+            return
+
+        if self.ppp_independent_mode:
+            self.reference_position = None
+            self.reference_source = ""
+            return
+
+        station_position = self._valid_reference_position(
+            getattr(self.handler, "last_station_coords", None)
+        )
+        if station_position is not None:
+            self.reference_position = station_position
+            self.reference_source = "RTCM 1005/1006"
+            return
+
+        self.reference_position = None
+        self.reference_source = ""
+
+    def refresh_runtime_config(self) -> None:
+        """Apply stream-loaded positioning settings before a run starts."""
+        config = get_global_config()
+        self.update_positioning_settings(config.get_positioning_settings())
+        self._configured_reference_position = self._valid_reference_position(
+            config.approx_rec_pos
+        )
+        self._refresh_reference_position()
+        self.approx_position = (
+            None
+            if self.ppp_independent_mode or self.reference_position is None
+            else self.reference_position.copy()
+        )
+
+    def _apply_reference_errors(self, solution: PositioningSolution) -> None:
+        self._refresh_reference_position()
+        if self.reference_position is None:
+            return
+
+        estimate = np.array([solution.ecef_x, solution.ecef_y, solution.ecef_z], dtype=float)
+        delta_xyz = estimate - self.reference_position
+        lat_rad, lon_rad, _height_m = ecef2lla(self.reference_position)
+        sin_lat, cos_lat = math.sin(lat_rad), math.cos(lat_rad)
+        sin_lon, cos_lon = math.sin(lon_rad), math.cos(lon_rad)
+        rotation = np.array(
+            [
+                [-sin_lon, cos_lon, 0.0],
+                [-sin_lat * cos_lon, -sin_lat * sin_lon, cos_lat],
+                [cos_lat * cos_lon, cos_lat * sin_lon, sin_lat],
+            ],
+            dtype=float,
+        )
+        east, north, up = rotation @ delta_xyz
+        solution.has_reference_position = True
+        solution.reference_source = self.reference_source
+        solution.reference_ecef_x = float(self.reference_position[0])
+        solution.reference_ecef_y = float(self.reference_position[1])
+        solution.reference_ecef_z = float(self.reference_position[2])
+        solution.error_ecef_x = float(delta_xyz[0])
+        solution.error_ecef_y = float(delta_xyz[1])
+        solution.error_ecef_z = float(delta_xyz[2])
+        solution.error_east = float(east)
+        solution.error_north = float(north)
+        solution.error_up = float(up)
+        solution.error_horizontal = float(math.hypot(east, north))
+        solution.error_3d = float(np.linalg.norm(delta_xyz))
+
     def update_positioning_settings(self, settings: dict) -> None:
         """Apply SPP settings to the live positioner."""
         if not settings:
@@ -123,40 +227,61 @@ class PositioningThread(threading.Thread):
         min_satellites = settings.get("min_satellites")
         if min_satellites is not None:
             self.min_satellites = int(min_satellites)
-            self.positioner.MIN_SATELLITES = int(min_satellites)
+            self.spp_positioner.MIN_SATELLITES = int(min_satellites)
 
         min_elevation = settings.get("cutoff_elevation_deg", settings.get("min_elevation"))
         if min_elevation is not None:
             self.min_elevation = float(min_elevation)
-            self.positioner.MIN_ELEVATION = float(min_elevation)
+            self.spp_positioner.MIN_ELEVATION = float(min_elevation)
 
         if "max_pdop" in settings:
-            self.positioner.max_pdop = float(settings["max_pdop"])
+            self.spp_positioner.max_pdop = float(settings["max_pdop"])
         if "ionosphere_option" in settings:
-            self.positioner.ionosphere_option = settings["ionosphere_option"]
+            self.spp_positioner.ionosphere_option = settings["ionosphere_option"]
         if "troposphere_model" in settings:
-            self.positioner.troposphere_model = settings["troposphere_model"]
+            self.spp_positioner.troposphere_model = settings["troposphere_model"]
         if "gnss_systems" in settings:
-            self.positioner.gnss_systems = SPPPositioner.normalize_gnss_systems(settings["gnss_systems"])
+            self.spp_positioner.gnss_systems = SPPPositioner.normalize_gnss_systems(settings["gnss_systems"])
         if "prefer_gps_only" in settings:
-            self.positioner.prefer_gps_only = bool(settings["prefer_gps_only"])
+            self.spp_positioner.prefer_gps_only = bool(settings["prefer_gps_only"])
         if "allow_gps_fallback" in settings:
-            self.positioner.allow_gps_fallback = bool(settings["allow_gps_fallback"])
+            self.spp_positioner.allow_gps_fallback = bool(settings["allow_gps_fallback"])
         if "require_ssr_corrections" in settings:
-            self.positioner.require_ssr_corrections = bool(settings["require_ssr_corrections"])
+            self.spp_positioner.require_ssr_corrections = bool(settings["require_ssr_corrections"])
         if "weight_mode" in settings:
-            self.positioner.WEIGHT_MODE = settings["weight_mode"]
+            self.spp_positioner.WEIGHT_MODE = settings["weight_mode"]
         if "code_sigma_m" in settings:
-            self.positioner.code_sigma_m = float(settings["code_sigma_m"])
+            self.spp_positioner.code_sigma_m = float(settings["code_sigma_m"])
         if "system_code_weight_factors" in settings:
-            self.positioner.system_code_weight_factors = {
+            self.spp_positioner.system_code_weight_factors = {
                 str(system).upper(): float(factor)
                 for system, factor in dict(settings["system_code_weight_factors"]).items()
             }
         if "uncertain_std_pos" in settings:
-            self.positioner.uncertain_std_pos = float(settings["uncertain_std_pos"])
+            self.spp_positioner.uncertain_std_pos = float(settings["uncertain_std_pos"])
         if "fixed_std_pos" in settings:
-            self.positioner.fixed_std_pos = float(settings["fixed_std_pos"])
+            self.spp_positioner.fixed_std_pos = float(settings["fixed_std_pos"])
+        ppp_settings = dict(settings)
+        if "ppp_use_config_initial_position" in settings:
+            self.ppp_use_config_initial_position = bool(
+                settings["ppp_use_config_initial_position"]
+            )
+        if "ppp_independent_mode" in settings:
+            self.ppp_independent_mode = bool(settings["ppp_independent_mode"])
+            if self.ppp_independent_mode:
+                self.ppp_use_config_initial_position = False
+                self.approx_position = None
+        config = get_global_config()
+        ppp_settings["ppp_ssr_mountpoint"] = str(config.ssr_settings.mountpoint or "")
+        if not str(ppp_settings.get("ppp_station_id", "") or "").strip():
+            ppp_settings["ppp_station_id"] = str(config.obs_settings.mountpoint or "")[:4].upper()
+        self.ppp_positioner.update_config(ppp_settings)
+        self.positioner = self._active_positioner()
+
+    def _active_positioner(self):
+        if self.mode == PositioningMode.PPP:
+            return self.ppp_positioner
+        return self.spp_positioner
         
     def run(self):
         """
@@ -279,24 +404,45 @@ class PositioningThread(threading.Thread):
         try:
             start_time = time.time()
             
-            # Use SPP to compute position
-            # Pass approx_position only if it was successfully updated from a previous solution
-            # Otherwise let the positioner compute an initial approximation from satellite positions
-            if self.mode == PositioningMode.SPP:
-                if self.last_position is not None:
-                    # Use previous solution as initial guess
+            if self.mode in (PositioningMode.SPP, PositioningMode.PPP):
+                active_positioner = self._active_positioner()
+                self.positioner = active_positioner
+                if self.mode == PositioningMode.PPP and self.ppp_independent_mode:
+                    # The PPP core performs its own observation-only SPP
+                    # bootstrap and rejects every external coordinate argument.
+                    approx_pos = None
+                elif (
+                    self.mode == PositioningMode.PPP
+                    and not self.ppp_positioner.use_station_apriori
+                    and not self.ppp_use_config_initial_position
+                ):
+                    # The default PPP bootstrap is an SPP solution.  Do not pass
+                    # the configured approximate/1005-1006 position into PPP on
+                    # its first epoch; PPPPositioner will run SPP internally.
+                    # A preceding SPP solution is safe to reuse when switching
+                    # modes while the stream is already running.
+                    if (
+                        self.last_position is not None
+                        and getattr(self.last_position, "mode", None) == PositioningMode.SPP
+                    ):
+                        approx_pos = np.array(self.last_position.position_ecef, dtype=float)
+                    else:
+                        approx_pos = None
+                elif self.last_position is not None:
+                    # Use previous solution as initial guess.
                     approx_pos = np.array(self.last_position.position_ecef, dtype=float)
                 else:
-                    # First epoch: use configured approximate position when available.
+                    # Station-apriori mode may use the configured approximate
+                    # position when no decoded RTCM station coordinates exist.
                     approx_pos = np.array(self.approx_position, dtype=float) if self.approx_position is not None else None
                 
-                result = self.positioner.process_epoch(epoch_obs, approx_pos)
+                result = active_positioner.process_epoch(epoch_obs, approx_pos)
             else:
-                # Placeholder for other modes
+                self.signals.log_signal.emit(f"[{self.name}] {self.mode.name} positioning is not implemented")
                 return None
             
             if result is None:
-                self._emit_failure_diagnostics(getattr(self.positioner, "last_diagnostics", {}))
+                self._emit_failure_diagnostics(getattr(active_positioner, "last_diagnostics", {}))
                 return None
             
             # Convert RTCMHandler's PositioningResult to our PositioningSolution
@@ -332,12 +478,16 @@ class PositioningThread(threading.Thread):
             len(sat.signals) for sat in epoch_obs.satellites.values()
         )
         
-        # Extract GPS week from global config if available
-        gps_week = 0  # Placeholder
+        epoch_time = getattr(result, "epoch_time", None) or getattr(epoch_obs, "utc_datetime", None)
+        try:
+            gps_week, _gps_sow = GNSSTime.utc_to_gps(epoch_time)
+        except Exception:
+            gps_week = 0
         
         solution = PositioningSolution(
             timestamp=result.timestamp,
             gps_week=gps_week,
+            epoch_time=epoch_time,
             latitude=result.latitude,
             longitude=result.longitude,
             height=result.height,
@@ -354,6 +504,10 @@ class PositioningThread(threading.Thread):
             hdop=result.hdop,
             vdop=result.vdop,
             tdop=result.tdop,
+            ztd=float(getattr(result, "ztd", 0.0) or 0.0),
+            zhd=float(getattr(result, "zhd", 0.0) or 0.0),
+            zwd=float(getattr(result, "zwd", 0.0) or 0.0),
+            ambiguity_ratio=float(getattr(result, "ambiguity_ratio", 0.0) or 0.0),
             num_satellites=result.num_satellites,
             num_signals=num_signals,
             variance_unit_weight=result.variance,
@@ -376,6 +530,8 @@ class PositioningThread(threading.Thread):
             solution.residuals_mean = float(np.mean(residuals_array))
             solution.residuals_std = float(np.std(residuals_array))
             solution.residuals_max = float(np.max(np.abs(residuals_array)))
+
+        self._apply_reference_errors(solution)
         
         return solution
 
@@ -411,19 +567,31 @@ class PositioningThread(threading.Thread):
         used_counts = self._format_counts(solution.used_system_counts)
         used_satellites = self._format_satellites(solution.used_satellites)
         message = (
-            f"[{self.name}] SPP used {solution.num_satellites} satellites "
+            f"[{self.name}] {solution.mode.name} used {solution.num_satellites} satellites "
             f"({used_counts}); candidates {candidate_counts}; source={source}; sats={used_satellites}"
         )
         if solution.fallback_reason:
             message += f"; fallback={solution.fallback_reason}"
         if solution.quality_reason:
             message += f"; quality={solution.quality_reason}"
+        diagnostics = solution.diagnostics or {}
+        if solution.mode == PositioningMode.PPP:
+            message += (
+                f"; SSR-ref={diagnostics.get('ssr_reference_point', '?')}"
+                f"; ANTEX={'on' if diagnostics.get('antex_loaded') else 'off'}"
+                f"; AR={diagnostics.get('ar_status', 'unknown')}"
+                f" candidates={int(diagnostics.get('ar_candidate_count', 0) or 0)}"
+                f" fixed={int(diagnostics.get('ar_fixed_count', 0) or 0)}"
+            )
+            ar_reason = str(diagnostics.get("ar_rejection_reason", "") or "")
+            if ar_reason:
+                message += f" ({ar_reason})"
         self.signals.log_signal.emit(message)
 
-        reject_counts = (solution.diagnostics or {}).get("reject_counts", {})
+        reject_counts = diagnostics.get("reject_counts", {})
         if reject_counts:
             self.signals.log_signal.emit(
-                f"[{self.name}] SPP rejected observations: {self._format_counts(reject_counts)}"
+                f"[{self.name}] {solution.mode.name} rejected observations: {self._format_counts(reject_counts)}"
             )
 
         self.last_diagnostic_log_time = now
@@ -441,14 +609,15 @@ class PositioningThread(threading.Thread):
         solver_reason = diagnostics.get("solver_failure_reason", "")
         if solver_reason:
             reason = f"{reason}; {solver_reason}"
+        mode_label = self.mode.name
         self.signals.log_signal.emit(
-            f"[{self.name}] SPP no solution: {reason}; raw {raw_counts}; "
+            f"[{self.name}] {mode_label} no solution: {reason}; raw {raw_counts}; "
             f"extracted {extracted_counts}; selected {selected_counts}"
         )
         reject_counts = diagnostics.get("reject_counts", {})
         if reject_counts:
             self.signals.log_signal.emit(
-                f"[{self.name}] SPP rejected observations: {self._format_counts(reject_counts)}"
+                f"[{self.name}] {mode_label} rejected observations: {self._format_counts(reject_counts)}"
             )
         self.last_diagnostic_log_time = now
     
@@ -464,15 +633,18 @@ class PositioningThread(threading.Thread):
     def set_mode(self, mode: PositioningMode):
         """Set positioning mode."""
         self.mode = mode
+        self.positioner = self._active_positioner()
     
     def set_parameters(self, min_satellites: int = None, min_elevation: float = None):
         """Update positioning parameters."""
         if min_satellites is not None:
             self.min_satellites = min_satellites
-            self.positioner.MIN_SATELLITES = min_satellites
+            self.spp_positioner.MIN_SATELLITES = min_satellites
+            self.ppp_positioner.spp.MIN_SATELLITES = min_satellites
         if min_elevation is not None:
             self.min_elevation = min_elevation
-            self.positioner.MIN_ELEVATION = min_elevation
+            self.spp_positioner.MIN_ELEVATION = min_elevation
+            self.ppp_positioner.spp.MIN_ELEVATION = min_elevation
     
     def get_position_history(self):
         """Get complete position history."""
@@ -487,3 +659,68 @@ class PositioningThread(threading.Thread):
         self.running = False
         if self.ring_buffer:
             self.ring_buffer.close()
+
+
+class RTKEngineThread(threading.Thread):
+    """Run the RTK engine against the original rover and base/network streams."""
+
+    def __init__(self, name: str, signals: PositioningSignals):
+        super().__init__(name=name, daemon=True)
+        self.signals = signals
+        self.running = True
+        config = get_global_config()
+        self.runner = NativeRTKRunner(
+            config.obs_settings,
+            config.base_settings,
+            config.eph_settings,
+            dict(config.get_positioning_settings()),
+            approx_rec_pos=config.approx_rec_pos,
+        )
+        self._last_quality = ""
+        self._last_quality_log = 0.0
+
+    def _on_solution(self, solution: PositioningSolution) -> None:
+        if not self.running:
+            return
+        quality = str(solution.diagnostics.get("rtk_quality_label", ""))
+        now = time.monotonic()
+        if quality != self._last_quality or now - self._last_quality_log >= 30.0:
+            age = float(solution.diagnostics.get("differential_age_s", 0.0))
+            ratio = float(solution.diagnostics.get("ambiguity_ratio", 0.0))
+            self.signals.log_signal.emit(
+                f"[{self.name}] {quality}: sats={solution.num_satellites}, "
+                f"age={age:.2f}s, ratio={ratio:.1f}"
+            )
+            self._last_quality = quality
+            self._last_quality_log = now
+        self.signals.solution_signal.emit(solution)
+
+    def _on_log(self, message: str) -> None:
+        self.signals.log_signal.emit(f"[{self.name}] {message}")
+
+    def _on_stream_status(self, stream_name: str, active: bool) -> None:
+        self.signals.stream_status_signal.emit(stream_name, active)
+
+    def run(self) -> None:
+        self.signals.log_signal.emit(f"[{self.name}] Native RTK positioning thread started")
+        self.signals.status_signal.emit("RTK", True)
+        try:
+            self.runner.run(
+                self._on_solution,
+                log_callback=self._on_log,
+                stream_status_callback=self._on_stream_status,
+            )
+        except InterruptedError:
+            pass
+        except Exception as exc:
+            if self.running:
+                logger.error("RTK worker failed: %s", exc, exc_info=True)
+                self.signals.log_signal.emit(f"[{self.name}] RTK error: {exc}")
+        finally:
+            self.running = False
+            self.signals.status_signal.emit("RTK", False)
+            self.signals.log_signal.emit(f"[{self.name}] Native RTK positioning thread stopped")
+
+    def stop(self) -> None:
+        self.running = False
+        self.runner.stop()

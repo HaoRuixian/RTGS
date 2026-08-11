@@ -2,7 +2,7 @@
 GNSS RT Monitor - Positioning Module
 
 Provides real-time GNSS positioning using pseudorange observations.
-Supports multiple positioning modes: SPP (currently), PPP, RTK (future).
+Supports SPP/PPP in Python and RTK through a native process engine.
 
 Architecture:
 - Uses shared IOThread/DataProcessingThread from monitoring module for observations
@@ -12,28 +12,26 @@ Architecture:
 
 import threading
 import time
-import math
 from datetime import datetime
 from collections import deque
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
+    QAbstractItemView, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget, QFrame, 
-    QSplitter, QStyle, QComboBox, QCheckBox, QTextEdit, QSpinBox,
-    QDoubleSpinBox, QDialog
+    QSplitter, QStyle, QComboBox, QDialog, QPlainTextEdit
 )
 from PySide6.QtCore import Qt, Slot, QTimer, Signal
 from PySide6.QtGui import QColor, QFont
 
-from ui.positioning.workers import PositioningThread, PositioningSignals
+from ui.positioning.workers import PositioningThread, PositioningSignals, RTKEngineThread
 from ui.positioning.widgets import (
-    PositionMapWidget, PositionInfoWidget, AccuracyWidget, ResidualWidget,
+    PositionMapWidget, PositionInfoWidget, AccuracyWidget, AtmosphereWidget, ResidualWidget,
     format_solution_status,
 )
 from ui.monitoring.workers import IOThread, DataProcessingThread, RinexReplayThread, StreamSignals
 from ui.shared.config_dialog import ConfigDialog
 from ui.positioning.positioning_config_dialog import PositioningConfigDialog
-from ui.style import get_app_stylesheet, ui_scale_for_width
+from ui.style import get_app_stylesheet
 from ui.responsive import adaptive_window_size, window_ui_scale
 from core.ring_buffer import RingBuffer
 from core.rtcm_handler import RTCMHandler, get_shared_handler
@@ -45,7 +43,6 @@ from core.replay_ui_policy import (
     choose_gui_refresh_interval,
     estimate_effective_replay_period_seconds,
 )
-import numpy as np
 
 
 class PositioningModule(QMainWindow):
@@ -63,7 +60,7 @@ class PositioningModule(QMainWindow):
         super().__init__()
         self.setWindowTitle("RTGS - Positioning Module")
         adaptive_window_size(self, target=(1600, 1000), minimum=(1080, 700))
-        
+
         # ======================================================================
         # Thread management
         # ======================================================================
@@ -72,24 +69,26 @@ class PositioningModule(QMainWindow):
         self.observer_signals.log_signal.connect(self.append_log)
         self.observer_signals.epoch_signal.connect(self.on_observation_epoch)
         self.observer_signals.status_signal.connect(self.update_stream_status)
-        
+
         self.ring_buffers = {}
         self.io_threads = []
         self.processing_threads = []
         self.rtcm_handler = get_shared_handler()
-        
+
         # Positioning computation
         self.positioning_signals = PositioningSignals()
         self.positioning_signals.solution_signal.connect(self.on_positioning_solution)
         self.positioning_signals.log_signal.connect(self.append_log)
         self.positioning_signals.status_signal.connect(self.update_positioning_status)
+        self.positioning_signals.stream_status_signal.connect(self.update_stream_status)
         
         # Ring buffer for positioning epochs
         self.positioning_ring_buffer = RingBuffer(maxsize=200)
         
         self.positioning_thread = PositioningThread(
-            "SPP", self.positioning_signals, self.positioning_ring_buffer, self.rtcm_handler
+            "POS", self.positioning_signals, self.positioning_ring_buffer, self.rtcm_handler
         )
+        self.rtk_thread = None
         self._compact_scale = None
         self.display_mode = "LLH"
         self.solution_history = deque(maxlen=100)
@@ -135,7 +134,18 @@ class PositioningModule(QMainWindow):
                 'file_path': '',
                 'replay_speed': 1.0,
                 'file_type': 'Auto Detect',
-            }
+            },
+            'BASE_ENABLED': False,
+            'BASE': {
+                'source': 'NTRIP Server',
+                'host': '',
+                'port': 2101,
+                'mountpoint': '',
+                'user': '',
+                'password': '',
+                'baudrate': 115200,
+                'data_format': 'RTCM3',
+            },
         }
         
         # ======================================================================
@@ -148,14 +158,23 @@ class PositioningModule(QMainWindow):
         # Status and logging
         # ======================================================================
         self.log_queue = deque(maxlen=500)
+        self._pending_log_lines = deque(maxlen=500)
+        self._log_dirty = False
+        self._log_paused = False
         self.is_running = False
-        self.base_solution_ui_interval = 0.0
+        self.is_stopping = False
+        self._stopping_threads = []
+        self._stop_deadline = 0.0
+        self._stop_poll_timer = QTimer(self)
+        self._stop_poll_timer.setInterval(100)
+        self._stop_poll_timer.timeout.connect(self._poll_stop_completion)
+        self.base_solution_ui_interval = 0.25
         self.solution_ui_interval = self.base_solution_ui_interval
         self.last_solution_ui_time = 0.0
         self.pending_solution = None
         self.update_timer = QTimer()
         self.update_timer.timeout.connect(self.update_ui)
-        self.update_timer.start(100)  # Update UI every 100ms
+        self.update_timer.start(100)
         self._apply_replay_ui_policy(announce=False)
         
         self.append_log("=== RTGS Positioning Module Initialized ===")
@@ -171,11 +190,15 @@ class PositioningModule(QMainWindow):
         # ======================================================================
         # Top control bar
         # ======================================================================
-        top_bar = QHBoxLayout()
-        
-        # Back button
-        self.btn_back = QPushButton("< Back to Launcher")
-        self.btn_back.setMaximumWidth(200)
+        control_bar = QFrame()
+        control_bar.setObjectName("ControlBar")
+        top_bar = QHBoxLayout(control_bar)
+        top_bar.setContentsMargins(8, 6, 8, 6)
+        top_bar.setSpacing(8)
+
+        self.btn_back = QPushButton("Back")
+        self.btn_back.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
+        self.btn_back.setToolTip("Back to launcher")
         self.btn_back.clicked.connect(self.on_back_to_launcher)
         top_bar.addWidget(self.btn_back)
         
@@ -186,28 +209,32 @@ class PositioningModule(QMainWindow):
         top_bar.addWidget(line)
         
         # Mode selector
-        self.lbl_mode = QLabel("Positioning Mode:")
+        self.lbl_mode = QLabel("Mode")
         top_bar.addWidget(self.lbl_mode)
         self.combo_mode = QComboBox()
-        self.combo_mode.addItems(["SPP (Single Point Positioning)", "PPP (Precise Point) [TBD]", "RTK (Real-Time) [TBD]"])
+        self.combo_mode.addItems(["SPP", "PPP", "RTK"])
+        self.combo_mode.setItemData(0, "Single Point Positioning", Qt.ItemDataRole.ToolTipRole)
+        self.combo_mode.setItemData(1, "Precise Point Positioning", Qt.ItemDataRole.ToolTipRole)
+        self.combo_mode.setItemData(2, "Single-base or network RTK", Qt.ItemDataRole.ToolTipRole)
         self.combo_mode.setCurrentIndex(0)
         self.combo_mode.currentIndexChanged.connect(self.on_mode_changed)
-        self.combo_mode.setMaximumWidth(300)
+        self.combo_mode.setMinimumWidth(90)
+        self.combo_mode.setMaximumWidth(140)
         top_bar.addWidget(self.combo_mode)
         
         # Config button
-        self.btn_config = QPushButton("Config")
-        self.btn_config.setMaximumWidth(100)
+        self.btn_config = QPushButton("Streams")
+        self.btn_config.setToolTip("Configure observation, ephemeris and SSR streams")
         self.btn_config.clicked.connect(self.open_config_dialog)
         top_bar.addWidget(self.btn_config)
 
         # Positioning settings button
-        self.btn_pos_settings = QPushButton("Pos Settings")
-        self.btn_pos_settings.setMaximumWidth(140)
+        self.btn_pos_settings = QPushButton("Solver")
+        self.btn_pos_settings.setToolTip("Configure positioning engine")
         self.btn_pos_settings.clicked.connect(self.open_positioning_settings_dialog)
         top_bar.addWidget(self.btn_pos_settings)
 
-        self.lbl_coord_mode = QLabel("Display:")
+        self.lbl_coord_mode = QLabel("Coordinates")
         top_bar.addWidget(self.lbl_coord_mode)
         self.combo_coord_mode = QComboBox()
         self.combo_coord_mode.addItem("Lat/Lon/H", "LLH")
@@ -217,8 +244,8 @@ class PositioningModule(QMainWindow):
         top_bar.addWidget(self.combo_coord_mode)
         
         # Start/Stop button
-        self.btn_start = QPushButton("Start Positioning")
-        self.btn_start.setMaximumWidth(150)
+        self.btn_start = QPushButton("Start")
+        self.btn_start.setMinimumWidth(90)
         self.btn_start.setObjectName("PrimaryButton")
         self.btn_start.clicked.connect(self.toggle_positioning)
         top_bar.addWidget(self.btn_start)
@@ -245,74 +272,91 @@ class PositioningModule(QMainWindow):
         top_bar.addWidget(self.lbl_pos_status)
         
         top_bar.addStretch()
-        main_layout.addLayout(top_bar)
+        main_layout.addWidget(control_bar)
         
         # ======================================================================
         # Main content area
         # ======================================================================
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        
-        # Left panel: controls and info
-        left_panel = QWidget()
-        left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(6)
-        
-        # Position info
-        left_layout.addWidget(QLabel("<b>Current Position</b>"))
-        self.info_widget = PositionInfoWidget()
-        left_layout.addWidget(self.info_widget)
-        
-        # Map
-        left_layout.addWidget(QLabel("<b>Position Track</b>"))
+        workspace_splitter = QSplitter(Qt.Orientation.Vertical)
+        visual_splitter = QSplitter(Qt.Orientation.Horizontal)
+
         self.map_widget = PositionMapWidget()
-        self.map_widget.setMinimumHeight(400)
-        left_layout.addWidget(self.map_widget)
-        
-        splitter.addWidget(left_panel)
-        
-        # Right panel: analysis
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(6)
-        
-        # Tabs for different views
-        self.right_tabs = QTabWidget()
-        
-        # Tab 1: Accuracy (DOP)
+        self.map_widget.setMinimumHeight(240)
+        visual_splitter.addWidget(self.map_widget)
+
+        accuracy_panel = QFrame()
+        accuracy_panel.setObjectName("Panel")
+        accuracy_layout = QVBoxLayout(accuracy_panel)
+        accuracy_layout.setContentsMargins(8, 6, 8, 8)
+        accuracy_layout.setSpacing(4)
+        accuracy_title = QLabel("Precision monitors")
+        accuracy_title.setObjectName("SectionTitle")
+        accuracy_layout.addWidget(accuracy_title)
         self.accuracy_widget = AccuracyWidget()
-        self.right_tabs.addTab(self.accuracy_widget, "DOP/Accuracy")
-        
-        # Tab 2: Residuals
+        self.atmosphere_widget = AtmosphereWidget()
+        self.monitor_tabs = QTabWidget()
+        self.monitor_tabs.addTab(self.accuracy_widget, "DOP")
+        self.monitor_tabs.addTab(self.atmosphere_widget, "Atmosphere")
+        self.monitor_tabs.setDocumentMode(True)
+        self.monitor_tabs.currentChanged.connect(self._on_monitor_tab_changed)
+        accuracy_layout.addWidget(self.monitor_tabs, 1)
+        visual_splitter.addWidget(accuracy_panel)
+        visual_splitter.setStretchFactor(0, 9)
+        visual_splitter.setStretchFactor(1, 11)
+        visual_splitter.setSizes([640, 780])
+        workspace_splitter.addWidget(visual_splitter)
+
+        self.detail_tabs = QTabWidget()
+        self.right_tabs = self.detail_tabs
+        self.info_widget = PositionInfoWidget()
+        self.detail_tabs.addTab(self.info_widget, "Current solution")
+
         self.residual_widget = ResidualWidget()
-        self.right_tabs.addTab(self.residual_widget, "Residuals")
-        
-        # Tab 3: Position history
+        self.detail_tabs.addTab(self.residual_widget, "Position offsets")
+
         self.history_table = QTableWidget()
         self._configure_history_table()
         self.history_table.setAlternatingRowColors(True)
+        self.history_table.setShowGrid(False)
+        self.history_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.history_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.history_table.verticalHeader().setVisible(False)
         self.history_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.right_tabs.addTab(self.history_table, "History")
-        
-        right_layout.addWidget(self.right_tabs)
-        right_layout.addWidget(QLabel("<b>System Log</b>"))
-        
-        # Log area
-        self.log_area = QTextEdit()
+        self.history_table.horizontalHeader().setHighlightSections(False)
+        self.detail_tabs.addTab(self.history_table, "Solution history")
+
+        log_page = QWidget()
+        log_layout = QVBoxLayout(log_page)
+        log_layout.setContentsMargins(6, 6, 6, 6)
+        log_layout.setSpacing(6)
+        log_controls = QHBoxLayout()
+        self.btn_pause_log = QPushButton("Pause")
+        self.btn_pause_log.setCheckable(True)
+        self.btn_pause_log.setToolTip("Pause visual log updates while keeping messages buffered")
+        self.btn_pause_log.toggled.connect(self._on_log_pause_toggled)
+        btn_clear_log = QPushButton("Clear")
+        btn_clear_log.clicked.connect(self.clear_log)
+        self.lbl_log_state = QLabel("Live")
+        self.lbl_log_state.setProperty("class", "muted")
+        log_controls.addWidget(self.btn_pause_log)
+        log_controls.addWidget(btn_clear_log)
+        log_controls.addWidget(self.lbl_log_state)
+        log_controls.addStretch()
+        log_layout.addLayout(log_controls)
+
+        self.log_area = QPlainTextEdit()
         self.log_area.setReadOnly(True)
-        self.log_area.setMaximumHeight(150)
-        self.log_area.setStyleSheet(
-            "background: #ffffff; color: #000000; "
-            "font-family: Monospace; border: 1px solid #ccc;"
-        )
-        right_layout.addWidget(self.log_area)
-        
-        splitter.addWidget(right_panel)
-        splitter.setSizes([600, 1000])
-        
-        main_layout.addWidget(splitter, stretch=1)
+        self.log_area.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.log_area.document().setMaximumBlockCount(500)
+        log_layout.addWidget(self.log_area)
+        self.detail_tabs.addTab(log_page, "System log")
+        self.detail_tabs.currentChanged.connect(self._on_detail_tab_changed)
+        workspace_splitter.addWidget(self.detail_tabs)
+        workspace_splitter.setStretchFactor(0, 9)
+        workspace_splitter.setStretchFactor(1, 11)
+        workspace_splitter.setSizes([430, 500])
+
+        main_layout.addWidget(workspace_splitter, stretch=1)
         self._apply_compact_ui()
 
     def resizeEvent(self, event):
@@ -328,19 +372,18 @@ class PositioningModule(QMainWindow):
 
         self._compact_scale = scale
         self.setStyleSheet(get_app_stylesheet(scale))
-        self.map_widget.setMinimumHeight(max(280, int(400 * scale)))
-        self.log_area.setMaximumHeight(max(110, int(150 * scale)))
-        self.btn_back.setText("< Back to Launcher")
-        self.btn_pos_settings.setText("Pos Settings")
-        self.lbl_mode.setText("Positioning Mode:")
-        self.lbl_coord_mode.setText("Display:")
+        self.map_widget.setMinimumHeight(max(220, int(250 * scale)))
+        self.btn_back.setText("Back")
+        self.btn_pos_settings.setText("Solver")
+        self.lbl_mode.setText("Mode")
+        self.lbl_coord_mode.setText("Coordinates")
         self._refresh_start_button_text()
 
     def _refresh_start_button_text(self):
         if getattr(self, "is_running", False):
-            self.btn_start.setText("Stop Positioning")
+            self.btn_start.setText("Stop")
         else:
-            self.btn_start.setText("Start Positioning")
+            self.btn_start.setText("Start")
 
     def _set_status_badge(self, label: QLabel, text: str, color: str) -> None:
         label.setText(text)
@@ -351,47 +394,54 @@ class PositioningModule(QMainWindow):
 
     def _configure_history_table(self) -> None:
         self.history_table.setColumnCount(7)
+        metric = "Ratio" if self.combo_mode.currentIndex() == 2 else "HDOP"
         if self.display_mode == "XYZ":
-            headers = ["Time", "ECEF X (m)", "ECEF Y (m)", "ECEF Z (m)", "HDOP", "Sats", "Status"]
+            headers = ["Time", "ECEF X (m)", "ECEF Y (m)", "ECEF Z (m)", metric, "Sats", "Status"]
         else:
-            headers = ["Time", "Lat (deg)", "Lon (deg)", "Height (m)", "HDOP", "Sats", "Status"]
+            headers = ["Time", "Lat (deg)", "Lon (deg)", "Height (m)", metric, "Sats", "Status"]
         self.history_table.setHorizontalHeaderLabels(headers)
 
     def _refresh_history_table(self) -> None:
         if not hasattr(self, "history_table"):
             return
         self._configure_history_table()
-        self.history_table.setRowCount(0)
-
+        self.history_table.setUpdatesEnabled(False)
+        self.history_table.setRowCount(len(self.solution_history))
         for row, (timestamp, solution) in enumerate(self.solution_history):
-            self.history_table.insertRow(row)
-            if self.display_mode == "XYZ":
-                values = [
-                    timestamp,
-                    f"{solution.ecef_x:.3f}",
-                    f"{solution.ecef_y:.3f}",
-                    f"{solution.ecef_z:.3f}",
-                    f"{solution.hdop:.2f}",
-                    str(solution.num_satellites),
-                    format_solution_status(solution.status),
-                ]
-            else:
-                values = [
-                    timestamp,
-                    f"{solution.latitude:.8f}",
-                    f"{solution.longitude:.8f}",
-                    f"{solution.height:.3f}",
-                    f"{solution.hdop:.2f}",
-                    str(solution.num_satellites),
-                    format_solution_status(solution.status),
-                ]
+            self._populate_history_row(row, timestamp, solution)
+        self.history_table.setUpdatesEnabled(True)
 
-            for col, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                item.setFont(QFont("Consolas", 9))
-                if col == 6:
-                    self._style_status_item(item, solution.status)
-                self.history_table.setItem(row, col, item)
+    def _history_values(self, timestamp, solution):
+        if self.display_mode == "XYZ":
+            coordinates = [f"{solution.ecef_x:.3f}", f"{solution.ecef_y:.3f}", f"{solution.ecef_z:.3f}"]
+        else:
+            coordinates = [f"{solution.latitude:.8f}", f"{solution.longitude:.8f}", f"{solution.height:.3f}"]
+        metric = (
+            f"{solution.ambiguity_ratio:.2f}"
+            if getattr(solution, "mode", None) == PositioningMode.RTK
+            else f"{solution.hdop:.2f}"
+        )
+        return [
+            timestamp, *coordinates, metric,
+            str(solution.num_satellites), format_solution_status(solution.status),
+        ]
+
+    def _populate_history_row(self, row, timestamp, solution):
+        for col, value in enumerate(self._history_values(timestamp, solution)):
+            item = QTableWidgetItem(value)
+            item.setFont(QFont("Consolas", 9))
+            item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | (Qt.AlignmentFlag.AlignLeft if col in (0, 6) else Qt.AlignmentFlag.AlignRight))
+            if col == 6:
+                self._style_status_item(item, solution.status)
+            self.history_table.setItem(row, col, item)
+
+    def _prepend_history_row(self, timestamp, solution):
+        self.history_table.setUpdatesEnabled(False)
+        self.history_table.insertRow(0)
+        self._populate_history_row(0, timestamp, solution)
+        while self.history_table.rowCount() > self.solution_history.maxlen:
+            self.history_table.removeRow(self.history_table.rowCount() - 1)
+        self.history_table.setUpdatesEnabled(True)
 
     def _style_status_item(self, item: QTableWidgetItem, status: SolutionStatus) -> None:
         text = format_solution_status(status)
@@ -419,6 +469,7 @@ class PositioningModule(QMainWindow):
         self.solution_history.clear()
         self.info_widget.clear()
         self.accuracy_widget.clear()
+        self.atmosphere_widget.clear()
         self.residual_widget.clear()
         self.map_widget.clear_track()
         self.history_table.setRowCount(0)
@@ -431,6 +482,7 @@ class PositioningModule(QMainWindow):
         dlg = ConfigDialog(self, self.settings)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self.settings = dlg.get_settings()
+            self.positioning_thread.refresh_runtime_config()
             self._apply_replay_ui_policy(announce=True)
             self.append_log("Settings updated")
             if getattr(dlg, 'disconnect_requested', False):
@@ -439,6 +491,9 @@ class PositioningModule(QMainWindow):
                 return
             # If user requested Connect from the dialog, start streams only (do not start positioning)
             if getattr(dlg, 'auto_connect', False):
+                if self.combo_mode.currentIndex() == 2:
+                    self.append_log("RTK streams are ready and will connect when RTK positioning starts")
+                    return
                 self.append_log("Auto-connect requested: starting data streams (positioning not started)")
                 try:
                     self.start_streams()
@@ -451,6 +506,16 @@ class PositioningModule(QMainWindow):
         if index < len(modes):
             self.positioning_thread.set_mode(modes[index])
             self.append_log(f"Positioning mode changed to {modes[index].value}")
+            if modes[index] == PositioningMode.RTK:
+                self._set_status_badge(self.lbl_ssr_status, "BASE: OFF", "#6D2F2B")
+                self.lbl_ssr_status.setToolTip("RTK base station or network correction stream")
+            else:
+                self._set_status_badge(self.lbl_ssr_status, "SSR: OFF", "#6D2F2B")
+                self.lbl_ssr_status.setToolTip("SSR correction stream")
+            if self.is_running:
+                self.append_log("Mode changes are applied after the current positioning run stops")
+                self.stop_positioning()
+            self._refresh_history_table()
 
     def on_coordinate_mode_changed(self, _index: int):
         """Switch all coordinate-oriented displays between LLH and ECEF XYZ."""
@@ -493,6 +558,8 @@ class PositioningModule(QMainWindow):
 
     def toggle_positioning(self):
         """Start/stop positioning."""
+        if self.is_stopping:
+            return
         if not self.is_running:
             self.start_positioning()
         else:
@@ -500,10 +567,32 @@ class PositioningModule(QMainWindow):
 
     def start_positioning(self):
         """Start all threads."""
+        if self.is_stopping:
+            return
         try:
             self._reset_solution_views()
 
-            # Ensure streams are running (start streams only if not present)
+            mode_index = min(self.combo_mode.currentIndex(), 2)
+            mode = [PositioningMode.SPP, PositioningMode.PPP, PositioningMode.RTK][mode_index]
+
+            if mode == PositioningMode.RTK:
+                config = get_global_config()
+                if not config.base_settings.enabled:
+                    raise RuntimeError("Enable and configure the RTK base/network stream in Streams")
+                self.rtk_thread = RTKEngineThread("RTK", self.positioning_signals)
+                self.is_running = True
+                self.rtk_thread.start()
+                self._refresh_start_button_text()
+                self.btn_start.setStyleSheet("background-color: #B05E5E; color: white;")
+                self._set_status_badge(self.lbl_pos_status, "POS: ACTIVE", "#2563EB")
+                settings = config.get_positioning_settings()
+                rtk_type = settings.get("rtk_type", "single_base")
+                protocol = settings.get("rtk_network_protocol", "VRS")
+                label = f"network {protocol}" if rtk_type == "network" else "single-base"
+                self.append_log(f"RTK positioning started ({label})")
+                return
+
+            # SPP/PPP use RTGS stream decoding and epoch processing.
             self.start_streams()
 
             # Create fresh positioning ring buffer
@@ -513,13 +602,16 @@ class PositioningModule(QMainWindow):
                 or (not self.positioning_thread.is_alive() and getattr(self.positioning_thread, "ident", None) is not None)
             ):
                 self.positioning_thread = PositioningThread(
-                    "SPP", self.positioning_signals, self.positioning_ring_buffer, self.rtcm_handler
+                    "POS", self.positioning_signals, self.positioning_ring_buffer, self.rtcm_handler
                 )
-                modes = [PositioningMode.SPP, PositioningMode.PPP, PositioningMode.RTK]
-                mode_index = min(self.combo_mode.currentIndex(), len(modes) - 1)
-                self.positioning_thread.set_mode(modes[mode_index])
+                self.positioning_thread.set_mode(mode)
             else:
                 self.positioning_thread.set_ring_buffer(self.positioning_ring_buffer)
+
+            # A stream YAML can provide both the exact evaluation coordinate
+            # and PPP filter settings.  Synchronise them even when this thread
+            # was constructed before the configuration dialog was opened.
+            self.positioning_thread.refresh_runtime_config()
 
             # Start positioning thread if not already running
             if not getattr(self.positioning_thread, 'is_alive', lambda: False)():
@@ -627,31 +719,39 @@ class PositioningModule(QMainWindow):
         self.append_log("Data streams started")
 
     def stop_positioning(self):
-        """Stop all threads."""
+        """Request shutdown without blocking the GUI thread."""
+        if self.is_stopping:
+            return
         try:
-            # Stop positioning thread (will close its ring buffer)
-            try:
-                self.positioning_thread.stop()
-            except Exception:
-                pass
+            self.is_running = False
+            self.is_stopping = True
+            self.btn_start.setEnabled(False)
+            self.btn_start.setText("Stopping...")
 
-            # Stop processing threads
+            threads = [self.positioning_thread, self.rtk_thread, *self.processing_threads, *self.io_threads]
+            if self.positioning_thread.is_alive():
+                try:
+                    self.positioning_thread.stop()
+                except Exception:
+                    pass
+            if self.rtk_thread is not None:
+                try:
+                    self.rtk_thread.stop()
+                except Exception:
+                    pass
+
             for thread in list(self.processing_threads):
                 try:
                     thread.stop()
-                    thread.join(timeout=2)
                 except Exception:
                     pass
 
-            # Stop IO threads
             for thread in list(self.io_threads):
                 try:
                     thread.stop()
-                    thread.join(timeout=2)
                 except Exception:
                     pass
 
-            # Close buffers
             for buf in self.ring_buffers.values():
                 try:
                     buf.close()
@@ -671,24 +771,62 @@ class PositioningModule(QMainWindow):
             self.update_stream_status('OBS', False)
             self.update_stream_status('EPH', False)
             self.update_stream_status('SSR', False)
+            self.update_stream_status('BASE', False)
 
-            self.is_running = False
-            self._refresh_start_button_text()
             self.btn_start.setStyleSheet("")
             self._reset_solution_views()
-            self.append_log("Positioning stopped")
+            self.append_log("Stopping positioning and data streams...")
+
+            self._stopping_threads = [thread for thread in threads if thread is not None]
+            self._stop_deadline = time.monotonic() + 3.0
+            self._stop_poll_timer.start()
+            self._poll_stop_completion()
             
         except Exception as e:
             self.append_log(f"Error stopping positioning: {str(e)}")
+            self._finish_stop_ui()
+
+    def _poll_stop_completion(self):
+        alive = [thread for thread in self._stopping_threads if thread.is_alive()]
+        self._stopping_threads = alive
+        if alive and time.monotonic() < self._stop_deadline:
+            return
+        if alive:
+            names = ", ".join(thread.name for thread in alive)
+            self.append_log(f"Shutdown continues in background: {names}")
+            threading.Thread(target=self._reap_threads, args=(alive,), daemon=True).start()
+        self._finish_stop_ui()
+
+    @staticmethod
+    def _reap_threads(threads):
+        for thread in threads:
+            try:
+                thread.join(timeout=10.0)
+            except Exception:
+                pass
+
+    def _finish_stop_ui(self):
+        self._stop_poll_timer.stop()
+        self._stopping_threads = []
+        self.is_stopping = False
+        if self.rtk_thread is not None and not self.rtk_thread.is_alive():
+            self.rtk_thread = None
+        self.btn_start.setEnabled(True)
+        self._refresh_start_button_text()
+        self.append_log("Positioning stopped")
 
     @Slot(object)
     def on_observation_epoch(self, epoch_obs):
         """Receive observation epoch from monitoring and forward to positioning."""
+        if not self.is_running:
+            return
         if epoch_obs is None:
             return
         if getattr(epoch_obs, "utc_datetime", None) is None:
             return
         if not getattr(epoch_obs, "satellites", None):
+            return
+        if self.combo_mode.currentIndex() == 2:
             return
         # Submit to positioning ring buffer
         self.positioning_ring_buffer.put(epoch_obs, block=False)
@@ -696,6 +834,8 @@ class PositioningModule(QMainWindow):
     @Slot(object)
     def on_positioning_solution(self, solution):
         """Receive positioning solution."""
+        if not self.is_running:
+            return
         self.pending_solution = solution
         now = time.time()
         if self.solution_ui_interval <= 0.0 or now - self.last_solution_ui_time >= self.solution_ui_interval:
@@ -705,13 +845,20 @@ class PositioningModule(QMainWindow):
         """Render one positioning solution onto the UI."""
         self.info_widget.update_solution(solution)
         self.accuracy_widget.update_solution(solution)
+        self.atmosphere_widget.update_solution(solution)
         self.residual_widget.update_solution(solution)
         self._update_solution_badge(solution.status)
         if solution.status != SolutionStatus.NO_FIX:
             self.map_widget.update_solution(solution)
 
-        self.solution_history.appendleft((datetime.utcnow().strftime('%H:%M:%S'), solution))
-        self._refresh_history_table()
+        epoch_time = getattr(solution, "epoch_time", None)
+        if isinstance(epoch_time, datetime):
+            timestamp = epoch_time.strftime('%H:%M:%S')
+        else:
+            timestamp = datetime.utcnow().strftime('%H:%M:%S')
+        self.solution_history.appendleft((timestamp, solution))
+        timestamp, _ = self.solution_history[0]
+        self._prepend_history_row(timestamp, solution)
 
     def _flush_pending_solution(self, now: float | None = None):
         if self.pending_solution is None:
@@ -728,10 +875,15 @@ class PositioningModule(QMainWindow):
             'EPH_DATA': 'EPH',
             'SSR_DATA': 'SSR',
         }.get(stream_name, stream_name)
+        if display_name == 'BASE' and self.combo_mode.currentIndex() != 2:
+            return
+        if display_name == 'SSR' and self.combo_mode.currentIndex() == 2:
+            return
         label_map = {
             'OBS': self.lbl_obs_status,
             'EPH': self.lbl_eph_status,
             'SSR': self.lbl_ssr_status,
+            'BASE': self.lbl_ssr_status,
         }
         label = label_map.get(display_name)
         if label is None:
@@ -748,16 +900,15 @@ class PositioningModule(QMainWindow):
                 self._set_status_badge(self.lbl_pos_status, "POS: ACTIVE", "#2563EB")
         else:
             self._set_status_badge(self.lbl_pos_status, "POS: IDLE", "#4B5563")
+            if status_name == "RTK" and self.is_running and not self.is_stopping:
+                self.is_running = False
+                self.btn_start.setStyleSheet("")
+                self._refresh_start_button_text()
 
     @Slot()
     def update_ui(self):
         """Update UI elements (timer-based)."""
-        # Refresh log display
-        log_text = '\n'.join(list(self.log_queue))
-        self.log_area.setPlainText(log_text)
-        self.log_area.verticalScrollBar().setValue(
-            self.log_area.verticalScrollBar().maximum()
-        )
+        self._flush_log_display()
         now = time.time()
         if self.pending_solution is not None:
             if self.solution_ui_interval <= 0.0 or now - self.last_solution_ui_time >= self.solution_ui_interval:
@@ -769,6 +920,47 @@ class PositioningModule(QMainWindow):
         timestamp = datetime.now().strftime('%H:%M:%S')
         log_msg = f"[{timestamp}] {message}"
         self.log_queue.append(log_msg)
+        self._pending_log_lines.append(log_msg)
+        self._log_dirty = True
+
+    def _flush_log_display(self):
+        if not self._log_dirty or not self._pending_log_lines:
+            return
+        scrollbar = self.log_area.verticalScrollBar()
+        cursor = self.log_area.textCursor()
+        browsing = cursor.hasSelection() or scrollbar.value() < scrollbar.maximum()
+        if self._log_paused or browsing:
+            self.lbl_log_state.setText(
+                f"Paused - {len(self._pending_log_lines)} buffered"
+                if self._log_paused else f"Browsing - {len(self._pending_log_lines)} buffered"
+            )
+            return
+
+        batch = "\n".join(self._pending_log_lines)
+        self._pending_log_lines.clear()
+        self.log_area.appendPlainText(batch)
+        scrollbar.setValue(scrollbar.maximum())
+        self._log_dirty = False
+        self.lbl_log_state.setText("Live")
+
+    def _on_log_pause_toggled(self, paused):
+        self._log_paused = bool(paused)
+        self.btn_pause_log.setText("Resume" if paused else "Pause")
+        self.lbl_log_state.setText("Paused" if paused else "Live")
+
+    def clear_log(self):
+        self.log_queue.clear()
+        self._pending_log_lines.clear()
+        self._log_dirty = False
+        self.log_area.clear()
+        self.lbl_log_state.setText("Paused" if self._log_paused else "Live")
+
+    def _on_detail_tab_changed(self, index):
+        self.residual_widget.set_render_enabled(index == 1)
+
+    def _on_monitor_tab_changed(self, index):
+        self.accuracy_widget.set_render_enabled(index == 0)
+        self.atmosphere_widget.set_render_enabled(index == 1)
 
     def _apply_replay_ui_policy(self, announce: bool) -> None:
         previous_interval = getattr(self, "solution_ui_interval", self.base_solution_ui_interval)
@@ -776,7 +968,7 @@ class PositioningModule(QMainWindow):
             self.base_solution_ui_interval,
             self.settings.get("OBS", {}),
         )
-        self.solution_ui_interval = throttled_interval if throttled_interval >= THROTTLED_GUI_INTERVAL_SECONDS else 0.0
+        self.solution_ui_interval = max(0.0, throttled_interval)
 
         if not announce:
             return
@@ -797,7 +989,9 @@ class PositioningModule(QMainWindow):
                     f"{self.solution_ui_interval:.1f}s"
                 )
         else:
-            self.append_log("Positioning GUI refresh restored to per-solution updates")
+            self.append_log(
+                f"Positioning GUI refresh restored to {self.solution_ui_interval:.2f}s cadence"
+            )
 
     def on_back_to_launcher(self):
         """Return to launcher."""

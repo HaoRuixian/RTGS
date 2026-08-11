@@ -64,6 +64,73 @@ def _igs_ssr_gps_combined_frame() -> bytes:
     return _rtcm_frame(payload_bits)
 
 
+def _igs_ssr_bds_combined_frame() -> bytes:
+    payload_bits = "".join(
+        (
+            _unsigned_bits(4076, 12),
+            _unsigned_bits(3, 3),
+            _unsigned_bits(103, 8),  # IM103 BDS combined orbit and clock
+            _unsigned_bits(100, 20),
+            _unsigned_bits(1, 4),
+            _unsigned_bits(0, 1),
+            _unsigned_bits(4, 4),
+            _unsigned_bits(12, 16),
+            _unsigned_bits(1, 4),
+            _unsigned_bits(0, 1),
+            _unsigned_bits(1, 6),
+            _unsigned_bits(6, 6),
+            _unsigned_bits(7, 8),
+            _signed_bits(10000, 22),
+            _signed_bits(5000, 20),
+            _signed_bits(-7500, 20),
+            _signed_bits(10000, 21),
+            _signed_bits(5000, 19),
+            _signed_bits(-7500, 19),
+            _signed_bits(5000, 22),
+            _signed_bits(2000, 21),
+            _signed_bits(-25000, 27),
+        )
+    )
+    return _rtcm_frame(payload_bits)
+
+
+def _ssr_gps_phase_bias_frame(*, igs: bool = False) -> bytes:
+    prefix = (
+        _unsigned_bits(4076, 12) + _unsigned_bits(3, 3) + _unsigned_bits(26, 8)
+        if igs
+        else _unsigned_bits(1265, 12)
+    )
+    payload_bits = "".join(
+        (
+            prefix,
+            _unsigned_bits(100, 20),
+            _unsigned_bits(1, 4),
+            _unsigned_bits(0, 1),
+            _unsigned_bits(4, 4),
+            _unsigned_bits(12, 16),
+            _unsigned_bits(1, 4),
+            _unsigned_bits(1, 1),
+            _unsigned_bits(1, 1),
+            _unsigned_bits(1, 6),
+            _unsigned_bits(1, 6),
+            _unsigned_bits(2, 5),
+            _unsigned_bits(128, 9),
+            _signed_bits(-4, 8),
+            _unsigned_bits(0, 5),  # GPS 1C
+            _unsigned_bits(1, 1),
+            _unsigned_bits(2, 2),
+            _unsigned_bits(3, 4),
+            _signed_bits(1234, 20),
+            _unsigned_bits(11 if igs else 11, 5),  # GPS 2W
+            _unsigned_bits(1, 1),
+            _unsigned_bits(1, 2),
+            _unsigned_bits(7, 4),
+            _signed_bits(-2500, 20),
+        )
+    )
+    return _rtcm_frame(payload_bits)
+
+
 def test_rtcm_handler_parses_gps_combined_ssr_corrections():
     handler = RTCMHandler(compute_geometry=False)
     msg = FakeRTCMMessage(
@@ -172,7 +239,7 @@ def test_rtcm_handler_parses_non_gps_ssr_satellite_fields():
     assert handler.ssr_corrections.get_orbit("C06").delta_radial_m == pytest.approx(0.2)
 
 
-def test_rtcm_handler_converts_standard_glonass_ssr_epoch_like_bnc():
+def test_rtcm_handler_converts_standard_glonass_ssr_epoch_with_precise_model():
     handler = RTCMHandler(reference_utc=datetime(2026, 3, 26, tzinfo=timezone.utc), compute_geometry=False)
     handler.process_message(
         FakeRTCMMessage(
@@ -238,6 +305,21 @@ def test_rtcm_handler_parses_igs_ssr_4076_combined_message():
     assert clock.delta_clock_accel_mps2 == pytest.approx(-0.0005)
 
 
+def test_rtcm_handler_parses_cas_igs_ssr_bds_combined_message():
+    handler = RTCMHandler(compute_geometry=False)
+
+    handler.process_message(RawRTCMMessage(raw=_igs_ssr_bds_combined_frame(), identity="4076"))
+
+    orbit = handler.ssr_corrections.get_orbit("C06")
+    clock = handler.ssr_corrections.get_clock("C06")
+    assert orbit is not None
+    assert clock is not None
+    assert orbit.epoch_time == pytest.approx(114.0)
+    assert orbit.iod == 7
+    assert orbit.delta_radial_m == pytest.approx(1.0)
+    assert clock.delta_clock_m == pytest.approx(0.5)
+
+
 def test_mixed_reader_preserves_unsupported_igs_ssr_4076_frame():
     raw = _igs_ssr_gps_combined_frame()
     reader = MixedGNSSReader(io.BytesIO(raw))
@@ -247,3 +329,38 @@ def test_mixed_reader_preserves_unsupported_igs_ssr_4076_frame():
     assert parsed_raw == raw
     assert isinstance(msg, RawRTCMMessage)
     assert msg.identity == "4076"
+
+
+@pytest.mark.parametrize("igs", [False, True])
+def test_rtcm_handler_decodes_integer_phase_bias_metadata(igs):
+    handler = RTCMHandler(compute_geometry=False)
+    raw = _ssr_gps_phase_bias_frame(igs=igs)
+    identity = "4076" if igs else "1265"
+
+    handler.process_message(RawRTCMMessage(raw=raw, identity=identity))
+
+    correction = handler.ssr_corrections.get_phase_biases("G01", time_sow=100.0)
+    assert correction is not None
+    assert correction.provider_id == 12
+    assert correction.solution_id == 1
+    assert correction.dispersive_consistency is True
+    assert correction.mw_consistency is True
+    assert correction.yaw_angle_deg == pytest.approx(90.0)
+    assert correction.yaw_rate_deg_s == pytest.approx(-4 * 180.0 / 8192.0)
+    assert correction.biases["1C"].bias_m == pytest.approx(0.1234)
+    assert correction.biases["1C"].integer_indicator is True
+    assert correction.biases["1C"].wide_lane_indicator == 2
+    assert correction.biases["1C"].discontinuity_counter == 3
+    assert correction.biases["2W"].bias_m == pytest.approx(-0.25)
+    assert correction.biases["2W"].discontinuity_counter == 7
+
+
+def test_mixed_reader_preserves_standard_ssr_phase_bias_frame():
+    raw = _ssr_gps_phase_bias_frame(igs=False)
+    reader = MixedGNSSReader(io.BytesIO(raw))
+
+    parsed_raw, msg = reader.read()
+
+    assert parsed_raw == raw
+    assert isinstance(msg, RawRTCMMessage)
+    assert msg.identity == "1265"

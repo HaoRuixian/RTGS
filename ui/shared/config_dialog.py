@@ -17,6 +17,7 @@ class ConfigDialog(QDialog):
         self.setWindowTitle("Data Source Settings")
         adaptive_window_size(self, target=(460, 600), minimum=(460, 520))
         self.settings = initial_settings or {}
+        self._loaded_positioning_settings = None
         # Flag set when user clicked Connect (auto-connect requested)
         self.auto_connect = False
         # Flag set when user requested a disconnect without clearing saved settings
@@ -405,6 +406,68 @@ class ConfigDialog(QDialog):
         grp_ssr.setEnabled(self.chk_ssr.isChecked())
         self.grp_ssr = grp_ssr
         scroll_layout.addWidget(grp_ssr)
+
+        # =====================================================================
+        # RTK base station / network correction stream (optional)
+        # =====================================================================
+        self.chk_base = QCheckBox("Enable RTK Base / Network Stream")
+        self.chk_base.setChecked(self.settings.get('BASE_ENABLED', False))
+        self.chk_base.stateChanged.connect(self.on_base_enabled_changed)
+        scroll_layout.addWidget(self.chk_base)
+
+        grp_base = QGroupBox("RTK Base / Network Corrections")
+        fl_base = QFormLayout()
+        fl_base.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        fl_base.setLabelAlignment(Qt.AlignLeft)
+        base_settings = self.settings.get('BASE', {})
+
+        self.base_source = QComboBox()
+        self.base_source.addItems(["NTRIP Server", "Serial Port"])
+        base_source = base_settings.get('source') or base_settings.get('source_type') or 'NTRIP Server'
+        self.base_source.setCurrentText(base_source if base_source in ["NTRIP Server", "Serial Port"] else "NTRIP Server")
+        self.base_source.currentTextChanged.connect(self.on_base_source_changed)
+        fl_base.addRow("Data Source:", self.base_source)
+
+        self.base_h = QLineEdit(base_settings.get('host', ''))
+        self.base_p = QLineEdit(str(base_settings.get('port', '2101')))
+        self.base_m = QLineEdit(base_settings.get('mountpoint', ''))
+        self.base_u = QLineEdit(base_settings.get('user', ''))
+        self.base_pw = QLineEdit(base_settings.get('password', ''))
+        self.base_pw.setEchoMode(QLineEdit.EchoMode.Password)
+        self.lbl_base_host = QLabel("Host:")
+        self.lbl_base_port = QLabel("Port:")
+        self.lbl_base_mount = QLabel("Mountpoint:")
+        self.lbl_base_user = QLabel("User:")
+        self.lbl_base_pw = QLabel("Password:")
+        for label, widget in (
+            (self.lbl_base_host, self.base_h),
+            (self.lbl_base_port, self.base_p),
+            (self.lbl_base_mount, self.base_m),
+            (self.lbl_base_user, self.base_u),
+            (self.lbl_base_pw, self.base_pw),
+        ):
+            fl_base.addRow(label, widget)
+
+        self.base_port = QComboBox()
+        self.base_port.addItems(self._get_available_ports() or ["No ports found"])
+        self.base_port.setCurrentText(str(base_settings.get('serial_port') or 'COM2'))
+        self.base_baudrate = QComboBox()
+        self.base_baudrate.addItems(common_baudrates)
+        base_baud = str(base_settings.get('baudrate', 115200))
+        self.base_baudrate.setCurrentText(base_baud if base_baud in common_baudrates else "115200")
+        self.lbl_base_serial_port = QLabel("Serial Port:")
+        self.lbl_base_baudrate = QLabel("Baud Rate:")
+        fl_base.addRow(self.lbl_base_serial_port, self.base_port)
+        fl_base.addRow(self.lbl_base_baudrate, self.base_baudrate)
+
+        self._set_size_policy_for_widgets([
+            self.base_h, self.base_p, self.base_m, self.base_u, self.base_pw,
+            self.base_port, self.base_baudrate,
+        ])
+        grp_base.setLayout(fl_base)
+        grp_base.setEnabled(self.chk_base.isChecked())
+        self.grp_base = grp_base
+        scroll_layout.addWidget(grp_base)
         
         # =====================================================================
         # General Settings
@@ -512,6 +575,8 @@ class ConfigDialog(QDialog):
         self.on_eph_source_changed()
         self.on_ssr_enabled_changed()
         self.on_ssr_source_changed()
+        self.on_base_enabled_changed()
+        self.on_base_source_changed()
 
     def _set_size_policy_for_widgets(self, widgets):
         """Helper function to set expanding size policy for widgets"""
@@ -643,6 +708,26 @@ class ConfigDialog(QDialog):
         self.lbl_ssr_flowctrl.setVisible(is_serial)
         self.ssr_flowctrl.setVisible(is_serial)
 
+    def on_base_enabled_changed(self):
+        """Enable RTK reference/network stream controls."""
+        self.grp_base.setEnabled(self.chk_base.isChecked())
+
+    def on_base_source_changed(self):
+        """Show fields applicable to the selected RTK base source."""
+        is_ntrip = self.base_source.currentText() == "NTRIP Server"
+        is_serial = self.base_source.currentText() == "Serial Port"
+        for widget in (
+            self.lbl_base_host, self.base_h, self.lbl_base_port, self.base_p,
+            self.lbl_base_mount, self.base_m, self.lbl_base_user, self.base_u,
+            self.lbl_base_pw, self.base_pw,
+        ):
+            widget.setVisible(is_ntrip)
+        for widget in (
+            self.lbl_base_serial_port, self.base_port,
+            self.lbl_base_baudrate, self.base_baudrate,
+        ):
+            widget.setVisible(is_serial)
+
     def _get_available_ports(self):
         """Get list of available serial ports"""
         try:
@@ -768,6 +853,15 @@ class ConfigDialog(QDialog):
             if ssr_source == "Serial Port" and not self.ssr_port.currentText().strip():
                 raise ValueError("SSR corrections stream is missing the serial port.")
 
+        if self.chk_base.isChecked():
+            base_source = self.base_source.currentText()
+            if base_source == "NTRIP Server" and not self.base_h.text().strip():
+                raise ValueError("RTK base/network stream is missing the NTRIP host.")
+            if base_source == "NTRIP Server" and not self.base_m.text().strip():
+                raise ValueError("RTK base/network stream is missing the NTRIP mountpoint.")
+            if base_source == "Serial Port" and not self.base_port.currentText().strip():
+                raise ValueError("RTK base stream is missing the serial port.")
+
     def load_file(self):
         """Load configuration from file (supports .yaml, .yml, and legacy .py formats)"""
         ensure_config_directories()
@@ -794,6 +888,7 @@ class ConfigDialog(QDialog):
     def _load_yaml_file(self, filepath):
         """Load configuration from YAML file"""
         import yaml
+        self._loaded_positioning_settings = None
         with open(filepath, 'r', encoding='utf-8') as f:
             config = yaml.safe_load(f)
         
@@ -876,6 +971,23 @@ class ConfigDialog(QDialog):
                     self.ssr_m.setText(str(ssr.get('mountpoint', '')))
                     self.ssr_u.setText(str(ssr.get('user', '')))
                     self.ssr_pw.setText(str(ssr.get('password', '')))
+
+        # Load RTK base station / network correction settings
+        if 'base_settings' in config:
+            base = config['base_settings']
+            base_enabled = base.get('enabled', False)
+            self.chk_base.setChecked(base_enabled)
+            if base.get('source_type') == 'Serial Port':
+                self.base_source.setCurrentText('Serial Port')
+                self.base_port.setCurrentText(str(base.get('serial_port', 'COM2')))
+                self.base_baudrate.setCurrentText(str(base.get('baudrate', 115200)))
+            else:
+                self.base_source.setCurrentText('NTRIP Server')
+                self.base_h.setText(str(base.get('host', '')))
+                self.base_p.setText(str(base.get('port', '2101')))
+                self.base_m.setText(str(base.get('mountpoint', '')))
+                self.base_u.setText(str(base.get('user', '')))
+                self.base_pw.setText(str(base.get('password', '')))
         
         # Load general settings
         if 'approx_rec_pos' in config and config['approx_rec_pos']:
@@ -891,6 +1003,9 @@ class ConfigDialog(QDialog):
                 self.target_systems.setText(','.join(systems))
             else:
                 self.target_systems.setText(str(systems))
+
+        if isinstance(config.get('positioning_settings'), dict):
+            self._loaded_positioning_settings = dict(config['positioning_settings'])
         
         # Update visibility
         self.on_obs_source_changed()
@@ -898,6 +1013,8 @@ class ConfigDialog(QDialog):
         self.on_eph_source_changed()
         self.on_ssr_enabled_changed()
         self.on_ssr_source_changed()
+        self.on_base_enabled_changed()
+        self.on_base_source_changed()
 
     def _load_python_file(self, filepath):
         """Load configuration from legacy Python file format"""
@@ -958,7 +1075,11 @@ class ConfigDialog(QDialog):
 
     def get_settings(self):
         """Return settings dictionary with both NTRIP and serial port configuration"""
-        from core.global_config import update_connection_settings, update_general_settings
+        from core.global_config import (
+            update_connection_settings,
+            update_general_settings,
+            update_positioning_settings,
+        )
         
         # Update OBS settings
         obs_source_type = self.obs_source.currentText()
@@ -1036,6 +1157,31 @@ class ConfigDialog(QDialog):
             update_connection_settings('SSR', ssr_settings)
         else:
             update_connection_settings('SSR', {'enabled': False})
+
+        # Update RTK base/network stream settings
+        base_enabled = self.chk_base.isChecked()
+        base_source_type = self.base_source.currentText()
+        base_settings = {
+            'source_type': base_source_type,
+            'enabled': base_enabled,
+            'host': self.base_h.text(),
+            'port': self.base_p.text() if base_source_type == "NTRIP Server" else self.base_port.currentText(),
+            'serial_port': self.base_port.currentText(),
+            'baudrate': int(self.base_baudrate.currentText()),
+            'databits': 8,
+            'stopbits': 1.0,
+            'parity': 'None',
+            'flowctrl': 'None',
+            'mountpoint': self.base_m.text(),
+            'user': self.base_u.text(),
+            'password': self.base_pw.text(),
+            'file_path': '',
+            'replay_speed': 1.0,
+            'file_type': 'Auto Detect',
+            'final_results_only': False,
+            'data_format': 'RTCM3',
+        }
+        update_connection_settings('BASE', base_settings)
         
         # Update general settings
         try:
@@ -1062,6 +1208,8 @@ class ConfigDialog(QDialog):
             'target_systems': target_systems
         }
         update_general_settings(general_settings)
+        if self._loaded_positioning_settings is not None:
+            update_positioning_settings(self._loaded_positioning_settings)
         # determine return value for legacy settings API
         legacy_pos = None
         if coords is not None:
@@ -1121,6 +1269,26 @@ class ConfigDialog(QDialog):
                 'replay_speed': 1.0,
                 'file_type': 'Auto Detect',
                 'final_results_only': False,
+            },
+            'BASE_ENABLED': base_enabled,
+            'BASE': {
+                'source': base_source_type,
+                'host': self.base_h.text(),
+                'port': self.base_p.text() if base_source_type == "NTRIP Server" else self.base_port.currentText(),
+                'serial_port': self.base_port.currentText(),
+                'baudrate': int(self.base_baudrate.currentText()),
+                'databits': 8,
+                'stopbits': 1.0,
+                'parity': 'None',
+                'flowctrl': 'None',
+                'mountpoint': self.base_m.text(),
+                'user': self.base_u.text(),
+                'password': self.base_pw.text(),
+                'file_path': '',
+                'replay_speed': 1.0,
+                'file_type': 'Auto Detect',
+                'final_results_only': False,
+                'data_format': 'RTCM3',
             },
             'APPROX_REC_POS': legacy_pos,
             'TARGET_SYSTEMS': target_systems

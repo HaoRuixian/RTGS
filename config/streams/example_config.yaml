@@ -41,6 +41,69 @@ eph_settings:
   replay_speed: 1.0
   file_type: Auto Detect              # Auto Detect, Broadcast RINEX, Precise SP3
 
+# RTK reference station or network correction stream. For VRS/FKP/MAC, use
+# the network correction mountpoint here and select Network RTK in Solver.
+base_settings:
+  source_type: NTRIP Server
+  host: ntrip.example.com
+  port: '2101'
+  mountpoint: BASE_OR_NETWORK_MOUNT
+  user: rtk_user
+  password: rtk_password
+  serial_port: COM2
+  baudrate: 115200
+  databits: 8
+  stopbits: 1.0
+  parity: None
+  flowctrl: None
+  data_format: RTCM3
+  enabled: false
+
+# Positioning processing options.
+positioning_settings:
+  # Precise PPP observation model and post-fit validation.
+  ppp_precise_model_enabled: true
+  ppp_apply_phase_windup: true
+  ppp_use_ssr_yaw: true
+  ppp_apply_shapiro_delay: true
+  ppp_apply_solid_earth_tide: true
+  ppp_apply_ocean_loading: true
+  ppp_apply_receiver_antenna: true
+  ppp_apply_satellite_antenna: true
+  ppp_independent_mode: false          # true: ignore RTCM/config/external PPP coordinates
+  ppp_observation_model: IFLC          # IFLC or UNCOMBINED
+  ppp_initial_ionosphere_sigma_m: 30.0
+  ppp_ionosphere_process_noise_mps: 0.001
+  ppp_estimate_trop_gradients: true
+  ppp_initial_trop_gradient_sigma_m: 0.01
+  ppp_trop_gradient_process_noise_mps: 1.0e-5
+  ppp_antex_file: ''                  # IGS ANTEX .atx file
+  ppp_blq_file: ''                    # Ocean-loading BLQ file
+  ppp_receiver_antenna: ''            # ANTEX type, blank uses RTCM descriptor
+  ppp_station_id: ''                  # Station key in the BLQ file
+  ppp_antenna_eccentricity_neu_m: [0.0, 0.0, 0.0]
+  ppp_auto_ssr_apc_reference: true     # SSRA* streams use APC coordinates
+  ppp_ssr_apc_reference: false        # true only for APC-referenced SSR orbits
+  ppp_postfit_enabled: true
+  ppp_max_code_postfit_residual_m: 3.0
+  ppp_max_phase_postfit_residual_m: 0.03
+  rtk_type: single_base               # single_base or network
+  rtk_network_protocol: VRS           # VRS, FKP, or MAC
+  rtk_rover_mode: kinematic           # kinematic, static, or static-start
+  rtk_rover_format: rtcm3             # rtcm3, ubx, unicore, oem4, sbf, rinex
+  rtk_base_format: rtcm3
+  rtk_frequency: l1+l2
+  rtk_ar_mode: fix-and-hold           # continuous, fix-and-hold, instantaneous, off
+  rtk_glonass_ar_mode: autocal
+  rtk_bds_ar: true
+  rtk_ar_ratio_threshold: 3.0
+  rtk_max_correction_age_s: 10.0
+  rtk_base_position_source: rtcm      # rtcm, llh, or xyz
+  rtk_base_position: [0.0, 0.0, 0.0]
+  rtk_gga_mode: auto                  # auto, configured, single, or off
+  rtk_gga_position: [0.0, 0.0, 0.0]  # latitude, longitude, ellipsoidal height
+  rtk_gga_cycle_ms: 5000
+
 # Receiver approximate position (ECEF coordinates in meters)
 # Set to null to omit approximate position
 approx_rec_pos: null

@@ -10,7 +10,11 @@ Run the application from the project root:
 python gui_main.py
 ```
 
-The launcher displays four workbench entries. The completed production workflow is **Signal Quality Monitoring**.
+The launcher displays the monitoring and analysis workbenches. The independent batch converter is launched directly:
+
+```powershell
+python rtcm_batch_gui.py
+```
 
 <p align="center">
   <img src="../assets/launch.png" alt="RTGS launcher" width="100%">
@@ -31,7 +35,19 @@ Main areas:
 - SNR Display tab: per-satellite or per-signal SNR analysis.
 - Bottom panel: runtime log for connection, decoding, recording, and error messages.
 
-## 3. Configure Data Sources
+## 3. Batch-convert RTCM files
+
+Run `python rtcm_batch_gui.py`. Choose input and output directories, optionally include subfolders, and set the file extensions to scan. The converter supports:
+
+- G/R/E/C quick selection plus QZSS, SBAS, and NavIC;
+- independent C (pseudorange), L (carrier phase), D (Doppler), and S (SNR) switches;
+- UTC file splitting (one day by default) and output sampling interval;
+- configurable file-level parallel jobs; the default uses up to 16 worker processes based on CPU count;
+- RINEX station/receiver/antenna metadata, optional ECEF coordinates, and a reference UTC date for files whose names do not contain a date.
+
+When the stream has no Doppler value, selecting D does not fabricate one; the corresponding RINEX field remains blank. Existing output names are suffixed automatically unless **Overwrite existing output names** is enabled.
+
+## 4. Configure Data Sources
 
 Click **Config** in the top toolbar to configure stream input.
 
@@ -48,7 +64,7 @@ Optional streams:
 
 After saving the configuration, the module restarts the stream pipeline. **OBS: ON** means the observation stream is active. EPH and SSR show ON only after they are enabled and valid data has been received.
 
-## 4. Inspect Monitoring Results
+## 5. Inspect Monitoring Results
 
 Recommended checks:
 
@@ -60,7 +76,7 @@ Recommended checks:
 
 For RINEX replay, adjust the replay speed in the configuration dialog. During large or high-speed replay sessions, the UI automatically reduces refresh frequency to stay responsive.
 
-## 5. Record Observation Data
+## 6. Record Observation Data
 
 Click **Logging** in the top toolbar to open recording settings.
 
@@ -79,7 +95,7 @@ Available settings:
 
 Click **Start Recording** to begin recording. Use the same control area to stop recording. For formal data capture, wait until OBS is receiving stable data before starting the recording session.
 
-## 6. Recommended Workflow
+## 7. Recommended Workflow
 
 1. Start RTGS and open **Signal Quality Monitoring**.
 2. Use **Config** to configure the OBS data source.
@@ -89,7 +105,7 @@ Click **Start Recording** to begin recording. Use the same control area to stop 
 6. Use **Logging** to choose output directory, format, and sampling interval.
 7. Start recording, stop recording when finished, and close the module.
 
-## 7. Troubleshooting
+## 8. Troubleshooting
 
 | Symptom | Recommendation |
 | --- | --- |

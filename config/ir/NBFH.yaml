@@ -1,13 +1,12 @@
 station:
   station_id: NBFH
   receiver_position:
-    latitude_deg: 29.788156741686127
-    longitude_deg: 121.45548132767985
-    height_m: 19.303424552083015
-    x_m: -2890959.0587
-    y_m: 4725854.8085
-    z_m: 3150024.8212
-    source: manual
+    latitude_deg: 29.788157
+    longitude_deg: 121.455481
+    height_m: 19.303
+    x_m: -2195228.446
+    y_m: 4389559.4417
+    z_m: 4059965.1407000003
   antenna_height: 8.836
   monument_height: 0.8
   environment_type: coastal
@@ -17,15 +16,15 @@ input:
   signals: []
   exclude_constellations: []
   exclude_signals: []
-  sampling_interval: 30
+  sampling_interval: 30.0
 processing:
-  min_elevation_deg: 5
-  max_elevation_deg: 30
+  min_elevation_deg: 5.0
+  max_elevation_deg: 30.0
   live_arc_window_minutes: 30
   live_analysis_interval_seconds: 300
   elevation_rate_mode: monotonic
-  min_arc_length: 300
-  max_time_gap_seconds: 90
+  min_arc_length: 300.0
+  max_time_gap_seconds: 90.0
   detrend_method: polynomial_sin_elevation
   detrend_order: 2
   smoothing_method: none
@@ -44,13 +43,13 @@ ir:
   frequency_grid_size: 2048
   lomb_scargle:
     samples_per_peak: 8
-    oversampling_factor: 4
+    oversampling_factor: 4.0
     normalize: power
     floating_mean: true
   peak_selection:
     max_candidates: 1
     min_prominence: 0.05
-    min_width_bins: 1
+    min_width_bins: 1.0
     prefer_high_power: true
   harmonic_check: true
   use_rising_arcs: true
@@ -59,14 +58,15 @@ ir:
     q_rh: 5.0e-05
     q_amplitude: 6.0e-05
     measurement_variance: 1.3055
-    initial_rh_m: 8
-    initial_rh_variance: 1
-    local_state_variance: 1
+    initial_rh_m: 8.0
+    initial_rh_variance: 1.0
+    local_state_variance: 1.0
     init_min_samples: 12
     init_max_samples: 600
-    rh_init_min_height_m: 3
-    rh_init_max_height_m: 9
+    rh_init_min_height_m: 3.0
+    rh_init_max_height_m: 9.0
     rh_init_min_samples: 30
+    rh_init_min_arcs: 1
     rh_init_max_arcs: 8
     rh_init_max_samples_per_arc: 300
     output_interval_seconds: 60
@@ -78,38 +78,38 @@ geometry:
   compute_az_el_if_missing: false
   reflection_zones:
   - name: zone_1
-    min_elevation_deg: 5
-    max_elevation_deg: 30
+    min_elevation_deg: 5.0
+    max_elevation_deg: 30.0
     azimuth_windows:
-    - - 180
-      - 220
+    - - 180.0
+      - 220.0
   - name: zone_2
-    min_elevation_deg: 5
-    max_elevation_deg: 30
+    min_elevation_deg: 5.0
+    max_elevation_deg: 30.0
     azimuth_windows:
-    - - 90
-      - 180
+    - - 90.0
+      - 180.0
 qc:
-  min_peak_to_noise_ratio: 10
+  min_peak_to_noise_ratio: 10.0
   min_primary_peak_ratio: 1.25
-  min_arc_duration: 120
-  min_snr_amplitude: 1
+  min_arc_duration: 120.0
+  min_snr_amplitude: 1.0
   max_gap_ratio: 0.2
   reject_cycle_slip_suspects: false
   reject_multipath_outliers: true
-  cycle_slip_phase_jump_cycles: 8
+  cycle_slip_phase_jump_cycles: 8.0
 products:
   enable_reflector_height: true
   enable_sea_level: true
   enable_snow_depth: false
   sea_level_reference: 8.785
   enable_dynamic_sea_level_correction: true
-  dynamic_sea_level_window_hours: 3
+  dynamic_sea_level_window_hours: 3.0
   dynamic_sea_level_min_points: 6
   dynamic_sea_level_max_iterations: 12
   dynamic_sea_level_tolerance: 0.0001
   dynamic_sea_level_igg3_k0: 0.5
-  dynamic_sea_level_igg3_k1: 2
+  dynamic_sea_level_igg3_k1: 2.0
   dynamic_sea_level_min_weight: 1.0e-12
   dynamic_sea_level_regularization: 1.0e-12
   dynamic_sea_level_normalize_design: true

@@ -4,7 +4,7 @@ Mixed GNSS stream reader for serial links carrying RTCM and UBX messages.
 This reader exists to preserve the current RTCM processing pipeline while
 adding a narrow UBX-RXM-SFRBX decode path for SBAS raw navigation messages.
 The SBAS raw frames are converted into a lightweight Python message object
-which mirrors the parts of RTKLIB's ``sbsmsg_t`` needed to build ``seph``.
+which carries the SBAS fields needed to build Cartesian ephemeris records.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ UBX_ID_RXM_SFRBX = 0x13
 
 
 def getbitu(buff: bytes, pos: int, length: int) -> int:
-    """Extract unsigned bits using the same bit numbering convention as RTKLIB."""
+    """Extract unsigned bits using MSB-first numbering."""
     bits = 0
     for i in range(pos, pos + length):
         bits = (bits << 1) | ((buff[i // 8] >> (7 - i % 8)) & 1)
@@ -45,7 +45,7 @@ def getbitu(buff: bytes, pos: int, length: int) -> int:
 
 
 def setbitu(buff: bytearray, pos: int, length: int, value: int) -> None:
-    """Set unsigned bits using the same bit numbering convention as RTKLIB."""
+    """Set unsigned bits using MSB-first numbering."""
     for i in range(length):
         bit = (value >> (length - 1 - i)) & 1
         idx = pos + i
@@ -58,7 +58,7 @@ def setbitu(buff: bytearray, pos: int, length: int, value: int) -> None:
 
 @dataclass
 class SBASRawMessage:
-    """Minimal SBAS raw navigation message compatible with RTKLIB type-9 logic."""
+    """Minimal SBAS raw navigation message for type-9 decoding."""
 
     prn: int
     week: int
@@ -162,8 +162,9 @@ class MixedGNSSReader:
             msg = RTCMReader.parse(raw)
         except Exception:
             msg = None
-        if _rtcm_message_number(raw) == 4076 and _rtcm_crc_ok(raw):
-            msg = RawRTCMMessage(raw=raw, identity="4076")
+        message_number = _rtcm_message_number(raw)
+        if message_number in {1265, 1266, 1267, 1268, 1269, 1270, 4076} and _rtcm_crc_ok(raw):
+            msg = RawRTCMMessage(raw=raw, identity=str(message_number))
         return raw, msg
 
     def _read_unicore_ascii(self, prefix: bytes):
@@ -232,7 +233,7 @@ class MixedGNSSReader:
             return None
 
         # u-blox reports SBAS L1C/A as gnssId=1 and QZSS L1S with the same
-        # 250-bit page layout as SBAS. RTKLIB routes both through decode_snav().
+        # 250-bit page layout as SBAS and shares the same navigation decoder.
         if gnss_id == 1:
             prn = sv_id
         elif gnss_id == 5 and sig_id == 1:

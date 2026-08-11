@@ -1,4 +1,7 @@
-approx_rec_pos: null
+approx_rec_pos:
+- -2171646.234
+- 4385696.114
+- 4076742.303
 eph_settings:
   baudrate: 115200
   databits: 8
@@ -26,7 +29,7 @@ obs_settings:
   final_results_only: false
   flowctrl: None
   host: grserg.top
-  mountpoint: NB01
+  mountpoint: BUAA02
   parity: None
   password: hao20030801
   port: '2101'
@@ -54,7 +57,8 @@ positioning_settings:
   ppp_initial_clock_sigma_m: 1000.0
   ppp_position_process_noise_mps: 0.0
   ppp_station_apriori_sigma_m: 0.05
-  ppp_trop_process_noise_mps: 3.0e-06
+  ppp_trop_process_noise_mps: 5.0e-05
+  ppp_zwd_correlation_time_s: 604800.0
   ppp_use_station_apriori: false
   prefer_gps_only: false
   random_walk: 0.0
@@ -74,16 +78,16 @@ ssr_settings:
   file_type: Auto Detect
   final_results_only: false
   flowctrl: None
-  host: ''
-  mountpoint: ''
+  host: ntrip.data.gnss.ga.gov.au
+  mountpoint: SSRA00CAS0
   parity: None
-  password: ''
+  password: Hao20030801@
   port: '2101'
   replay_speed: 1.0
   serial_port: /dev/ttyS31
   source_type: NTRIP Server
   stopbits: 1.0
-  user: ''
+  user: hrx
 target_systems:
 - G
 - R

@@ -179,7 +179,7 @@ def SatPos_brdc_bds(t, eph):
     """
     Compute BeiDou satellite position and velocity from broadcast ephemeris.
 
-    This follows BNC's t_ephBDS::position implementation: BeiDou uses its own
+    BeiDou uses its own
     gravitational constant/earth rotation rate, and GEO spacecraft use the
     additional 5 degree X-rotation plus earth-fixed Z-rotation.
     """
@@ -361,7 +361,7 @@ def SatPos_brdc_glo(t_sow, eph):
 
 def SatPos_brdc_sbas(t_sow, eph):
     """
-    Compute SBAS GEO position from RTKLIB-style seph parameters.
+    Compute SBAS GEO position from Cartesian ephemeris parameters.
     """
 
     try:

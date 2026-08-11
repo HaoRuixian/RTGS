@@ -57,6 +57,7 @@ class SatelliteEphemerisState:
     """Interpolated satellite state from a file ephemeris provider."""
 
     position_ecef_m: np.ndarray
+    velocity_ecef_mps: np.ndarray | None = None
     clock_correction_s: float = 0.0
     source: str = ""
 
@@ -120,7 +121,7 @@ def _normalize_gps_sow(week: int, sow: float) -> tuple[int, float]:
     return week, sow
 
 
-def _rtklib_time_difference(time_sow: float, reference_sow: float) -> float:
+def _wrapped_time_difference(time_sow: float, reference_sow: float) -> float:
     dt = float(time_sow) - float(reference_sow)
     if dt > SECONDS_PER_WEEK / 2.0:
         dt -= SECONDS_PER_WEEK
@@ -420,7 +421,7 @@ def _compute_broadcast_clock(eph: dict, transmit_time: float) -> float:
     af1 = float(eph.get("af1", 0.0) or 0.0)
     af2 = float(eph.get("af2", 0.0) or 0.0)
     toc = float(eph.get("toc") or eph.get("Toc") or 0.0)
-    dt = _rtklib_time_difference(transmit_time, toc)
+    dt = _wrapped_time_difference(transmit_time, toc)
     saved_dt = dt
     for _ in range(2):
         dt = saved_dt - (af0 + af1 * dt + af2 * dt * dt)
@@ -435,7 +436,7 @@ def _compute_broadcast_clock(eph: dict, transmit_time: float) -> float:
         try:
             semi_major_axis = float(sqrt_a) ** 2
             mean_motion = math.sqrt(3.986005e14 / (semi_major_axis ** 3)) + float(delta_n)
-            tk = _rtklib_time_difference(transmit_time, float(toe))
+            tk = _wrapped_time_difference(transmit_time, float(toe))
             mean_anomaly = float(m0) + mean_motion * tk
             eccentric_anomaly = mean_anomaly
             for _ in range(10):
@@ -835,19 +836,23 @@ class FileEphemerisProvider:
             if built is None:
                 return None
             sys_type, payload = built
-            from core.BE2pos import brdc2pos
+            from core.BE2pos import brdc2state
 
-            position = brdc2pos(payload, sys_type, transmission_time)
-            if position is None:
+            state = brdc2state(payload, sys_type, transmission_time)
+            if state is None:
                 return None
+            position, velocity = state
 
             if np is None:
                 position_value = [float(item) for item in position]
+                velocity_value = [float(item) for item in velocity]
             else:
                 position_value = np.asarray(position, dtype=float)
+                velocity_value = np.asarray(velocity, dtype=float)
 
             return SatelliteEphemerisState(
                 position_ecef_m=position_value,
+                velocity_ecef_mps=velocity_value,
                 clock_correction_s=_compute_broadcast_clock(eph, transmission_time),
                 source="broadcast",
             )
@@ -870,6 +875,7 @@ class FileEphemerisProvider:
             _time_value, position, clock = records[insert_index]
             return SatelliteEphemerisState(
                 position_ecef_m=np.asarray(position, dtype=float),
+                velocity_ecef_mps=self._precise_velocity(satellite_id, insert_index),
                 clock_correction_s=float(clock or 0.0),
                 source="precise",
             )
@@ -885,6 +891,7 @@ class FileEphemerisProvider:
 
         weight = (target_time - left_time) / span
         position = np.asarray(left_position, dtype=float) * (1.0 - weight) + np.asarray(right_position, dtype=float) * weight
+        velocity = (np.asarray(right_position, dtype=float) - np.asarray(left_position, dtype=float)) / span
 
         if left_clock is None or right_clock is None:
             clock_value = left_clock if left_clock is not None else right_clock
@@ -893,9 +900,25 @@ class FileEphemerisProvider:
 
         return SatelliteEphemerisState(
             position_ecef_m=position,
+            velocity_ecef_mps=velocity,
             clock_correction_s=float(clock_value or 0.0),
             source="precise",
         )
+
+    def _precise_velocity(self, satellite_id: str, index: int) -> np.ndarray | None:
+        records = self.precise_records.get(satellite_id)
+        if not records or len(records) < 2:
+            return None
+        left_index = max(0, index - 1)
+        right_index = min(len(records) - 1, index + 1)
+        if left_index == right_index:
+            return None
+        left_time, left_position, _left_clock = records[left_index]
+        right_time, right_position, _right_clock = records[right_index]
+        span = float(right_time - left_time)
+        if span <= 0.0:
+            return None
+        return (np.asarray(right_position, dtype=float) - np.asarray(left_position, dtype=float)) / span
 
 
 class RinexObservationReader:
@@ -969,6 +992,11 @@ class RinexObservationReader:
                                 sat_state.sat_pos_ecef = state.position_ecef_m.tolist()
                             else:
                                 sat_state.sat_pos_ecef = list(state.position_ecef_m)
+                            if state.velocity_ecef_mps is not None:
+                                if hasattr(state.velocity_ecef_mps, "tolist"):
+                                    sat_state.sat_vel_ecef = state.velocity_ecef_mps.tolist()
+                                else:
+                                    sat_state.sat_vel_ecef = list(state.velocity_ecef_mps)
                             sat_state.sat_clk_corr = float(state.clock_correction_s)
                             sat_state.sat_var = 0.0
                             if receiver_position is not None:

@@ -237,8 +237,11 @@ class IOThread(threading.Thread):
                 except RuntimeError:
                     # Signal source has been deleted during shutdown
                     pass
-                # Wait 2 seconds before retry to avoid rapid reconnection attempts
-                time.sleep(2)
+                # Keep reconnect backoff interruptible so Stop remains responsive.
+                for _ in range(20):
+                    if not self.running:
+                        break
+                    time.sleep(0.1)
 
     def _run_serial(self):
         """Serial port data reception loop"""
@@ -321,8 +324,10 @@ class IOThread(threading.Thread):
                 except RuntimeError:
                     # Signal source has been deleted during shutdown
                     pass
-                # Wait 2 seconds before retry to avoid rapid reconnection attempts
-                time.sleep(2)
+                for _ in range(20):
+                    if not self.running:
+                        break
+                    time.sleep(0.1)
 
     def stop(self):
         """
@@ -332,6 +337,11 @@ class IOThread(threading.Thread):
         or when waiting for reconnection (within 3 seconds max).
         """
         self.running = False
+        if self.client is not None:
+            try:
+                self.client.close()
+            except Exception:
+                pass
 
 
 class RinexReplayThread(threading.Thread):
@@ -708,7 +718,7 @@ class LoggingThread(threading.Thread):
     - Real-time status reporting
     """
     
-    def __init__(self, settings: dict, ring_buffers: dict, merged_satellites: dict, signals: StreamSignals, logging_buffer: RingBuffer = None, get_latest_epoch=None):
+    def __init__(self, settings: dict, ring_buffers: dict, merged_satellites: dict, signals: StreamSignals, logging_buffer: RingBuffer = None, get_latest_epoch=None, handler=None):
         """
         Initialize logging thread.
         
@@ -724,6 +734,7 @@ class LoggingThread(threading.Thread):
             signals: StreamSignals instance for emitting log messages
             logging_buffer: RingBuffer专用的logging缓冲区（Binary格式时使用）
             get_latest_epoch: Optional callable that returns the latest EpochObservation
+            handler: Optional shared RTCMHandler used to read station metadata
         """
         super().__init__()
         self.settings = settings
@@ -732,6 +743,9 @@ class LoggingThread(threading.Thread):
         self.signals = signals
         self.logging_buffer = logging_buffer
         self.get_latest_epoch = get_latest_epoch
+        # Use the same handler as the processing thread so station metadata
+        # decoded from RTCM 1006/1033 is visible to the RINEX logger.
+        self.handler = handler
         self.daemon = True
         self.running = True
         self.stop_event = threading.Event()
@@ -825,13 +839,66 @@ class LoggingThread(threading.Thread):
         )
 
     def _update_rinex_writer_position(self, rinex_writer: RINEX3Writer) -> None:
-        """Push the latest station ECEF coordinates into the RINEX header state."""
-        approx_pos = getattr(get_global_config(), 'approx_rec_pos', None)
+        """Push the latest station state into the RINEX header."""
+        handler = self.handler or self._get_shared_rtcm_handler()
+        approx_pos = getattr(handler, "last_station_coords", None) if handler is not None else None
+        if not approx_pos:
+            approx_pos = getattr(get_global_config(), 'approx_rec_pos', None)
         try:
             if approx_pos and any(abs(float(v)) > 0.0 for v in approx_pos[:3]):
                 rinex_writer.set_approx_position(approx_pos)
         except (TypeError, ValueError):
+            pass
+
+        if handler is None:
             return
+
+        # RTCM 1033 carries the receiver/antenna descriptors and serial
+        # numbers.  Keep the configured values when a stream has not sent the
+        # descriptor yet, while allowing late 1033 messages to update the
+        # writer before it is closed and its header is refreshed.
+        receiver_type = str(getattr(handler, "last_receiver_type_descriptor", "") or "").strip()
+        receiver_serial = str(getattr(handler, "last_receiver_serial_number", "") or "").strip()
+        receiver_version = str(getattr(handler, "last_receiver_firmware_version", "") or "").strip()
+        antenna_type = str(getattr(handler, "last_antenna_descriptor", "") or "").strip()
+        antenna_number = str(getattr(handler, "last_antenna_serial_number", "") or "").strip()
+
+        if receiver_type:
+            rinex_writer.receiver_type = receiver_type
+        if receiver_serial:
+            rinex_writer.receiver_serial = rinex_writer._format_a20(receiver_serial).strip()
+        if receiver_version:
+            rinex_writer.receiver_version = rinex_writer._format_a20(receiver_version).strip()
+        if antenna_type:
+            rinex_writer.antenna_type = rinex_writer._format_a20(antenna_type).strip()
+        if antenna_number:
+            rinex_writer.antenna_number = rinex_writer._format_a20(antenna_number).strip()
+
+    def _rinex_station_metadata(self) -> dict:
+        """Return current RTCM station metadata with logging fallbacks."""
+        metadata = {
+            "receiver_type": "Generic",
+            "receiver_serial": "",
+            "receiver_version": "",
+            "antenna_type": "UNKNOWN",
+            "antenna_number": "",
+        }
+        handler = self.handler or self._get_shared_rtcm_handler()
+        if handler is None:
+            return metadata
+
+        values = {
+            "receiver_type": "last_receiver_type_descriptor",
+            "receiver_serial": "last_receiver_serial_number",
+            "receiver_version": "last_receiver_firmware_version",
+            "antenna_type": "last_antenna_descriptor",
+            "antenna_number": "last_antenna_serial_number",
+        }
+        for key, attribute in values.items():
+            value = str(getattr(handler, attribute, "") or "").strip()
+            if value:
+                metadata[key] = value
+        return metadata
     
     def run(self):
         """
@@ -917,12 +984,16 @@ class LoggingThread(threading.Thread):
                     }
 
                     marker_name = rinex_opts['station_code'] or safe_mount
+                    station_metadata = self._rinex_station_metadata()
                     rinex_writer = RINEX3Writer(
                         out_path,
                         marker_name=marker_name,
                         marker_number="0",
                         header_interval_seconds=float(sample_interval),
                         time_system="GPS",
+                        antenna_number=station_metadata["antenna_number"],
+                        receiver_serial=station_metadata["receiver_serial"],
+                        receiver_version=station_metadata["receiver_version"],
                         **rinex_opts,
                     )
                     if not rinex_writer.open():
@@ -935,8 +1006,11 @@ class LoggingThread(threading.Thread):
                     sys_obs_types = self._detect_obs_types(obs_source)
                     if not rinex_writer.write_header(
                         sys_obs_types=sys_obs_types,
-                        receiver_type="Generic",
-                        antenna_type="UNKNOWN",
+                        receiver_type=station_metadata["receiver_type"],
+                        antenna_type=station_metadata["antenna_type"],
+                        antenna_number=station_metadata["antenna_number"],
+                        receiver_serial=station_metadata["receiver_serial"],
+                        receiver_version=station_metadata["receiver_version"],
                     ):
                         raise Exception("Failed to write RINEX header")
 
@@ -1213,6 +1287,14 @@ class LoggingThread(threading.Thread):
             rinex_writer: RINEX3Writer instance
         """
         try:
+            if rinex_writer is None:
+                return
+
+            # Refresh station metadata independently of observation epochs so
+            # a late 1033 message is retained even when the stream stops
+            # before another aligned epoch arrives.
+            self._update_rinex_writer_position(rinex_writer)
+
             epoch_data = self._get_latest_epoch_data()
             if not epoch_data:
                 return
@@ -1231,8 +1313,6 @@ class LoggingThread(threading.Thread):
 
             if self.last_rinex_epoch_time == aligned_epoch_time:
                 return
-
-            self._update_rinex_writer_position(rinex_writer)
 
             if not rinex_writer.header_written:
                 self.signals.log_signal.emit(f"[Logging] Warning: RINEX header not written before first observation")

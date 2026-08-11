@@ -13,7 +13,7 @@ eph_settings:
   password: Hao20030801@
   port: '2101'
   replay_speed: 1.0
-  serial_port: No ports found
+  serial_port: /dev/ttyS31
   source_type: NTRIP Server
   stopbits: 1.0
   user: hrx
@@ -31,11 +31,13 @@ obs_settings:
   password: hao20030801
   port: '2101'
   replay_speed: 1.0
-  serial_port: No ports found
+  serial_port: /dev/ttyS31
   source_type: NTRIP Server
   stopbits: 1.0
   user: adminHRX
 positioning_settings:
+  allow_gps_fallback: false
+  code_sigma_m: 1.0
   cutoff_elevation_deg: 10.0
   fixed_std_pos: 2.5
   gnss_systems:
@@ -48,14 +50,18 @@ positioning_settings:
   ionosphere_option: IFLC
   max_pdop: 10.0
   min_satellites: 4
+  ppp_initial_ambiguity_sigma_m: 1000.0
+  ppp_initial_clock_sigma_m: 1000.0
+  ppp_position_process_noise_mps: 0.0
+  ppp_station_apriori_sigma_m: 0.05
+  ppp_trop_process_noise_mps: 3.0e-06
+  ppp_use_station_apriori: false
   prefer_gps_only: false
-  allow_gps_fallback: false
+  random_walk: 0.0
   require_ssr_corrections: true
-  code_sigma_m: 1.0
+  smoothing_window: 10
   system_code_weight_factors:
     R: 5.0
-  random_walk: 0.0
-  smoothing_window: 10
   troposphere_model: Sastamoinen
   uncertain_std_pos: 5.0
   use_smoothing: false
@@ -69,12 +75,12 @@ ssr_settings:
   final_results_only: false
   flowctrl: None
   host: ntrip.data.gnss.ga.gov.au
-  mountpoint: SSRA00GFZ0
+  mountpoint: SSRA00CAS0
   parity: None
   password: Hao20030801@
   port: '2101'
   replay_speed: 1.0
-  serial_port: No ports found
+  serial_port: /dev/ttyS31
   source_type: NTRIP Server
   stopbits: 1.0
   user: hrx

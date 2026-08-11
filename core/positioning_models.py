@@ -2,6 +2,7 @@
 Data models for GNSS positioning results and state.
 """
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from enum import Enum
 
@@ -69,6 +70,7 @@ class PositioningSolution:
     ecef_x: float  # ECEF X coordinate (meters)
     ecef_y: float  # ECEF Y coordinate (meters)
     ecef_z: float  # ECEF Z coordinate (meters)
+    epoch_time: Optional[datetime] = None  # timezone-aware UTC where available
     
     # Velocity (if available)
     velocity_north: float = 0.0  # m/s
@@ -93,6 +95,23 @@ class PositioningSolution:
     std_east: float = 0.0  # meters
     std_up: float = 0.0  # meters
     std_clock: float = 0.0  # meters
+
+    # Actual error against the precise receiver coordinate supplied by the
+    # stream configuration or RTCM station messages.  These are distinct from
+    # the covariance-derived standard deviations above.
+    has_reference_position: bool = False
+    reference_source: str = ""
+    reference_ecef_x: float = 0.0
+    reference_ecef_y: float = 0.0
+    reference_ecef_z: float = 0.0
+    error_ecef_x: float = 0.0
+    error_ecef_y: float = 0.0
+    error_ecef_z: float = 0.0
+    error_east: float = 0.0
+    error_north: float = 0.0
+    error_up: float = 0.0
+    error_horizontal: float = 0.0
+    error_3d: float = 0.0
     
     # DOP values
     gdop: float = 0.0
@@ -100,6 +119,10 @@ class PositioningSolution:
     hdop: float = 0.0
     vdop: float = 0.0
     tdop: float = 0.0
+    # Zenith troposphere components estimated by PPP, in metres.
+    ztd: float = 0.0
+    zhd: float = 0.0
+    zwd: float = 0.0
     
     # Quality indicators
     num_satellites: int = 0
@@ -107,6 +130,10 @@ class PositioningSolution:
     variance_unit_weight: float = 0.0
     convergence: bool = False
     status: SolutionStatus = SolutionStatus.NO_FIX
+    # Native RTK quality indicators.  They remain zero for SPP/PPP.
+    differential_age_s: float = 0.0
+    ambiguity_ratio: float = 0.0
+    rtk_quality: int = 0
     
     # Residuals statistics
     residuals_mean: float = 0.0

@@ -574,7 +574,7 @@ def test_glonass_single_frequency_does_not_reapply_tau_as_code_delay():
     assert corrected_pr == pytest.approx(20_000_000.0)
 
 
-def test_spp_code_biases_are_added_to_observations_like_bnc():
+def test_spp_code_biases_are_added_to_observations_with_precise_model():
     ssr_store = SsrCorrectionStore()
     ssr_store.update_code_biases("C06", {"2I": 1.25, "6I": -0.50})
     handler = SimpleNamespace(ssr_corrections=ssr_store, get_ephemeris=lambda _sat_id: None)
@@ -596,7 +596,7 @@ def test_spp_code_biases_are_added_to_observations_like_bnc():
     assert corrected_pr == pytest.approx(expected)
 
 
-def test_spp_code_variance_uses_bnc_iflc_sigma_and_glonass_deweighting():
+def test_spp_code_variance_uses_precise_iflc_sigma_and_glonass_deweighting():
     positioner = SPPPositioner(
         config={
             "ionosphere_option": "IFLC",
@@ -678,7 +678,7 @@ def test_spp_positioner_does_not_hide_numeric_multi_gnss_solution_with_gps_fallb
     assert "PDOP" in result.quality_reason
 
 
-def test_spp_positioner_follows_rtklib_rank_requirement_for_multi_gnss_offsets():
+def test_spp_positioner_enforces_rank_requirement_for_multi_gnss_offsets():
     receiver_ecef = np.array([3875000.0, 332500.0, 5029000.0], dtype=float)
     receiver_clock_bias_m = 32000.0
 

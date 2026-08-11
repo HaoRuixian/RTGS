@@ -79,6 +79,39 @@ def get_app_stylesheet(scale: float = 1.0):
         border-radius: {radius};
     }}
 
+    QFrame#ControlBar, QFrame#MapHeader {{
+        background-color: {bg_card};
+        border: 1px solid {border};
+        border-radius: {radius};
+    }}
+
+    QLabel#DialogTitle {{
+        font-size: {max(16, int(19 * scale))}px;
+        font-weight: bold;
+    }}
+    QLabel#SectionTitle {{
+        font-weight: bold;
+        color: {fg_main};
+    }}
+    QLabel[class="muted"] {{
+        color: {fg_muted};
+    }}
+
+    QGroupBox {{
+        background-color: {bg_card};
+        border: 1px solid {border};
+        border-radius: {radius};
+        margin-top: 10px;
+        padding: 12px 8px 8px 8px;
+        font-weight: 600;
+    }}
+    QGroupBox::title {{
+        subcontrol-origin: margin;
+        left: 10px;
+        padding: 0 5px;
+        color: {fg_muted};
+    }}
+
     /* 按钮 - 增强对比度 */
     QPushButton {{
         background-color: {bg_input};
@@ -98,6 +131,26 @@ def get_app_stylesheet(scale: float = 1.0):
     }}
     QPushButton:default {{
         border: 2px solid {accent};
+    }}
+    QPushButton#PrimaryButton {{
+        background-color: {accent};
+        border-color: {accent};
+        color: white;
+        font-weight: 600;
+    }}
+    QPushButton#PrimaryButton:hover {{
+        background-color: {"#60A5FA" if is_dark else "#1D4ED8"};
+    }}
+
+    QToolButton {{
+        background-color: transparent;
+        border: 1px solid transparent;
+        border-radius: 4px;
+        padding: 4px;
+    }}
+    QToolButton:hover, QToolButton:checked {{
+        background-color: {bg_hover};
+        border-color: {border};
     }}
 
     /* 输入控件 */
@@ -135,7 +188,7 @@ def get_app_stylesheet(scale: float = 1.0):
         font-weight: bold;
         border-bottom: 2px solid {bg_card}; /* 掩盖下边框 */
     }}
-    QTabBar::tab:hover:not(:selected) {{
+    QTabBar::tab:hover {{
         background-color: {bg_hover};
     }}
 
@@ -154,6 +207,12 @@ def get_app_stylesheet(scale: float = 1.0):
         background-color: {bg_card};
         alternate-background-color: {bg_input};
         selection-background-color: {selection};
+        border: 1px solid {border};
+        border-radius: {radius};
+    }}
+    QTableWidget::item {{
+        padding: 5px 8px;
+        border-bottom: 1px solid {border};
     }}
 
     /* 滚动条 - 简约化 */

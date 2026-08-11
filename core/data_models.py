@@ -42,6 +42,7 @@ class SatelliteState:
     azimuth: float | None = None
     elevation: float | None = None
     sat_pos_ecef: list[float] | None = None
+    sat_vel_ecef: list[float] | None = None
     signals: SignalMap = field(default_factory=dict)
 
 

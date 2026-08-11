@@ -66,6 +66,35 @@ class SsrClockCorrection:
     delta_clock_rate_mps: float = 0.0
     delta_clock_accel_mps2: float = 0.0
     high_rate_clock_m: float = 0.0
+    high_rate_epoch_time: float | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SsrPhaseBias:
+    """One signal-specific SSR carrier-phase bias."""
+
+    signal_id: str
+    bias_m: float
+    integer_indicator: bool = False
+    wide_lane_indicator: int = 0
+    discontinuity_counter: int = 0
+
+
+@dataclass(slots=True)
+class SsrPhaseBiasCorrection:
+    """Satellite phase-bias epoch and its ambiguity-resolution metadata."""
+
+    satellite_id: str
+    epoch_time: float
+    update_interval: int | None = None
+    iod_ssr: int | None = None
+    provider_id: int | None = None
+    solution_id: int | None = None
+    dispersive_consistency: bool = False
+    mw_consistency: bool = False
+    yaw_angle_deg: float = 0.0
+    yaw_rate_deg_s: float = 0.0
+    biases: Dict[str, SsrPhaseBias] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -78,6 +107,7 @@ class AppliedSsrState:
     applied: bool = False
     orbit_applied: bool = False
     clock_applied: bool = False
+    rejection_reason: str = ""
 
 
 @dataclass(slots=True)
@@ -87,6 +117,7 @@ class SsrSnapshot:
     orbit: Dict[str, SsrOrbitCorrection] = field(default_factory=dict)
     clock: Dict[str, SsrClockCorrection] = field(default_factory=dict)
     code_biases: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    phase_biases: Dict[str, SsrPhaseBiasCorrection] = field(default_factory=dict)
     ura: Dict[str, float] = field(default_factory=dict)
 
 
@@ -101,7 +132,7 @@ def _time_difference(time_sow: float, reference_sow: float) -> float:
 
 
 def _ssr_time_delta(time_sow: float, reference_sow: float, update_interval: int | None) -> float:
-    """Return BNC-compatible SSR extrapolation time delta."""
+    """Return the midpoint-adjusted SSR extrapolation time delta."""
     dt = _time_difference(time_sow, reference_sow)
     try:
         index = int(update_interval) if update_interval is not None else 0
@@ -110,6 +141,39 @@ def _ssr_time_delta(time_sow: float, reference_sow: float, update_interval: int 
     if 0 < index < len(SSR_UPDATE_INTERVAL_SECONDS):
         dt -= 0.5 * SSR_UPDATE_INTERVAL_SECONDS[index]
     return dt
+
+
+def ephemeris_iod_for_ssr(ephemeris: Mapping[str, object]) -> Optional[int]:
+    """Return the broadcast-ephemeris IOD used by SSR orbit corrections.
+
+    BDS D1/D2 is the important exception to the common IODE/IODnav lookup.
+    BeiDou SSR derives its IOD from the GPST-aligned clock epoch instead of
+    using the five-bit AODE carried by RTCM 1042.
+    """
+    satellite_id = str(ephemeris.get("satellite_id", "")).upper()
+    system = satellite_id[:1]
+    if not system:
+        system_name = str(ephemeris.get("system", "")).strip().upper()
+        if system_name in {"BEIDOU", "BDS"}:
+            system = "C"
+
+    if system == "C" and "aode" in ephemeris:
+        try:
+            toc_gpst = float(ephemeris.get("toc"))
+        except (TypeError, ValueError, OverflowError):
+            toc_gpst = math.nan
+        if math.isfinite(toc_gpst):
+            return int(toc_gpst / 720.0) % 240
+
+    for key in ("iode", "iod_nav", "aode", "iodc"):
+        value = ephemeris.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return None
 
 
 def _finite_vector3(values: object) -> Optional[np.ndarray]:
@@ -125,6 +189,21 @@ def _finite_vector3(values: object) -> Optional[np.ndarray]:
     return vec.copy()
 
 
+def _same_correction_set(first: object, second: object) -> bool:
+    """Return whether two SSR records can be combined safely."""
+    for attribute in ("provider_id", "solution_id", "iod_ssr"):
+        first_value = getattr(first, attribute, None)
+        second_value = getattr(second, attribute, None)
+        if first_value is None or second_value is None:
+            continue
+        try:
+            if int(first_value) != int(second_value):
+                return False
+        except (TypeError, ValueError, OverflowError):
+            return False
+    return True
+
+
 class SsrCorrectionStore:
     """Thread-safe cache for live SSR orbit, clock, bias, and URA corrections."""
 
@@ -133,13 +212,16 @@ class SsrCorrectionStore:
         *,
         max_orbit_age_seconds: float = 120.0,
         max_clock_age_seconds: float = 60.0,
+        max_phase_bias_age_seconds: float = 120.0,
     ) -> None:
         self.max_orbit_age_seconds = float(max_orbit_age_seconds)
         self.max_clock_age_seconds = float(max_clock_age_seconds)
+        self.max_phase_bias_age_seconds = float(max_phase_bias_age_seconds)
         self._orbit: Dict[str, SsrOrbitCorrection] = {}
         self._clock: Dict[str, SsrClockCorrection] = {}
         self._base_clock: Dict[str, SsrClockCorrection] = {}
         self._code_biases: Dict[str, Dict[str, float]] = {}
+        self._phase_biases: Dict[str, SsrPhaseBiasCorrection] = {}
         self._ura: Dict[str, float] = {}
         self._lock = threading.Lock()
 
@@ -155,24 +237,30 @@ class SsrCorrectionStore:
     def update_high_rate_clock(self, correction: SsrClockCorrection) -> None:
         with self._lock:
             base = self._base_clock.get(correction.satellite_id)
-            if base is None:
+            if base is None or not _same_correction_set(base, correction):
                 return
             self._clock[correction.satellite_id] = SsrClockCorrection(
                 satellite_id=correction.satellite_id,
-                epoch_time=correction.epoch_time,
-                update_interval=correction.update_interval,
-                iod_ssr=correction.iod_ssr,
-                provider_id=correction.provider_id,
-                solution_id=correction.solution_id,
+                # Polynomial terms remain referenced to the base-clock epoch.
+                epoch_time=base.epoch_time,
+                update_interval=base.update_interval,
+                iod_ssr=base.iod_ssr,
+                provider_id=base.provider_id,
+                solution_id=base.solution_id,
                 delta_clock_m=base.delta_clock_m,
                 delta_clock_rate_mps=base.delta_clock_rate_mps,
                 delta_clock_accel_mps2=base.delta_clock_accel_mps2,
                 high_rate_clock_m=correction.high_rate_clock_m,
+                high_rate_epoch_time=correction.epoch_time,
             )
 
     def update_code_biases(self, satellite_id: str, code_biases: Mapping[str, float]) -> None:
         with self._lock:
             self._code_biases[satellite_id] = {str(key): float(value) for key, value in code_biases.items()}
+
+    def update_phase_biases(self, correction: SsrPhaseBiasCorrection) -> None:
+        with self._lock:
+            self._phase_biases[correction.satellite_id] = correction
 
     def update_ura(self, satellite_id: str, ura: float) -> None:
         with self._lock:
@@ -190,6 +278,44 @@ class SsrCorrectionStore:
         with self._lock:
             return dict(self._code_biases.get(satellite_id, {}))
 
+    def get_phase_biases(
+        self,
+        satellite_id: str,
+        *,
+        time_sow: float | None = None,
+    ) -> Optional[SsrPhaseBiasCorrection]:
+        """Return a fresh satellite phase-bias correction, if available."""
+        with self._lock:
+            correction = self._phase_biases.get(satellite_id)
+            if correction is None:
+                return None
+            if time_sow is not None:
+                age = abs(_time_difference(float(time_sow), correction.epoch_time))
+                if age > self.max_phase_bias_age_seconds:
+                    return None
+            return correction
+
+    def phase_bias_matches_orbit_clock(
+        self,
+        satellite_id: str,
+        correction: SsrPhaseBiasCorrection,
+    ) -> bool:
+        """Return whether a phase bias belongs to the active state solution."""
+        with self._lock:
+            orbit = self._orbit.get(satellite_id)
+            clock = self._clock.get(satellite_id)
+        if orbit is None and clock is None:
+            # Phase-only stores are valid for already-corrected satellite
+            # states and for deterministic test/replay inputs.
+            return True
+        if orbit is None or clock is None:
+            return False
+        return (
+            _same_correction_set(orbit, clock)
+            and _same_correction_set(orbit, correction)
+            and _same_correction_set(clock, correction)
+        )
+
     def get_ura(self, satellite_id: str) -> Optional[float]:
         with self._lock:
             return self._ura.get(satellite_id)
@@ -205,6 +331,7 @@ class SsrCorrectionStore:
                 orbit=dict(self._orbit),
                 clock=dict(self._clock),
                 code_biases={sat: dict(values) for sat, values in self._code_biases.items()},
+                phase_biases=dict(self._phase_biases),
                 ura=dict(self._ura),
             )
 
@@ -214,6 +341,7 @@ class SsrCorrectionStore:
             self._clock.clear()
             self._base_clock.clear()
             self._code_biases.clear()
+            self._phase_biases.clear()
             self._ura.clear()
 
     def apply_to_state(
@@ -245,10 +373,24 @@ class SsrCorrectionStore:
             clock = self._clock.get(satellite_id)
 
         if orbit is None or clock is None:
+            missing = "orbit-and-clock-missing"
+            if orbit is not None:
+                missing = "clock-missing"
+            elif clock is not None:
+                missing = "orbit-missing"
             return AppliedSsrState(
                 position_m=corrected_position,
                 clock_bias_s=corrected_clock,
                 velocity_mps=corrected_velocity,
+                rejection_reason=missing,
+            )
+
+        if not _same_correction_set(orbit, clock):
+            return AppliedSsrState(
+                position_m=corrected_position,
+                clock_bias_s=corrected_clock,
+                velocity_mps=corrected_velocity,
+                rejection_reason="correction-set-mismatch",
             )
 
         if ephemeris_iod is not None and orbit.iod is not None:
@@ -258,12 +400,14 @@ class SsrCorrectionStore:
                         position_m=corrected_position,
                         clock_bias_s=corrected_clock,
                         velocity_mps=corrected_velocity,
+                        rejection_reason="iod-mismatch",
                     )
             except (TypeError, ValueError):
                 return AppliedSsrState(
                     position_m=corrected_position,
                     clock_bias_s=corrected_clock,
                     velocity_mps=corrected_velocity,
+                    rejection_reason="invalid-iod",
                 )
 
         orbit_age = _time_difference(transmit_time, orbit.epoch_time)
@@ -273,7 +417,27 @@ class SsrCorrectionStore:
                 position_m=corrected_position,
                 clock_bias_s=corrected_clock,
                 velocity_mps=corrected_velocity,
+                rejection_reason="stale-correction",
             )
+
+        if clock.high_rate_epoch_time is not None:
+            high_rate_age = abs(
+                _time_difference(transmit_time, clock.high_rate_epoch_time)
+            )
+            if high_rate_age > min(self.max_clock_age_seconds, 10.0):
+                # A high-rate delta is not part of the base polynomial and
+                # must not survive a dropped high-rate update.
+                clock = SsrClockCorrection(
+                    satellite_id=clock.satellite_id,
+                    epoch_time=clock.epoch_time,
+                    update_interval=clock.update_interval,
+                    iod_ssr=clock.iod_ssr,
+                    provider_id=clock.provider_id,
+                    solution_id=clock.solution_id,
+                    delta_clock_m=clock.delta_clock_m,
+                    delta_clock_rate_mps=clock.delta_clock_rate_mps,
+                    delta_clock_accel_mps2=clock.delta_clock_accel_mps2,
+                )
 
         orbit_dt = _ssr_time_delta(transmit_time, orbit.epoch_time, orbit.update_interval)
         rac_delta = np.array(
@@ -290,6 +454,7 @@ class SsrCorrectionStore:
                 position_m=corrected_position,
                 clock_bias_s=corrected_clock,
                 velocity_mps=corrected_velocity,
+                rejection_reason="invalid-orbit-frame",
             )
 
         clock_dt = _ssr_time_delta(transmit_time, clock.epoch_time, clock.update_interval)
@@ -304,6 +469,7 @@ class SsrCorrectionStore:
                 position_m=corrected_position,
                 clock_bias_s=corrected_clock,
                 velocity_mps=corrected_velocity,
+                rejection_reason="invalid-clock-correction",
             )
 
         corrected_position = position - transform @ rac_delta

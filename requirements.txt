@@ -8,12 +8,14 @@ PySide6>=6.4.0
 # Data Processing & Scientific Computing
 numpy>=1.21.0
 matplotlib>=3.5.0
+Pillow>=9.0.0
 pandas>=2.2.0
 scipy>=1.11.0
 PyYAML>=6.0
 
 # GNSS/RTCM Protocol Support
 pyrtcm
+pynmeagps>=1.0.0
 
 # Hardware Communication
 pyserial>=3.5

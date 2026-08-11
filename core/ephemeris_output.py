@@ -11,6 +11,7 @@ import numpy as np
 
 from core.BE2pos import brdc2state
 from core.gnss_time import GNSSTime
+from core.ssr import ephemeris_iod_for_ssr
 
 
 def _normalize_datetime(value: datetime) -> datetime:
@@ -47,18 +48,6 @@ def _time_difference(time_sow: float, reference_sow: float) -> float:
     elif dt < -302_400.0:
         dt += 604_800.0
     return dt
-
-
-def _ephemeris_iod(eph: Mapping[str, object]) -> int | None:
-    for key in ("iode", "iod_nav", "aode", "iodc"):
-        value = eph.get(key)
-        if value is None:
-            continue
-        try:
-            return int(value)
-        except (TypeError, ValueError):
-            continue
-    return None
 
 
 def _finite_vector3(values: object):
@@ -196,7 +185,7 @@ def build_sp3_states(
                 velocity,
                 clock_bias_s=clock,
                 transmit_time=gps_sow,
-                ephemeris_iod=_ephemeris_iod(eph),
+                ephemeris_iod=ephemeris_iod_for_ssr(eph),
             )
             corrected_position = _finite_vector3(corrected.position_m)
             if corrected_position is not None:

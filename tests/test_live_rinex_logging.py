@@ -89,7 +89,7 @@ def _load_monitoring_workers_module(monkeypatch):
     return workers_module
 
 
-def _build_logging_thread(logging_thread_cls, *, latest_epoch_time=None):
+def _build_logging_thread(logging_thread_cls, *, latest_epoch_time=None, handler=None):
     signals = SimpleNamespace(
         log_signal=SimpleNamespace(emit=lambda *_args, **_kwargs: None),
         status_signal=SimpleNamespace(emit=lambda *_args, **_kwargs: None),
@@ -108,6 +108,7 @@ def _build_logging_thread(logging_thread_cls, *, latest_epoch_time=None):
         merged_satellites={},
         signals=signals,
         get_latest_epoch=(lambda: latest_epoch),
+        handler=handler,
     )
 
 
@@ -148,3 +149,51 @@ def test_logging_thread_maps_ephemeris_formats_to_file_extensions(monkeypatch):
     assert workers_module.LoggingThread._file_extension_for_format("rinex") == "rnx"
     assert workers_module.LoggingThread._file_extension_for_format("rinex_nav") == "rnx"
     assert workers_module.LoggingThread._file_extension_for_format("sp3") == "sp3"
+
+
+def test_logging_thread_uses_rtcm_1006_1033_metadata_for_rinex(monkeypatch):
+    workers_module = _load_monitoring_workers_module(monkeypatch)
+    handler = SimpleNamespace(
+        last_station_coords=[1.0, 2.0, 3.0],
+        last_receiver_type_descriptor="SEPT MOSAIC-X5",
+        last_receiver_serial_number="4014259",
+        last_receiver_firmware_version="4.14.4",
+        last_antenna_descriptor="LEIAR25.R4 NONE",
+        last_antenna_serial_number="725235",
+    )
+    logging_thread = _build_logging_thread(
+        workers_module.LoggingThread,
+        handler=handler,
+    )
+
+    metadata = logging_thread._rinex_station_metadata()
+    assert metadata == {
+        "receiver_type": "SEPT MOSAIC-X5",
+        "receiver_serial": "4014259",
+        "receiver_version": "4.14.4",
+        "antenna_type": "LEIAR25.R4 NONE",
+        "antenna_number": "725235",
+    }
+
+    class _Writer:
+        receiver_type = "Generic"
+        receiver_serial = "00"
+        receiver_version = ""
+        antenna_type = "UNKNOWN"
+        antenna_number = ""
+
+        @staticmethod
+        def _format_a20(value):
+            return str(value or "").strip().ljust(20)
+
+        def set_approx_position(self, value):
+            self.approx_position = value
+
+    writer = _Writer()
+    logging_thread._update_rinex_writer_position(writer)
+    assert writer.approx_position == [1.0, 2.0, 3.0]
+    assert writer.receiver_type == "SEPT MOSAIC-X5"
+    assert writer.receiver_serial.strip() == "4014259"
+    assert writer.receiver_version.strip() == "4.14.4"
+    assert writer.antenna_type.strip() == "LEIAR25.R4 NONE"
+    assert writer.antenna_number.strip() == "725235"

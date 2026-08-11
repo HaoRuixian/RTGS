@@ -186,7 +186,7 @@ def SatPos_brdc_glo(t_sow, eph):
 
 def SatPos_brdc_sbas(t_sow, eph):
     """
-    Compute SBAS GEO position from RTKLIB-style seph parameters.
+    Compute SBAS GEO position from Cartesian ephemeris parameters.
     """
 
     try:

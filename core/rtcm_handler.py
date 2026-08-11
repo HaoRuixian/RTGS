@@ -13,7 +13,13 @@ from core.geo_utils import calculate_az_el, get_freq
 import core.BE2pos as BE2pos 
 from core.global_config import get_global_config, update_general_settings
 from core.broadcast_ephemeris import get_shared_broadcast_ephemeris
-from core.ssr import SsrClockCorrection, SsrCorrectionStore, SsrOrbitCorrection
+from core.ssr import (
+    SsrClockCorrection,
+    SsrCorrectionStore,
+    SsrOrbitCorrection,
+    SsrPhaseBias,
+    SsrPhaseBiasCorrection,
+)
 from core.unicore import UnicoreMessage
 import threading
 import math
@@ -68,37 +74,53 @@ IGS_SSR_MESSAGE_DEFINITIONS = {
     23: {"kind": "combined", "system": "G"},
     24: {"kind": "high_rate_clock", "system": "G"},
     25: {"kind": "code_bias", "system": "G"},
+    26: {"kind": "phase_bias", "system": "G"},
     27: {"kind": "ura", "system": "G"},
     41: {"kind": "orbit", "system": "R"},
     42: {"kind": "clock", "system": "R"},
     43: {"kind": "combined", "system": "R"},
     44: {"kind": "high_rate_clock", "system": "R"},
     45: {"kind": "code_bias", "system": "R"},
+    46: {"kind": "phase_bias", "system": "R"},
     47: {"kind": "ura", "system": "R"},
     61: {"kind": "orbit", "system": "E"},
     62: {"kind": "clock", "system": "E"},
     63: {"kind": "combined", "system": "E"},
     64: {"kind": "high_rate_clock", "system": "E"},
     65: {"kind": "code_bias", "system": "E"},
+    66: {"kind": "phase_bias", "system": "E"},
     67: {"kind": "ura", "system": "E"},
     81: {"kind": "orbit", "system": "J"},
     82: {"kind": "clock", "system": "J"},
     83: {"kind": "combined", "system": "J"},
     84: {"kind": "high_rate_clock", "system": "J"},
     85: {"kind": "code_bias", "system": "J"},
+    86: {"kind": "phase_bias", "system": "J"},
     87: {"kind": "ura", "system": "J"},
     101: {"kind": "orbit", "system": "C"},
     102: {"kind": "clock", "system": "C"},
     103: {"kind": "combined", "system": "C"},
     104: {"kind": "high_rate_clock", "system": "C"},
     105: {"kind": "code_bias", "system": "C"},
+    106: {"kind": "phase_bias", "system": "C"},
     107: {"kind": "ura", "system": "C"},
     121: {"kind": "orbit", "system": "S"},
     122: {"kind": "clock", "system": "S"},
     123: {"kind": "combined", "system": "S"},
     124: {"kind": "high_rate_clock", "system": "S"},
     125: {"kind": "code_bias", "system": "S"},
+    126: {"kind": "phase_bias", "system": "S"},
     127: {"kind": "ura", "system": "S"},
+}
+
+
+SSR_PHASE_BIAS_SYSTEMS = {
+    "1265": "G",
+    "1266": "R",
+    "1267": "E",
+    "1268": "J",
+    "1269": "S",
+    "1270": "C",
 }
 
 
@@ -323,12 +345,16 @@ class RTCMHandler:
             elif msg_id in ["1005", "1006"]:
                 # Store station coordinates for monitoring module to use.
                 # Will only update global config if monitoring mode is active.
-                if hasattr(msg, "DF025"):
-                    try:
-                        coords = [float(msg.DF025), float(msg.DF026), float(msg.DF027)]
-                        self.last_station_coords = coords
-                    except (ValueError, TypeError):
-                        pass
+                try:
+                    coords = [
+                        float(getattr(msg, "DF025")),
+                        float(getattr(msg, "DF026")),
+                        float(getattr(msg, "DF027")),
+                    ]
+                except (AttributeError, ValueError, TypeError):
+                    coords = None
+                if coords is not None and all(math.isfinite(value) for value in coords):
+                    self.last_station_coords = coords
 
             # --- Station receiver/antenna descriptors ---
             elif msg_id in ["1007", "1008", "1033"]:
@@ -357,6 +383,9 @@ class RTCMHandler:
             elif msg_id == "4076":
                 return self._handle_igs_ssr_message(msg, epoch_data)
 
+            elif msg_id in SSR_PHASE_BIAS_SYSTEMS:
+                return self._handle_ssr_phase_bias_message(msg, epoch_data)
+
             elif msg_id in SSR_MESSAGE_DEFINITIONS:
                 return self._handle_ssr_message(msg, epoch_data)
             
@@ -368,20 +397,54 @@ class RTCMHandler:
 
     @staticmethod
     def _extract_rtcm_text(msg, counter_attr, char_prefix):
-        """Extract pyrtcm grouped character fields such as DF030_01..DF030_N."""
+        """Extract a grouped RTCM character field as a decoded text value.
+
+        ``pyrtcm`` normally exposes ``CHA`` groups as ``DF030_01``...
+        ``DF030_N`` strings.  Older releases and a few compatible readers may
+        expose an ungrouped string, bytes, or integer character codes instead;
+        accept all of those representations so 1033 metadata is not silently
+        discarded.
+        """
         try:
             count = int(getattr(msg, counter_attr, 0) or 0)
         except (TypeError, ValueError):
             count = 0
-        if count <= 0:
-            return ""
+
+        def _decode_char(value):
+            if value is None:
+                return ""
+            if isinstance(value, bytes):
+                return value.decode("latin-1", errors="replace")
+            if isinstance(value, int):
+                try:
+                    return chr(value) if 0 <= value <= 0xFF else str(value)
+                except (TypeError, ValueError):
+                    return str(value)
+            return str(value)
+
+        # Some parsers concatenate character fields onto the base attribute.
+        direct_value = getattr(msg, char_prefix, None)
+        if isinstance(direct_value, (str, bytes)) and count <= 0:
+            return _decode_char(direct_value).strip()
+        if isinstance(direct_value, (list, tuple)) and count <= 0:
+            return "".join(_decode_char(value) for value in direct_value).strip()
 
         chars = []
-        for idx in range(1, count + 1):
-            value = getattr(msg, f"{char_prefix}_{idx:02d}", "")
+        for idx in range(1, max(0, count) + 1):
+            value = getattr(msg, f"{char_prefix}_{idx:02d}", None)
             if value is None:
-                continue
-            chars.append(str(value))
+                # Be tolerant of readers that do not zero-pad group indices.
+                value = getattr(msg, f"{char_prefix}_{idx}", None)
+            if value is not None:
+                chars.append(_decode_char(value))
+
+        # If the counter is missing or wrong, a direct value is still more
+        # useful than returning an empty descriptor.
+        if not chars and direct_value is not None:
+            if isinstance(direct_value, (list, tuple)):
+                chars.extend(_decode_char(value) for value in direct_value)
+            else:
+                chars.append(_decode_char(direct_value))
         return "".join(chars).strip()
 
     def _handle_station_descriptor(self, msg) -> None:
@@ -1424,8 +1487,29 @@ class RTCMHandler:
             self._cache_igs_ssr_clock(reader, definition, is_high_rate=True)
         elif kind == "code_bias":
             self._cache_igs_ssr_code_biases(reader, definition)
+        elif kind == "phase_bias":
+            self._cache_raw_ssr_phase_biases(reader, definition, igs=True)
         elif kind == "ura":
             self._cache_igs_ssr_ura(reader, definition)
+        return epoch_data
+
+    def _handle_ssr_phase_bias_message(self, msg, epoch_data=None):
+        raw = getattr(msg, "raw", None)
+        if raw is None:
+            return epoch_data
+        raw = bytes(raw)
+        if len(raw) < 9:
+            return epoch_data
+        payload_len = ((raw[1] & 0x03) << 8) | raw[2]
+        reader = _BitReader(raw, 24, (3 + payload_len) * 8)
+        message_number = str(reader.unsigned(12))
+        system = SSR_PHASE_BIAS_SYSTEMS.get(message_number)
+        if system is not None:
+            self._cache_raw_ssr_phase_biases(
+                reader,
+                {"kind": "phase_bias", "system": system},
+                igs=False,
+            )
         return epoch_data
 
     def _read_igs_ssr_header(self, reader: _BitReader, system: str, *, has_datum: bool = False) -> dict:
@@ -1537,6 +1621,65 @@ class RTCMHandler:
                 biases[self._ssr_signal_to_rinex(system, signal_id, igs=True)] = reader.signed(14, 1.0 / 100.0)
             if biases:
                 self.ssr_corrections.update_code_biases(self._satellite_id(system, prn), biases)
+
+    def _cache_raw_ssr_phase_biases(self, reader: _BitReader, definition: dict, *, igs: bool) -> None:
+        system = definition["system"]
+        raw_epoch = float(reader.unsigned(20 if igs or system != "R" else 17))
+        if not igs and system == "R":
+            day_anchor = self._reference_utc_for_glonass_day()
+            day_index = self._utc_day_of_week(day_anchor)
+            seconds_of_day = raw_epoch - 3.0 * 3600.0 + GNSSTime.LEAP_SECONDS
+            day_offset = math.floor(seconds_of_day / 86400.0)
+            seconds_of_day %= 86400.0
+            epoch_time = ((day_index + int(day_offset)) % 7) * 86400.0 + seconds_of_day
+        else:
+            epoch_time = self._igs_ssr_epoch_time(raw_epoch, system)
+        header = {
+            "epoch_time": epoch_time,
+            "update_interval": reader.unsigned(4),
+            "multiple_message": reader.unsigned(1),
+            "iod_ssr": reader.unsigned(4),
+            "provider_id": reader.unsigned(16),
+            "solution_id": reader.unsigned(4),
+            "dispersive_consistency": bool(reader.unsigned(1)),
+            "mw_consistency": bool(reader.unsigned(1)),
+        }
+        sat_bits = 6 if igs else (4 if system == "J" else 5 if system == "R" else 6)
+        count = reader.unsigned(6 if igs or system != "J" else 4)
+        for _ in range(count):
+            prn = reader.unsigned(sat_bits)
+            bias_count = reader.unsigned(5)
+            yaw_angle = reader.unsigned(9) / 256.0 * 180.0
+            yaw_rate = reader.signed(8, 180.0 / 8192.0)
+            biases = {}
+            for _ in range(bias_count):
+                signal_id = reader.unsigned(5)
+                signal_name = self._ssr_signal_to_rinex(system, signal_id, igs=igs)
+                bias = SsrPhaseBias(
+                    signal_id=signal_name,
+                    integer_indicator=bool(reader.unsigned(1)),
+                    wide_lane_indicator=reader.unsigned(2),
+                    discontinuity_counter=reader.unsigned(4),
+                    bias_m=reader.signed(20, 0.0001),
+                )
+                biases[signal_name] = bias
+            if not biases:
+                continue
+            self.ssr_corrections.update_phase_biases(
+                SsrPhaseBiasCorrection(
+                    satellite_id=self._satellite_id(system, prn),
+                    epoch_time=header["epoch_time"],
+                    update_interval=header["update_interval"],
+                    iod_ssr=header["iod_ssr"],
+                    provider_id=header["provider_id"],
+                    solution_id=header["solution_id"],
+                    dispersive_consistency=header["dispersive_consistency"],
+                    mw_consistency=header["mw_consistency"],
+                    yaw_angle_deg=yaw_angle,
+                    yaw_rate_deg_s=yaw_rate,
+                    biases=biases,
+                )
+            )
 
     def _cache_igs_ssr_ura(self, reader: _BitReader, definition: dict) -> None:
         system = definition["system"]

@@ -120,7 +120,7 @@ def _normalize_gps_sow(week: int, sow: float) -> tuple[int, float]:
     return week, sow
 
 
-def _rtklib_time_difference(time_sow: float, reference_sow: float) -> float:
+def _wrapped_time_difference(time_sow: float, reference_sow: float) -> float:
     dt = float(time_sow) - float(reference_sow)
     if dt > SECONDS_PER_WEEK / 2.0:
         dt -= SECONDS_PER_WEEK
@@ -420,7 +420,7 @@ def _compute_broadcast_clock(eph: dict, transmit_time: float) -> float:
     af1 = float(eph.get("af1", 0.0) or 0.0)
     af2 = float(eph.get("af2", 0.0) or 0.0)
     toc = float(eph.get("toc") or eph.get("Toc") or 0.0)
-    dt = _rtklib_time_difference(transmit_time, toc)
+    dt = _wrapped_time_difference(transmit_time, toc)
     saved_dt = dt
     for _ in range(2):
         dt = saved_dt - (af0 + af1 * dt + af2 * dt * dt)
@@ -435,7 +435,7 @@ def _compute_broadcast_clock(eph: dict, transmit_time: float) -> float:
         try:
             semi_major_axis = float(sqrt_a) ** 2
             mean_motion = math.sqrt(3.986005e14 / (semi_major_axis ** 3)) + float(delta_n)
-            tk = _rtklib_time_difference(transmit_time, float(toe))
+            tk = _wrapped_time_difference(transmit_time, float(toe))
             mean_anomaly = float(m0) + mean_motion * tk
             eccentric_anomaly = mean_anomaly
             for _ in range(10):

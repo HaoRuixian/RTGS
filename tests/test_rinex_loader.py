@@ -13,7 +13,7 @@ from core.rinex_loader import (
     RinexObservationReader,
     SatelliteEphemerisState,
     _parse_float,
-    _rtklib_time_difference,
+    _wrapped_time_difference,
     read_rinex_observation_header,
 )
 
@@ -86,9 +86,9 @@ def test_parse_float_accepts_embedded_quality_flag():
     assert _parse_float("6483452.632 5") == 6483452.632
 
 
-def test_rtklib_time_difference_wraps_week_boundary():
-    assert _rtklib_time_difference(4.0, 604790.0) == 14.0
-    assert _rtklib_time_difference(604790.0, 4.0) == -14.0
+def test_wrapped_time_difference_wraps_week_boundary():
+    assert _wrapped_time_difference(4.0, 604790.0) == 14.0
+    assert _wrapped_time_difference(604790.0, 4.0) == -14.0
 
 
 def test_rinex_bds_nav_parser_converts_toe_from_bdt_to_gpst():

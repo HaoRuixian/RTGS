@@ -2,7 +2,7 @@
 Local compatibility patches for third-party pyrtcm limitations.
 
 The installed pyrtcm build exposes the mainstream MSM tables but omits some
-signals that are present in RTKLIB and in RTCM 3.04-era practice, such as:
+signals that are present in multi-constellation RTCM 3.04 practice, such as:
   - GLONASS G3: 3I/3Q/3X
   - QZSS extended MSM signals
   - NavIC/IRNSS extended MSM signals

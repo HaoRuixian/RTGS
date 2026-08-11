@@ -29,13 +29,105 @@ def _default_positioning_settings() -> dict[str, Any]:
         "gnss_systems": ["G", "R", "E", "C", "J", "I"],
         "prefer_gps_only": False,
         "allow_gps_fallback": False,
-        # BNC PPP does not mix broadcast-only satellites into an SSR-corrected
-        # solution.  Keep the same behavior once SSR orbit/clock corrections
-        # are present.
+        # Do not mix broadcast-only satellites into a solution once SSR
+        # orbit/clock corrections are present.
         "require_ssr_corrections": True,
         "weight_mode": "elevation",
         "code_sigma_m": 1.0,
         "system_code_weight_factors": {"R": 5.0},
+        # PPP defaults to an SPP bootstrap.  Set this to True only when the
+        # receiver's RTCM 1005/1006 station coordinates should be used as the
+        # tightly constrained initial position instead.
+        "ppp_use_station_apriori": False,
+        # Seed PPP from the configured approximate coordinate without applying
+        # the tight RTCM-station position constraint.
+        "ppp_use_config_initial_position": False,
+        # Hard independent mode ignores all externally supplied coordinates in
+        # PPP. Configured coordinates remain available only as solution truth.
+        "ppp_independent_mode": False,
+        "ppp_observation_model": "IFLC",
+        "ppp_station_apriori_sigma_m": 0.05,
+        "ppp_initial_position_sigma_m": 100.0,
+        # Independent PPP uses this weak covariance for its SPP bootstrap;
+        # it is intentionally separate from a configured-coordinate prior.
+        "ppp_spp_bootstrap_sigma_m": 100.0,
+        "ppp_initial_clock_sigma_m": 1000.0,
+        "ppp_initial_ambiguity_sigma_m": 1000.0,
+        "ppp_initial_ionosphere_sigma_m": 30.0,
+        "ppp_ionosphere_process_noise_mps": 0.001,
+        "ppp_position_process_noise_mps": 0.0,
+        "ppp_trop_process_noise_mps": 5e-5,
+        "ppp_estimate_trop_gradients": True,
+        "ppp_initial_trop_gradient_sigma_m": 0.01,
+        "ppp_trop_gradient_process_noise_mps": 1e-5,
+        "ppp_zwd_correlation_time_s": 7 * 86400.0,
+        # High-precision observation modelling.  File-backed antenna
+        # and ocean-loading corrections remain inactive until their paths and
+        # station metadata are configured.
+        "ppp_precise_model_enabled": True,
+        "ppp_apply_phase_windup": True,
+        "ppp_use_ssr_yaw": True,
+        "ppp_apply_shapiro_delay": True,
+        "ppp_apply_solid_earth_tide": True,
+        "ppp_apply_ocean_loading": True,
+        "ppp_apply_receiver_antenna": True,
+        "ppp_apply_satellite_antenna": True,
+        "ppp_antex_file": "",
+        "ppp_blq_file": "",
+        "ppp_receiver_antenna": "",
+        "ppp_station_id": "",
+        "ppp_antenna_eccentricity_neu_m": [0.0, 0.0, 0.0],
+        "ppp_auto_ssr_apc_reference": True,
+        "ppp_ssr_apc_reference": False,
+        # Repeat the epoch update from the same prior and remove the
+        # largest post-fit outlier until all residuals pass these limits.
+        "ppp_postfit_enabled": True,
+        "ppp_max_code_postfit_residual_m": 3.0,
+        "ppp_max_phase_postfit_residual_m": 0.03,
+        # PPP ambiguity resolution requires integer-compatible SSR phase
+        # biases (RTCM 1265-1270 or IGS SSR IM026/046/066/086/106/126).
+        # It automatically falls back to float PPP when those data are absent.
+        "ppp_ar_enabled": True,
+        "ppp_ar_systems": ["G", "E", "C", "J"],
+        "ppp_ar_min_epochs": 30,
+        "ppp_ar_min_satellites": 5,
+        "ppp_ar_min_elevation_deg": 10.0,
+        "ppp_ar_max_wl_fraction": 0.15,
+        "ppp_ar_max_nl_fraction": 0.12,
+        "ppp_ar_max_wl_sigma_cycles": 0.20,
+        "ppp_ar_max_nl_sigma_cycles": 0.20,
+        "ppp_ar_ratio_threshold": 3.0,
+        "ppp_ar_constraint_sigma_m": 0.0001,
+        "ppp_ar_max_position_shift_m": 0.50,
+        "ppp_ar_require_mw_consistency": True,
+        # Partial fixes are deliberately disabled by default.  A single bad
+        # satellite must not turn a valid float PPP solution into a false fix.
+        "ppp_ar_require_full_group": True,
+        # Native single-base and network RTK settings.
+        "rtk_type": "single_base",
+        "rtk_network_protocol": "VRS",
+        "rtk_rover_mode": "kinematic",
+        "rtk_rover_format": "rtcm3",
+        "rtk_base_format": "rtcm3",
+        "rtk_frequency": "l1+l2",
+        "rtk_dynamics": True,
+        "rtk_ar_mode": "fix-and-hold",
+        "rtk_glonass_ar_mode": "autocal",
+        "rtk_bds_ar": True,
+        "rtk_ar_ratio_threshold": 3.0,
+        "rtk_ar_lock_count": 5,
+        "rtk_ar_min_fix": 10,
+        "rtk_ar_outage_count": 5,
+        "rtk_max_correction_age_s": 10.0,
+        "rtk_cycle_slip_threshold_m": 0.05,
+        "rtk_filter_iterations": 1,
+        "rtk_base_position_source": "rtcm",
+        "rtk_base_position": [0.0, 0.0, 0.0],
+        # auto uses configured LLH/receiver ECEF when available, otherwise the
+        # rover's single-point solution.  This covers VRS caster GGA requests.
+        "rtk_gga_mode": "auto",
+        "rtk_gga_position": [0.0, 0.0, 0.0],
+        "rtk_gga_cycle_ms": 5000,
         "use_smoothing": False,
         "smoothing_window": 10,
         "random_walk": 0.0,
@@ -75,11 +167,14 @@ class ConnectionSettings:
     file_type: str = "Auto Detect"
     final_results_only: bool = False
 
+    # Raw receiver/RTCM format used by the native RTK adapter.
+    data_format: str = "RTCM3"
+
 
 @dataclass
 class GlobalConfig:
     """
-    全局配置容器，集中保存 OBS/EPH/SSR 数据流、接收机位置和定位参数。
+    全局配置容器，集中保存 OBS/EPH/SSR/BASE 数据流、接收机位置和定位参数。
     """
     # Observation stream settings
     obs_settings: ConnectionSettings = field(default_factory=ConnectionSettings)
@@ -89,6 +184,9 @@ class GlobalConfig:
 
     # SSR correction stream settings
     ssr_settings: ConnectionSettings = field(default_factory=lambda: ConnectionSettings(enabled=False))
+
+    # RTK reference-station or network-correction stream settings
+    base_settings: ConnectionSettings = field(default_factory=lambda: ConnectionSettings(enabled=False))
     
     # Receiver approximate position (ECEF coordinates)
     approx_rec_pos: list[float] | None = field(default_factory=lambda: [0, 0, 0])
@@ -103,7 +201,8 @@ class GlobalConfig:
         获取指定数据流的连接配置。
 
         Args:
-            stream_type: ``OBS`` 表示观测流，``EPH`` 表示星历流，``SSR`` 表示改正数流。
+            stream_type: ``OBS`` 表示观测流，``EPH`` 表示星历流，``SSR`` 表示改正数流，
+                ``BASE`` 表示 RTK 基站或网络改正流。
 
         Returns:
             指定数据流的连接配置。
@@ -117,8 +216,10 @@ class GlobalConfig:
             return self.eph_settings
         if stream_type.upper() == 'SSR':
             return self.ssr_settings
+        if stream_type.upper() == 'BASE':
+            return self.base_settings
 
-        raise ValueError(f"Invalid stream type: {stream_type}. Use 'OBS', 'EPH', or 'SSR'")
+        raise ValueError(f"Invalid stream type: {stream_type}. Use 'OBS', 'EPH', 'SSR', or 'BASE'")
 
     def update_settings(self, stream_type: str, settings: dict[str, Any]) -> None:
         """
@@ -179,6 +280,7 @@ class GlobalConfig:
             'obs_settings': asdict(self.obs_settings),
             'eph_settings': asdict(self.eph_settings),
             'ssr_settings': asdict(self.ssr_settings),
+            'base_settings': asdict(self.base_settings),
             'approx_rec_pos': self.approx_rec_pos,
             'target_systems': self.target_systems,
             'positioning_settings': self.positioning_settings,
@@ -206,6 +308,13 @@ class GlobalConfig:
             for key, value in ssr_dict.items():
                 if hasattr(self.ssr_settings, key):
                     setattr(self.ssr_settings, key, value)
+
+        # Load RTK base/network correction settings
+        if 'base_settings' in config_dict:
+            base_dict = config_dict['base_settings']
+            for key, value in base_dict.items():
+                if hasattr(self.base_settings, key):
+                    setattr(self.base_settings, key, value)
         
         # Load general settings
         if 'approx_rec_pos' in config_dict:

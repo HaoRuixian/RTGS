@@ -2,24 +2,24 @@
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
-from copy import deepcopy
-from datetime import datetime
-import logging
+import contextlib
 import threading
 import time
+from collections import defaultdict, deque
+from copy import deepcopy
+from datetime import datetime, timezone
 
 import matplotlib.dates as mdates
+import numpy as np
+import yaml
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
 from matplotlib.figure import Figure
-import numpy as np
-import yaml
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QApplication,
     QAbstractItemView,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -31,29 +31,22 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
-    QPushButton,
     QPlainTextEdit,
+    QPushButton,
+    QSpinBox,
     QSplitter,
     QStyle,
     QTableWidget,
     QTableWidgetItem,
-    QTextEdit,
     QTabWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
-    QSpinBox,
 )
 
-from core.geo_utils import ecef2lla
 from core.config_paths import default_ir_config_path, ensure_config_directories
+from core.geo_utils import ecef2lla
 from core.global_config import get_global_config
-from core.replay_ui_policy import (
-    THROTTLED_GUI_INTERVAL_SECONDS,
-    choose_gui_refresh_interval,
-    estimate_effective_replay_period_seconds,
-)
-from core.ring_buffer import RingBuffer
-from core.rtcm_handler import get_shared_handler
 from core.reflectometry import (
     ObservationRecord,
     ProcessingRunResult,
@@ -65,13 +58,18 @@ from core.reflectometry import (
     load_config,
 )
 from core.reflectometry.config import minimum_required_arc_samples
-from core.reflectometry.models import SnrSeries
+from core.reflectometry.models import ArcSolution, ProductResult, SnrSeries
 from core.reflectometry.rinex_batch import build_observation_records_from_epoch
-from core.reflectometry.signal_utils import signal_matches
 from core.reflectometry.services.geometry import matches_reflection_zones
-from core.reflectometry.models import ArcSolution, ProductResult
-from ui.shared.colors import get_sys_color
-from ui.shared.config_dialog import ConfigDialog
+from core.reflectometry.signal_utils import signal_matches
+from core.replay_ui_policy import (
+    THROTTLED_GUI_INTERVAL_SECONDS,
+    choose_gui_refresh_interval,
+    estimate_effective_replay_period_seconds,
+)
+from core.ring_buffer import RingBuffer
+from core.rtcm_handler import get_shared_handler
+from rtgs.infrastructure import get_logger
 from ui.monitoring.workers import DataProcessingThread, IOThread, RinexReplayThread, StreamSignals
 from ui.reflectometry.arc_status import (
     ArcSelectorOption,
@@ -89,14 +87,18 @@ from ui.reflectometry.arc_status import (
 from ui.reflectometry.ir_config_dialog import ReflectometryConfigDialog
 from ui.reflectometry.skyplot_dialog import ReflectometrySkyplotDialog
 from ui.reflectometry.workers import ReflectometryBatchSignals, RinexBatchAnalysisThread
-from ui.style import get_app_stylesheet
 from ui.responsive import adaptive_window_size, window_ui_scale
+from ui.shared.colors import get_sys_color
+from ui.shared.config_dialog import ConfigDialog
+from ui.style import get_app_stylesheet
 
 
 class ToolbarCanvasPanel(QWidget):
     """Small helper widget bundling toolbar and matplotlib canvas."""
 
-    def __init__(self, figsize: tuple[float, float] = (8.0, 4.5), parent: QWidget | None = None) -> None:
+    def __init__(
+        self, figsize: tuple[float, float] = (8.0, 4.5), parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -141,10 +143,7 @@ class ReflectometryModule(QMainWindow):
         self.setWindowTitle("GNSS RT Reflectometry Module")
         adaptive_window_size(self, target=(1800, 1000), minimum=(1120, 700))
 
-        self.analysis_logger = logging.getLogger("reflectometry_ui.analysis")
-        self.analysis_logger.handlers.clear()
-        self.analysis_logger.addHandler(logging.NullHandler())
-        self.analysis_logger.propagate = False
+        self.analysis_logger = get_logger("reflectometry.ui.analysis")
 
         self.merged_satellites: dict[str, object] = {}
         self.sat_last_seen: dict[str, float] = {}
@@ -179,7 +178,9 @@ class ReflectometryModule(QMainWindow):
         self.last_runtime_config_signature: tuple[object, ...] | None = None
 
         config = get_global_config()
-        self.active_systems = set(config.target_systems) if config.target_systems else set(self.ALL_SYSTEMS)
+        self.active_systems = (
+            set(config.target_systems) if config.target_systems else set(self.ALL_SYSTEMS)
+        )
         self.stream_status = {"OBS": False, "EPH": False}
         self.eph_data_available = False
 
@@ -229,7 +230,9 @@ class ReflectometryModule(QMainWindow):
         self.analysis_timer.start(1000)
 
         self.signals.log_signal.emit("=== GNSS Reflectometry module ready ===")
-        self.signals.log_signal.emit("Edit or import an IR config, then connect a realtime OBS/EPH stream to start analysis.")
+        self.signals.log_signal.emit(
+            "Edit or import an IR config, then connect a realtime OBS/EPH stream to start analysis."
+        )
 
     def setup_ui(self) -> None:
         """Build the reflectometry UI with the same visual language as Monitoring."""
@@ -276,7 +279,9 @@ class ReflectometryModule(QMainWindow):
         self.window_spin = QSpinBox()
         self.window_spin.setRange(5, 240)
         self.window_spin.setValue(20)
-        self.window_spin.setToolTip("Maximum arc duration retained for realtime IR analysis. Older samples are discarded.")
+        self.window_spin.setToolTip(
+            "Maximum arc duration retained for realtime IR analysis. Older samples are discarded."
+        )
         self.window_spin.valueChanged.connect(self._on_window_changed)
         top_bar.addWidget(self.window_spin)
 
@@ -311,7 +316,9 @@ class ReflectometryModule(QMainWindow):
         ]:
             checkbox = QCheckBox(name)
             checkbox.setChecked(sys_char in self.active_systems)
-            checkbox.setStyleSheet(f"QCheckBox {{ color: {get_sys_color(sys_char)}; font-weight: bold; }}")
+            checkbox.setStyleSheet(
+                f"QCheckBox {{ color: {get_sys_color(sys_char)}; font-weight: bold; }}"
+            )
             checkbox.stateChanged.connect(self.on_filter_changed)
             self.chk_sys[sys_char] = checkbox
             top_bar.addWidget(checkbox)
@@ -354,7 +361,9 @@ class ReflectometryModule(QMainWindow):
 
         self.mountpoint_label = QLabel("--")
         self.mountpoint_label.setWordWrap(True)
-        self.mountpoint_label.setStyleSheet("font-size: 22px; font-weight: 800; color: #0F172A; margin-bottom: 6px;")
+        self.mountpoint_label.setStyleSheet(
+            "font-size: 22px; font-weight: 800; color: #0F172A; margin-bottom: 6px;"
+        )
         left_layout.addWidget(self.mountpoint_label)
 
         self.summary_labels: dict[str, QLabel] = {}
@@ -393,7 +402,9 @@ class ReflectometryModule(QMainWindow):
         skyplot_icon = self._standard_icon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
         if skyplot_icon is not None:
             self.btn_show_skyplot.setIcon(skyplot_icon)
-        self.btn_show_skyplot.setToolTip("Open a skyplot with the configured reflection zones highlighted.")
+        self.btn_show_skyplot.setToolTip(
+            "Open a skyplot with the configured reflection zones highlighted."
+        )
         self.btn_show_skyplot.clicked.connect(self.open_skyplot_dialog)
         live_header_row.addWidget(self.btn_show_skyplot)
         left_layout.addLayout(live_header_row)
@@ -413,8 +424,7 @@ class ReflectometryModule(QMainWindow):
         live_header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         live_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         live_header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        self.live_table.setStyleSheet(
-            """
+        self.live_table.setStyleSheet("""
             QTableWidget {
                 background: #FFFFFF;
                 border: 1px solid #D7E0EA;
@@ -435,8 +445,7 @@ class ReflectometryModule(QMainWindow):
                 border-bottom: 1px solid #D7E0EA;
                 font-weight: 600;
             }
-            """
-        )
+            """)
         left_layout.addWidget(self.live_table, stretch=1)
 
         splitter.addWidget(self.left_panel)
@@ -529,8 +538,7 @@ class ReflectometryModule(QMainWindow):
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(10, QHeaderView.ResizeMode.Stretch)
-        self.arc_table.setStyleSheet(
-            """
+        self.arc_table.setStyleSheet("""
             QTableWidget {
                 background: #FFFFFF;
                 border: 1px solid #D7E0EA;
@@ -554,8 +562,7 @@ class ReflectometryModule(QMainWindow):
                 border-bottom: 1px solid #D7E0EA;
                 font-weight: 700;
             }
-            """
-        )
+            """)
         layout.addWidget(self.arc_table)
         return widget
 
@@ -624,14 +631,18 @@ class ReflectometryModule(QMainWindow):
         series_layout = QVBoxLayout(series_container)
         series_layout.setContentsMargins(12, 12, 12, 12)
         series_layout.setSpacing(8)
-        self.series_header = QLabel("Choose an arc segment to inspect raw SNR and detrended residuals.")
+        self.series_header = QLabel(
+            "Choose an arc segment to inspect raw SNR and detrended residuals."
+        )
         self.series_header.setWordWrap(True)
         self.series_header.setStyleSheet("color: #64748B; font-size: 12px; margin-bottom: 4px;")
         series_layout.addWidget(self.series_header)
         self.series_panel = ToolbarCanvasPanel(figsize=(8.5, 5.8))
         self.series_ax_raw = self.series_panel.figure.add_subplot(211)
         self.series_ax_residual = self.series_panel.figure.add_subplot(212)
-        self.series_panel.figure.subplots_adjust(hspace=0.38, bottom=0.10, top=0.92, left=0.10, right=0.97)
+        self.series_panel.figure.subplots_adjust(
+            hspace=0.38, bottom=0.10, top=0.92, left=0.10, right=0.97
+        )
         series_layout.addWidget(self.series_panel)
         content_splitter.addWidget(series_container)
 
@@ -640,7 +651,9 @@ class ReflectometryModule(QMainWindow):
         spectrum_layout = QVBoxLayout(spectrum_container)
         spectrum_layout.setContentsMargins(12, 12, 12, 12)
         spectrum_layout.setSpacing(8)
-        self.spectrum_header = QLabel("Spectrum and the primary peak for the selected arc will appear here.")
+        self.spectrum_header = QLabel(
+            "Spectrum and the primary peak for the selected arc will appear here."
+        )
         self.spectrum_header.setWordWrap(True)
         self.spectrum_header.setStyleSheet("color: #64748B; font-size: 12px; margin-bottom: 4px;")
         spectrum_layout.addWidget(self.spectrum_header)
@@ -651,7 +664,9 @@ class ReflectometryModule(QMainWindow):
         self.primary_peak_label = QLabel("Primary peak metrics will appear here.")
         self.primary_peak_label.setWordWrap(True)
         self.primary_peak_label.setObjectName("HintLabel")
-        self.primary_peak_label.setStyleSheet("font-weight: 700; color: #1E293B; font-size: 13px; margin-top: 8px;")
+        self.primary_peak_label.setStyleSheet(
+            "font-weight: 700; color: #1E293B; font-size: 13px; margin-top: 8px;"
+        )
         spectrum_layout.addWidget(self.primary_peak_label)
         content_splitter.addWidget(spectrum_container)
 
@@ -713,7 +728,16 @@ class ReflectometryModule(QMainWindow):
         self.product_table = QTableWidget()
         self.product_table.setColumnCount(8)
         self.product_table.setHorizontalHeaderLabels(
-            ["Timestamp", "System", "Direction", "Satellite", "Signal / Freq", "Value", "Unit", "P/N"]
+            [
+                "Timestamp",
+                "System",
+                "Direction",
+                "Satellite",
+                "Signal / Freq",
+                "Value",
+                "Unit",
+                "P/N",
+            ]
         )
         self.product_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.product_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
@@ -737,8 +761,7 @@ class ReflectometryModule(QMainWindow):
         product_header.setSectionResizeMode(7, QHeaderView.ResizeMode.ResizeToContents)
         product_header.setSortIndicator(0, Qt.SortOrder.DescendingOrder)
         self.product_table.setSortingEnabled(True)
-        self.product_table.setStyleSheet(
-            """
+        self.product_table.setStyleSheet("""
             QTableWidget {
                 background: #FFFFFF;
                 border: 1px solid #D7E0EA;
@@ -763,8 +786,7 @@ class ReflectometryModule(QMainWindow):
                 border-bottom: 1px solid #D7E0EA;
                 font-weight: 700;
             }
-            """
-        )
+            """)
         layout.addWidget(self.product_table)
         self._populate_product_selector()
         self._clear_product_plot()
@@ -796,11 +818,15 @@ class ReflectometryModule(QMainWindow):
         runtime_grid.setHorizontalSpacing(12)
         runtime_grid.setVerticalSpacing(8)
 
-        self.runtime_dynamic_correction_chk = QCheckBox("Enable second-order dynamic sea-level correction")
+        self.runtime_dynamic_correction_chk = QCheckBox(
+            "Enable second-order dynamic sea-level correction"
+        )
         self.runtime_dynamic_correction_chk.setToolTip(
             "Apply the second-order dynamic correction from the current IR config to realtime sea-level products."
         )
-        self.runtime_dynamic_correction_chk.stateChanged.connect(self._on_runtime_dynamic_controls_changed)
+        self.runtime_dynamic_correction_chk.stateChanged.connect(
+            self._on_runtime_dynamic_controls_changed
+        )
         runtime_grid.addWidget(QLabel("Dynamic Correction"), 0, 0)
         runtime_grid.addWidget(self.runtime_dynamic_correction_chk, 0, 1)
 
@@ -813,7 +839,9 @@ class ReflectometryModule(QMainWindow):
         self.runtime_dynamic_window_spin.setToolTip(
             "Trailing time window used to estimate sea-level rate and acceleration for the dynamic correction."
         )
-        self.runtime_dynamic_window_spin.valueChanged.connect(self._on_runtime_dynamic_controls_changed)
+        self.runtime_dynamic_window_spin.valueChanged.connect(
+            self._on_runtime_dynamic_controls_changed
+        )
         runtime_grid.addWidget(QLabel("Window Length"), 1, 0)
         runtime_grid.addWidget(self.runtime_dynamic_window_spin, 1, 1)
 
@@ -902,8 +930,14 @@ class ReflectometryModule(QMainWindow):
         self.refresh_live_widgets()
 
     def _configured_active_systems(self) -> set[str]:
-        include = {item.strip() for item in self.ir_config.input.constellations if str(item).strip()}
-        exclude = {item.strip() for item in self.ir_config.input.exclude_constellations if str(item).strip()}
+        include = {
+            item.strip() for item in self.ir_config.input.constellations if str(item).strip()
+        }
+        exclude = {
+            item.strip()
+            for item in self.ir_config.input.exclude_constellations
+            if str(item).strip()
+        }
         active = include if include else set(self.ALL_SYSTEMS)
         return active - exclude
 
@@ -914,14 +948,18 @@ class ReflectometryModule(QMainWindow):
         if hasattr(self, "window_spin"):
             self.window_spin.blockSignals(True)
             try:
-                self.window_spin.setValue(int(max(1, self.ir_config.processing.live_arc_window_minutes)))
+                self.window_spin.setValue(
+                    int(max(1, self.ir_config.processing.live_arc_window_minutes))
+                )
             finally:
                 self.window_spin.blockSignals(False)
 
         if hasattr(self, "auto_interval_spin"):
             self.auto_interval_spin.blockSignals(True)
             try:
-                self.auto_interval_spin.setValue(int(max(1, self.ir_config.processing.live_analysis_interval_seconds)))
+                self.auto_interval_spin.setValue(
+                    int(max(1, self.ir_config.processing.live_analysis_interval_seconds))
+                )
             finally:
                 self.auto_interval_spin.blockSignals(False)
 
@@ -944,7 +982,9 @@ class ReflectometryModule(QMainWindow):
             self.runtime_dynamic_correction_chk.setChecked(
                 bool(self.ir_config.products.enable_dynamic_sea_level_correction)
             )
-            self.runtime_dynamic_window_spin.setValue(float(self.ir_config.products.dynamic_sea_level_window_hours))
+            self.runtime_dynamic_window_spin.setValue(
+                float(self.ir_config.products.dynamic_sea_level_window_hours)
+            )
         finally:
             self.runtime_dynamic_correction_chk.blockSignals(False)
             self.runtime_dynamic_window_spin.blockSignals(False)
@@ -1006,11 +1046,15 @@ class ReflectometryModule(QMainWindow):
         )
 
         if self.analysis_running:
-            self.append_log("New dynamic-correction settings will be applied after the current analysis finishes.")
+            self.append_log(
+                "New dynamic-correction settings will be applied after the current analysis finishes."
+            )
             return
 
         if self._is_headless_file_analysis_mode():
-            self.append_log("Re-run Start Analysis to regenerate fast file-analysis products with the new correction settings.")
+            self.append_log(
+                "Re-run Start Analysis to regenerate fast file-analysis products with the new correction settings."
+            )
             return
 
         if not self.observation_buffer:
@@ -1025,9 +1069,8 @@ class ReflectometryModule(QMainWindow):
 
     def _is_headless_file_analysis_mode(self) -> bool:
         obs_settings = self.settings.get("OBS", {}) or {}
-        return (
-            str(obs_settings.get("source", "")) == "RINEX File"
-            and bool(obs_settings.get("final_results_only", False))
+        return str(obs_settings.get("source", "")) == "RINEX File" and bool(
+            obs_settings.get("final_results_only", False)
         )
 
     def _is_rinex_replay_source(self) -> bool:
@@ -1056,7 +1099,11 @@ class ReflectometryModule(QMainWindow):
     @staticmethod
     def _ecef_position_from_global_config() -> list[float] | None:
         approx_rec_pos = getattr(get_global_config(), "approx_rec_pos", None)
-        if approx_rec_pos and len(approx_rec_pos) == 3 and any(abs(float(item)) > 1e-6 for item in approx_rec_pos):
+        if (
+            approx_rec_pos
+            and len(approx_rec_pos) == 3
+            and any(abs(float(item)) > 1e-6 for item in approx_rec_pos)
+        ):
             return [float(approx_rec_pos[0]), float(approx_rec_pos[1]), float(approx_rec_pos[2])]
         return None
 
@@ -1070,7 +1117,9 @@ class ReflectometryModule(QMainWindow):
             trigger_now=not self.analysis_loop_enabled,
         )
 
-    def _set_analysis_loop_enabled(self, enabled: bool, *, announce: bool, trigger_now: bool = False) -> None:
+    def _set_analysis_loop_enabled(
+        self, enabled: bool, *, announce: bool, trigger_now: bool = False
+    ) -> None:
         if enabled == self.analysis_loop_enabled and not trigger_now:
             return
         self.analysis_loop_enabled = enabled
@@ -1098,14 +1147,14 @@ class ReflectometryModule(QMainWindow):
     def process_gui_epoch(self, epoch_data) -> None:
         """Receive one EpochObservation from the shared processing pipeline."""
         self.latest_epoch_data = epoch_data
-        try:
+        with contextlib.suppress(Exception):
             self.handler.apply_station_coordinates()
-        except Exception:
-            pass
         self._sync_runtime_ir_defaults()
 
         now = time.time()
-        timestamp = getattr(epoch_data, "utc_datetime", None) or datetime.utcnow()
+        timestamp = getattr(epoch_data, "utc_datetime", None) or datetime.now(timezone.utc).replace(
+            tzinfo=None
+        )
         epoch_records = self._epoch_to_observation_records(epoch_data, timestamp)
         for record in epoch_records:
             self.observation_buffer.append(record)
@@ -1123,9 +1172,13 @@ class ReflectometryModule(QMainWindow):
         else:
             self.pending_update = True
 
-    def _epoch_to_observation_records(self, epoch_data, timestamp: datetime) -> list[ObservationRecord]:
+    def _epoch_to_observation_records(
+        self, epoch_data, timestamp: datetime
+    ) -> list[ObservationRecord]:
         """Convert one EpochObservation into canonical reflectometry observations."""
-        receiver_position = self._current_receiver_position(self.ir_config.station.receiver_position)
+        receiver_position = self._current_receiver_position(
+            self.ir_config.station.receiver_position
+        )
         observations = build_observation_records_from_epoch(
             epoch_data,
             station_id=self.ir_config.station.station_id,
@@ -1171,7 +1224,11 @@ class ReflectometryModule(QMainWindow):
 
     def _populate_live_observation_table(self) -> None:
         self.live_table.setRowCount(0)
-        satellites = [(key, sat) for key, sat in sorted(self.merged_satellites.items()) if key[0] in self.active_systems]
+        satellites = [
+            (key, sat)
+            for key, sat in sorted(self.merged_satellites.items())
+            if key[0] in self.active_systems
+        ]
         for satellite_key, satellite in satellites:
             elevation = getattr(satellite, "elevation", getattr(satellite, "el", None))
             azimuth = getattr(satellite, "azimuth", getattr(satellite, "az", None))
@@ -1184,7 +1241,8 @@ class ReflectometryModule(QMainWindow):
             valid_signals = {
                 signal_key: signal
                 for signal_key, signal in signals.items()
-                if float(getattr(signal, "snr", 0.0) or 0.0) > 0.0 and self._signal_is_enabled(satellite_key[0], str(signal_key))
+                if float(getattr(signal, "snr", 0.0) or 0.0) > 0.0
+                and self._signal_is_enabled(satellite_key[0], str(signal_key))
             }
             if not valid_signals:
                 continue
@@ -1202,7 +1260,9 @@ class ReflectometryModule(QMainWindow):
                 item = QTableWidgetItem(value)
                 if column == 0:
                     item.setForeground(QColor(get_sys_color(satellite_key[0])))
-                    item.setData(Qt.ItemDataRole.ToolTipRole, f"{satellite_key} is currently tracked.")
+                    item.setData(
+                        Qt.ItemDataRole.ToolTipRole, f"{satellite_key} is currently tracked."
+                    )
                 elif column == 3:
                     item.setData(Qt.ItemDataRole.ToolTipRole, signal_list)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
@@ -1228,9 +1288,7 @@ class ReflectometryModule(QMainWindow):
             return False
         if include_signals and not signal_matches(signal, include_signals):
             return False
-        if signal_matches(signal, exclude_signals):
-            return False
-        return True
+        return not signal_matches(signal, exclude_signals)
 
     def _geometry_matches_buffer_filters(
         self,
@@ -1259,7 +1317,8 @@ class ReflectometryModule(QMainWindow):
                 continue
             signals = getattr(satellite, "signals", {}) or {}
             has_enabled_signal = any(
-                float(getattr(signal, "snr", 0.0) or 0.0) > 0.0 and self._signal_is_enabled(satellite_key[0], str(signal_key))
+                float(getattr(signal, "snr", 0.0) or 0.0) > 0.0
+                and self._signal_is_enabled(satellite_key[0], str(signal_key))
                 for signal_key, signal in signals.items()
             )
             if has_enabled_signal:
@@ -1347,8 +1406,7 @@ class ReflectometryModule(QMainWindow):
             self.btn_run.setIcon(icon)
         self.btn_run.setEnabled(state != "running")
         self.btn_run.setToolTip(tooltip or current["text"])
-        self.btn_run.setStyleSheet(
-            f"""
+        self.btn_run.setStyleSheet(f"""
               QPushButton {{
                   background-color: {current["color"]};
                   color: white;
@@ -1361,12 +1419,13 @@ class ReflectometryModule(QMainWindow):
                 background-color: {current["color"]};
                 color: rgba(255, 255, 255, 0.92);
             }}
-            """
-        )
+            """)
 
     def _sync_runtime_ir_defaults(self, force: bool = False) -> None:
         station_id = self._current_stream_station_id()
-        receiver_position = self._current_receiver_position(self.ir_config.station.receiver_position)
+        receiver_position = self._current_receiver_position(
+            self.ir_config.station.receiver_position
+        )
         signature = (
             station_id or self.ir_config.station.station_id,
             receiver_position.latitude_deg,
@@ -1384,7 +1443,9 @@ class ReflectometryModule(QMainWindow):
             self.ir_config.station.station_id = station_id
             changed = True
 
-        if self._receiver_position_changed(receiver_position, self.ir_config.station.receiver_position):
+        if self._receiver_position_changed(
+            receiver_position, self.ir_config.station.receiver_position
+        ):
             self.ir_config.station.receiver_position = receiver_position
             changed = True
 
@@ -1423,7 +1484,10 @@ class ReflectometryModule(QMainWindow):
         )
 
     def _check_pending_update(self) -> None:
-        if self.pending_update and time.time() - self.last_gui_update_time >= self.gui_update_interval:
+        if (
+            self.pending_update
+            and time.time() - self.last_gui_update_time >= self.gui_update_interval
+        ):
             self.refresh_live_widgets()
             self.last_gui_update_time = time.time()
             self.pending_update = False
@@ -1441,7 +1505,9 @@ class ReflectometryModule(QMainWindow):
         if self.last_analysis_timestamp is None:
             self.run_ir_analysis()
             return
-        elapsed = (datetime.utcnow() - self.last_analysis_timestamp).total_seconds()
+        elapsed = (
+            datetime.now(timezone.utc).replace(tzinfo=None) - self.last_analysis_timestamp
+        ).total_seconds()
         if elapsed >= self.auto_interval_spin.value():
             self.run_ir_analysis()
 
@@ -1470,7 +1536,7 @@ class ReflectometryModule(QMainWindow):
             if isinstance(processor, RealtimeProcessor):
                 processor.clear_finalized_history()
             self.last_processor = processor
-            self.last_analysis_timestamp = datetime.utcnow()
+            self.last_analysis_timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
             self._populate_arc_table()
             self._populate_product_selector()
             self._populate_product_table()
@@ -1495,7 +1561,9 @@ class ReflectometryModule(QMainWindow):
             if self.analysis_loop_enabled:
                 self._set_analysis_loop_enabled(False, announce=False)
             self._set_run_button_state("failed", tooltip=str(exc))
-            QMessageBox.warning(self, "Reflectometry", f"{analysis_label.title()} IR analysis failed:\n{exc}")
+            QMessageBox.warning(
+                self, "Reflectometry", f"{analysis_label.title()} IR analysis failed:\n{exc}"
+            )
         finally:
             QApplication.restoreOverrideCursor()
             self.analysis_running = False
@@ -1507,7 +1575,9 @@ class ReflectometryModule(QMainWindow):
         obs_settings = self.settings.get("OBS", {}) or {}
         eph_settings = self.settings.get("EPH", {}) or {}
         if not obs_settings.get("file_path"):
-            QMessageBox.information(self, "Reflectometry", "Please select a RINEX observation file first.")
+            QMessageBox.information(
+                self, "Reflectometry", "Please select a RINEX observation file first."
+            )
             return
         if self.settings.get("EPH_ENABLED") and not eph_settings.get("file_path"):
             QMessageBox.information(self, "Reflectometry", "Please select an ephemeris file first.")
@@ -1517,13 +1587,19 @@ class ReflectometryModule(QMainWindow):
         runtime_config = deepcopy(self.ir_config)
         runtime_config.logging.console = False
         runtime_config.logging.rotating_file = False
-        runtime_config.station.receiver_position = self._current_receiver_position(runtime_config.station.receiver_position)
+        runtime_config.station.receiver_position = self._current_receiver_position(
+            runtime_config.station.receiver_position
+        )
         station_id = self._current_stream_station_id() or runtime_config.station.station_id
         runtime_config.station.station_id = station_id
 
         self.analysis_running = True
         self.analysis_loop_enabled = False
-        running_tooltip = "Running fast file analysis with realtime logic..." if self._is_headless_file_analysis_mode() else "Running batch file analysis..."
+        running_tooltip = (
+            "Running fast file analysis with realtime logic..."
+            if self._is_headless_file_analysis_mode()
+            else "Running batch file analysis..."
+        )
         self._set_run_button_state("running", tooltip=running_tooltip)
         if self._is_headless_file_analysis_mode():
             self.append_log("Running GNSS-IR fast file analysis with realtime logic...")
@@ -1543,8 +1619,14 @@ class ReflectometryModule(QMainWindow):
             logger=self.analysis_logger,
             signals=self.batch_signals,
             use_realtime_logic=self._is_headless_file_analysis_mode(),
-            live_window_seconds=self._live_window_seconds() if self._is_headless_file_analysis_mode() else None,
-            analysis_interval_seconds=float(self.auto_interval_spin.value()) if self._is_headless_file_analysis_mode() else None,
+            live_window_seconds=(
+                self._live_window_seconds() if self._is_headless_file_analysis_mode() else None
+            ),
+            analysis_interval_seconds=(
+                float(self.auto_interval_spin.value())
+                if self._is_headless_file_analysis_mode()
+                else None
+            ),
         )
         self.batch_analysis_thread.start()
 
@@ -1558,7 +1640,7 @@ class ReflectometryModule(QMainWindow):
         self.latest_result = result
         self.latest_series_by_arc = dict(payload.get("series_by_arc", {}))
         self.last_processor = processor
-        self.last_analysis_timestamp = datetime.utcnow()
+        self.last_analysis_timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
         self.processed_observation_count = int(payload.get("observation_count", 0) or 0)
         self._clear_live_product_history()
         self._reset_realtime_processing(reseed_from_buffer=False)
@@ -1593,7 +1675,11 @@ class ReflectometryModule(QMainWindow):
     def _on_batch_analysis_failed(self, message: str) -> None:
         self.batch_analysis_thread = None
         self.analysis_running = False
-        prefix = "Fast file analysis" if self._is_headless_file_analysis_mode() else "File batch analysis"
+        prefix = (
+            "Fast file analysis"
+            if self._is_headless_file_analysis_mode()
+            else "File batch analysis"
+        )
         self.append_log(f"{prefix} failed: {message}")
         self._set_run_button_state("failed", tooltip=message)
         QMessageBox.warning(self, "Reflectometry", f"{prefix} failed:\n{message}")
@@ -1617,12 +1703,20 @@ class ReflectometryModule(QMainWindow):
             runtime_config = deepcopy(self.ir_config)
             runtime_config.logging.console = False
             runtime_config.logging.rotating_file = False
-            runtime_config.station.receiver_position = self._current_receiver_position(runtime_config.station.receiver_position)
-            self.live_realtime_processor = RealtimeProcessor(runtime_config, logger=self.analysis_logger)
+            runtime_config.station.receiver_position = self._current_receiver_position(
+                runtime_config.station.receiver_position
+            )
+            self.live_realtime_processor = RealtimeProcessor(
+                runtime_config, logger=self.analysis_logger
+            )
         return self.live_realtime_processor
 
-    def _run_live_realtime_analysis(self) -> tuple[RealtimeProcessor | None, ProcessingRunResult | None]:
-        observations = [item for item in self.observation_buffer if item.constellation in self.active_systems]
+    def _run_live_realtime_analysis(
+        self,
+    ) -> tuple[RealtimeProcessor | None, ProcessingRunResult | None]:
+        observations = [
+            item for item in self.observation_buffer if item.constellation in self.active_systems
+        ]
         if not observations:
             QMessageBox.information(
                 self,
@@ -1690,7 +1784,7 @@ class ReflectometryModule(QMainWindow):
             self._merge_live_product_history(result)
             self.latest_series_by_arc = processor.get_intermediate_series()
             self.last_processor = processor
-            self.last_analysis_timestamp = datetime.utcnow()
+            self.last_analysis_timestamp = datetime.now(timezone.utc).replace(tzinfo=None)
             self._populate_arc_table()
             self._populate_product_selector()
             self._populate_product_table()
@@ -1735,10 +1829,12 @@ class ReflectometryModule(QMainWindow):
             if self._find_solution_by_arc_id(self.selected_arc_id) is not None:
                 self._set_selected_arc(self.selected_arc_id)
                 return
-            if self._is_tracking_arc_id(self.selected_arc_id):
-                if self.selected_arc_id in self.tracking_context_by_arc:
-                    self._select_tracking_arc(self.selected_arc_id)
-                    return
+            if (
+                self._is_tracking_arc_id(self.selected_arc_id)
+                and self.selected_arc_id in self.tracking_context_by_arc
+            ):
+                self._select_tracking_arc(self.selected_arc_id)
+                return
 
         solution_entries = self._displayed_solution_entries()
         if not solution_entries:
@@ -1781,7 +1877,9 @@ class ReflectometryModule(QMainWindow):
                     solution,
                     browse_key=browse_key,
                     display_arc_id=self._display_arc_id(browse_key),
-                    time_summary=format_arc_time_summary(solution.timestamp_start, solution.timestamp_end),
+                    time_summary=format_arc_time_summary(
+                        solution.timestamp_start, solution.timestamp_end
+                    ),
                     elevation_text=elevation_text,
                     mean_az_text=mean_az_text,
                 ),
@@ -1792,7 +1890,9 @@ class ReflectometryModule(QMainWindow):
                 continue
             row_index = self._append_arc_status_row(
                 row_index,
-                build_tracking_status_row(context, display_arc_id=self._display_arc_id(context.arc_id)),
+                build_tracking_status_row(
+                    context, display_arc_id=self._display_arc_id(context.arc_id)
+                ),
             )
 
         self.arc_table.blockSignals(False)
@@ -1801,7 +1901,10 @@ class ReflectometryModule(QMainWindow):
         if selected_arc_id:
             if self._find_solution_by_arc_id(selected_arc_id) is not None:
                 self._set_selected_arc(selected_arc_id)
-            elif self._is_tracking_arc_id(selected_arc_id) and selected_arc_id in self.tracking_context_by_arc:
+            elif (
+                self._is_tracking_arc_id(selected_arc_id)
+                and selected_arc_id in self.tracking_context_by_arc
+            ):
                 self._select_tracking_arc(selected_arc_id)
         self.arc_table.verticalScrollBar().setValue(scroll_value)
 
@@ -1839,7 +1942,11 @@ class ReflectometryModule(QMainWindow):
             return contexts
         required_duration = self._tracking_preview_threshold_seconds()
         live_buffers = collect_latest_tracking_buffers(
-            [record for record in self.observation_buffer if self._record_matches_buffer_filters(record)],
+            [
+                record
+                for record in self.observation_buffer
+                if self._record_matches_buffer_filters(record)
+            ],
             max_time_gap_seconds=float(self.ir_config.processing.max_time_gap_seconds),
         )
         for buffer in live_buffers:
@@ -1931,7 +2038,9 @@ class ReflectometryModule(QMainWindow):
                 ),
                 self._make_product_table_item(
                     f"{peak_to_noise_ratio:.2f}" if peak_to_noise_ratio is not None else "--",
-                    sort_value=float(peak_to_noise_ratio) if peak_to_noise_ratio is not None else -1.0,
+                    sort_value=(
+                        float(peak_to_noise_ratio) if peak_to_noise_ratio is not None else -1.0
+                    ),
                     alignment=Qt.AlignmentFlag.AlignCenter,
                     foreground=self._pnr_band_text_color(pnr_band),
                     background=self._pnr_band_background_color(pnr_band),
@@ -1966,7 +2075,9 @@ class ReflectometryModule(QMainWindow):
                 self.selected_product_type = None
                 return
             for product_type in product_types:
-                self.product_selector.addItem(self._format_product_type_label(product_type), product_type)
+                self.product_selector.addItem(
+                    self._format_product_type_label(product_type), product_type
+                )
             self.product_selector.setEnabled(True)
             selected_index = self.product_selector.findData(current_type)
             if selected_index < 0:
@@ -1986,7 +2097,9 @@ class ReflectometryModule(QMainWindow):
     def _on_product_view_mode_changed(self, index: int) -> None:
         if index < 0 or not hasattr(self, "product_view_mode_combo"):
             return
-        self.selected_product_view_mode = str(self.product_view_mode_combo.itemData(index) or "by_system")
+        self.selected_product_view_mode = str(
+            self.product_view_mode_combo.itemData(index) or "by_system"
+        )
         self._refresh_product_plot()
 
     def _on_product_system_filter_changed(self, _: int) -> None:
@@ -2014,7 +2127,9 @@ class ReflectometryModule(QMainWindow):
         try:
             current_key = self.selected_arc_id
             self.arc_selector_combo.clear()
-            has_solutions = self.latest_result is not None and bool(self.latest_result.arc_solutions)
+            has_solutions = self.latest_result is not None and bool(
+                self.latest_result.arc_solutions
+            )
             has_tracking = bool(self.tracking_context_by_arc)
             if not has_solutions and not has_tracking:
                 self.arc_selector_combo.addItem("No arc status available", None)
@@ -2035,7 +2150,9 @@ class ReflectometryModule(QMainWindow):
                         browse_key=browse_key,
                         elevation_text=elevation_text,
                         mean_az_text=mean_az_text,
-                        time_summary=format_arc_time_summary(solution.timestamp_start, solution.timestamp_end),
+                        time_summary=format_arc_time_summary(
+                            solution.timestamp_start, solution.timestamp_end
+                        ),
                     )
                 )
 
@@ -2081,7 +2198,9 @@ class ReflectometryModule(QMainWindow):
     def _step_arc_selection(self, step: int) -> None:
         if not self.arc_selector_combo.isEnabled() or self.arc_selector_combo.count() <= 1:
             return
-        next_index = (self.arc_selector_combo.currentIndex() + step) % self.arc_selector_combo.count()
+        next_index = (
+            self.arc_selector_combo.currentIndex() + step
+        ) % self.arc_selector_combo.count()
         self.arc_selector_combo.setCurrentIndex(next_index)
 
     def _set_selected_arc(
@@ -2126,7 +2245,10 @@ class ReflectometryModule(QMainWindow):
         if self.latest_result is None:
             return None
         actual_arc_id = self.solution_arc_key_map.get(arc_id, arc_id)
-        return next((item for item in self.latest_result.arc_solutions if item.arc_id == actual_arc_id), None)
+        return next(
+            (item for item in self.latest_result.arc_solutions if item.arc_id == actual_arc_id),
+            None,
+        )
 
     def _is_tracking_arc_id(self, arc_id: str) -> bool:
         return arc_id in self.tracking_context_by_arc
@@ -2137,7 +2259,10 @@ class ReflectometryModule(QMainWindow):
             self.arc_table.clearSelection()
             for row in range(self.arc_table.rowCount()):
                 item = self.arc_table.item(row, 0)
-                if item is not None and str(item.data(Qt.ItemDataRole.UserRole) or item.text()) == arc_id:
+                if (
+                    item is not None
+                    and str(item.data(Qt.ItemDataRole.UserRole) or item.text()) == arc_id
+                ):
                     self.arc_table.selectRow(row)
                     break
         finally:
@@ -2172,14 +2297,24 @@ class ReflectometryModule(QMainWindow):
         self.arc_detail_labels["time_span"].setText(
             f"{solution.timestamp_start.strftime('%H:%M:%S')} - {solution.timestamp_end.strftime('%H:%M:%S')}"
         )
-        self.arc_detail_labels["start_el"].setText(f"{start_el_text} deg" if start_el_text != "--" else "--")
-        self.arc_detail_labels["end_el"].setText(f"{end_el_text} deg" if end_el_text != "--" else "--")
-        self.arc_detail_labels["mean_az"].setText(f"{mean_az_text} deg" if mean_az_text != "--" else "--")
+        self.arc_detail_labels["start_el"].setText(
+            f"{start_el_text} deg" if start_el_text != "--" else "--"
+        )
+        self.arc_detail_labels["end_el"].setText(
+            f"{end_el_text} deg" if end_el_text != "--" else "--"
+        )
+        self.arc_detail_labels["mean_az"].setText(
+            f"{mean_az_text} deg" if mean_az_text != "--" else "--"
+        )
         self.arc_detail_labels["height"].setText(
-            f"{solution.reflector_height_m:.3f} m" if solution.reflector_height_m is not None else "--"
+            f"{solution.reflector_height_m:.3f} m"
+            if solution.reflector_height_m is not None
+            else "--"
         )
         self.arc_detail_labels["peak_pnr"].setText(
-            f"{solution.peak_to_noise_ratio:.2f}" if solution.peak_to_noise_ratio is not None else "--"
+            f"{solution.peak_to_noise_ratio:.2f}"
+            if solution.peak_to_noise_ratio is not None
+            else "--"
         )
 
     def _clear_arc_detail_summary(self) -> None:
@@ -2223,7 +2358,9 @@ class ReflectometryModule(QMainWindow):
     def _series_for_arc(self, arc_id: str) -> SnrSeries | None:
         actual_arc_id = self.solution_arc_key_map.get(arc_id, arc_id)
         tracking_context = self.tracking_context_by_arc.get(arc_id)
-        return self.latest_series_by_arc.get(actual_arc_id) or (tracking_context.series if tracking_context else None)
+        return self.latest_series_by_arc.get(actual_arc_id) or (
+            tracking_context.series if tracking_context else None
+        )
 
     @staticmethod
     def _display_arc_id(arc_id: str) -> str:
@@ -2261,7 +2398,9 @@ class ReflectometryModule(QMainWindow):
         self.series_ax_raw.set_ylabel("SNR (dB-Hz)")
         self.series_ax_raw.grid(True, alpha=0.3)
 
-        self.series_ax_residual.plot(x_values, residual, ".-", color="#E67E22", linewidth=1.2, markersize=3)
+        self.series_ax_residual.plot(
+            x_values, residual, ".-", color="#E67E22", linewidth=1.2, markersize=3
+        )
         self.series_ax_residual.axhline(0.0, color="#94A3B8", linewidth=1.0, linestyle="--")
         self.series_ax_residual.set_title("Detrended Residual")
         self.series_ax_residual.set_xlabel("sin(Elevation)")
@@ -2284,9 +2423,15 @@ class ReflectometryModule(QMainWindow):
         self.arc_detail_labels["direction"].setText(context.direction)
         self.arc_detail_labels["time_span"].setText(context.time_summary)
         start_el_text, end_el_text = self._arc_start_end_elevation(context.arc_id)
-        self.arc_detail_labels["start_el"].setText(f"{start_el_text} deg" if start_el_text != "--" else "--")
-        self.arc_detail_labels["end_el"].setText(f"{end_el_text} deg" if end_el_text != "--" else "--")
-        self.arc_detail_labels["mean_az"].setText(f"{context.mean_az} deg" if context.mean_az != "--" else "--")
+        self.arc_detail_labels["start_el"].setText(
+            f"{start_el_text} deg" if start_el_text != "--" else "--"
+        )
+        self.arc_detail_labels["end_el"].setText(
+            f"{end_el_text} deg" if end_el_text != "--" else "--"
+        )
+        self.arc_detail_labels["mean_az"].setText(
+            f"{context.mean_az} deg" if context.mean_az != "--" else "--"
+        )
         self.arc_detail_labels["height"].setText("--")
         self.arc_detail_labels["peak_pnr"].setText("--")
 
@@ -2333,14 +2478,20 @@ class ReflectometryModule(QMainWindow):
         self.spectrum_header.setText(
             f"LSP pending for {context.satellite} {context.signal}. {ready_text}"
         )
-        self.primary_peak_label.setText("Primary peak is only available after LSP solving finishes.")
+        self.primary_peak_label.setText(
+            "Primary peak is only available after LSP solving finishes."
+        )
         self.spectrum_ax.set_title("Lomb-Scargle Spectrum Pending")
         self.spectrum_ax.set_xlabel("Spectral Frequency")
         self.spectrum_ax.set_ylabel("Power")
         self.spectrum_ax.text(
             0.5,
             0.5,
-            "Tracking arc\nSolving in progress" if context.status == "solving" else "Tracking arc\nWaiting for arc window",
+            (
+                "Tracking arc\nSolving in progress"
+                if context.status == "solving"
+                else "Tracking arc\nWaiting for arc window"
+            ),
             ha="center",
             va="center",
             fontsize=12,
@@ -2491,7 +2642,9 @@ class ReflectometryModule(QMainWindow):
     def _clear_series_plot(self) -> None:
         self.series_ax_raw.clear()
         self.series_ax_residual.clear()
-        self.series_header.setText("Choose an arc segment to inspect raw SNR and detrended residuals.")
+        self.series_header.setText(
+            "Choose an arc segment to inspect raw SNR and detrended residuals."
+        )
         self.series_ax_raw.set_title("Raw SNR vs sin(Elevation)")
         self.series_ax_raw.set_xlabel("sin(Elevation)")
         self.series_ax_raw.set_ylabel("SNR (dB-Hz)")
@@ -2504,7 +2657,9 @@ class ReflectometryModule(QMainWindow):
 
     def _clear_spectrum_plot(self) -> None:
         self.spectrum_ax.clear()
-        self.spectrum_header.setText("Spectrum and the primary peak for the selected arc will appear here.")
+        self.spectrum_header.setText(
+            "Spectrum and the primary peak for the selected arc will appear here."
+        )
         self.primary_peak_label.setText("Primary peak metrics will appear here.")
         self.spectrum_ax.set_title("Lomb-Scargle Spectrum")
         self.spectrum_ax.set_xlabel("Spectral Frequency")
@@ -2680,7 +2835,9 @@ class ReflectometryModule(QMainWindow):
         }.get(band, "#475569")
 
     def _product_view_label(self, view_mode: str | None = None) -> str:
-        return self.PRODUCT_VIEW_LABELS.get(view_mode or self._current_product_view_mode(), "By System")
+        return self.PRODUCT_VIEW_LABELS.get(
+            view_mode or self._current_product_view_mode(), "By System"
+        )
 
     def _group_products_for_view(
         self,
@@ -2690,7 +2847,11 @@ class ReflectometryModule(QMainWindow):
         grouped: dict[str, list[ProductResult]] = defaultdict(list)
         for product in products:
             grouped[self._product_group_key(product, view_mode)].append(product)
-        return dict(sorted(grouped.items(), key=lambda item: self._product_group_sort_key(view_mode, item[0])))
+        return dict(
+            sorted(
+                grouped.items(), key=lambda item: self._product_group_sort_key(view_mode, item[0])
+            )
+        )
 
     def _product_group_key(self, product: ProductResult, view_mode: str) -> str:
         if view_mode == "by_direction":
@@ -2792,7 +2953,10 @@ class ReflectometryModule(QMainWindow):
             if total_weight <= 0.0:
                 weights = [1.0 for _ in items]
                 total_weight = float(len(items))
-            weighted_value = sum(item.value * weight for item, weight in zip(items, weights)) / total_weight
+            weighted_value = (
+                sum(item.value * weight for item, weight in zip(items, weights, strict=False))
+                / total_weight
+            )
             weighted_epochs.append(
                 {
                     "timestamp": timestamp,
@@ -2819,7 +2983,11 @@ class ReflectometryModule(QMainWindow):
         return product_type.replace("_", " ").title()
 
     def _selected_product_systems(self) -> set[str]:
-        return {system for system, checkbox in self.product_system_checks.items() if checkbox.isChecked()}
+        return {
+            system
+            for system, checkbox in self.product_system_checks.items()
+            if checkbox.isChecked()
+        }
 
     @staticmethod
     def _system_display_name(system: str) -> str:
@@ -2835,7 +3003,9 @@ class ReflectometryModule(QMainWindow):
         }.get(system, system)
 
     def _refresh_config_view(self) -> None:
-        dynamic_status = "On" if self.ir_config.products.enable_dynamic_sea_level_correction else "Off"
+        dynamic_status = (
+            "On" if self.ir_config.products.enable_dynamic_sea_level_correction else "Off"
+        )
         sea_level_status = "On" if self.ir_config.products.enable_sea_level else "Off"
         dynamic_window_hours = float(self.ir_config.products.dynamic_sea_level_window_hours)
         self.config_info_label.setText(
@@ -2852,8 +3022,12 @@ class ReflectometryModule(QMainWindow):
         self._update_runtime_dynamic_control_state()
 
     def _update_summary_cards(self) -> None:
-        tracked_satellites = len([key for key in self.merged_satellites if key[0] in self.active_systems])
-        mountpoint_text = self._current_stream_station_id() or self.ir_config.station.station_id or "--"
+        tracked_satellites = len(
+            [key for key in self.merged_satellites if key[0] in self.active_systems]
+        )
+        mountpoint_text = (
+            self._current_stream_station_id() or self.ir_config.station.station_id or "--"
+        )
         buffered_samples = len(self.observation_buffer)
         if self._use_fast_file_analysis() and self.processed_observation_count > 0:
             buffered_samples = self.processed_observation_count
@@ -2863,7 +3037,9 @@ class ReflectometryModule(QMainWindow):
         self.summary_labels["tracked_satellites"].setText(str(tracked_satellites))
         self.summary_labels["buffered_samples"].setText(str(buffered_samples))
         self.summary_labels["last_run"].setText(
-            self.last_analysis_timestamp.strftime("%H:%M:%S") if self.last_analysis_timestamp else "--"
+            self.last_analysis_timestamp.strftime("%H:%M:%S")
+            if self.last_analysis_timestamp
+            else "--"
         )
 
         if self.latest_result is None:
@@ -2875,10 +3051,18 @@ class ReflectometryModule(QMainWindow):
             return
 
         self.summary_labels["arc_solutions"].setText(str(len(self.latest_result.arc_solutions)))
-        self.summary_labels["successful_arcs"].setText(str(sum(item.success for item in self.latest_result.arc_solutions)))
-        self.summary_labels["latest_height"].setText(self._latest_product_text(ProductType.REFLECTOR_HEIGHT.value))
-        self.summary_labels["latest_sea_level"].setText(self._latest_product_text(ProductType.SEA_LEVEL.value))
-        self.summary_labels["latest_snow_depth"].setText(self._latest_product_text(ProductType.SNOW_DEPTH.value))
+        self.summary_labels["successful_arcs"].setText(
+            str(sum(item.success for item in self.latest_result.arc_solutions))
+        )
+        self.summary_labels["latest_height"].setText(
+            self._latest_product_text(ProductType.REFLECTOR_HEIGHT.value)
+        )
+        self.summary_labels["latest_sea_level"].setText(
+            self._latest_product_text(ProductType.SEA_LEVEL.value)
+        )
+        self.summary_labels["latest_snow_depth"].setText(
+            self._latest_product_text(ProductType.SNOW_DEPTH.value)
+        )
 
     def _latest_product_text(self, product_type: str) -> str:
         if (
@@ -2893,9 +3077,17 @@ class ReflectometryModule(QMainWindow):
             if corrected_products:
                 products = corrected_products
             else:
-                products = [item for item in self._products_for_display() if item.product_type.value == product_type]
+                products = [
+                    item
+                    for item in self._products_for_display()
+                    if item.product_type.value == product_type
+                ]
         else:
-            products = [item for item in self._products_for_display() if item.product_type.value == product_type]
+            products = [
+                item
+                for item in self._products_for_display()
+                if item.product_type.value == product_type
+            ]
         if not products:
             return "--"
         product = sorted(products, key=lambda item: item.timestamp)[-1]
@@ -2910,7 +3102,9 @@ class ReflectometryModule(QMainWindow):
             return
         try:
             written = self.last_processor.write_outputs(self.latest_result)
-            self.append_log(f"Exported {len(written)} files to {self.last_processor.config.output.output_dir}")
+            self.append_log(
+                f"Exported {len(written)} files to {self.last_processor.config.output.output_dir}"
+            )
             QMessageBox.information(
                 self,
                 "Reflectometry",
@@ -2922,7 +3116,9 @@ class ReflectometryModule(QMainWindow):
 
     def open_ir_config_dialog(self) -> None:
         self._sync_runtime_ir_defaults(force=True)
-        dialog = ReflectometryConfigDialog(self.ir_config_path, self, initial_yaml_text=self._serialize_ir_config())
+        dialog = ReflectometryConfigDialog(
+            self.ir_config_path, self, initial_yaml_text=self._serialize_ir_config()
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         try:
@@ -2935,7 +3131,11 @@ class ReflectometryModule(QMainWindow):
             self.ir_config.logging.rotating_file = False
             self._apply_runtime_controls_from_config()
             self.observation_buffer = deque(
-                [record for record in self.observation_buffer if self._record_matches_buffer_filters(record)]
+                [
+                    record
+                    for record in self.observation_buffer
+                    if self._record_matches_buffer_filters(record)
+                ]
             )
             self._clear_live_product_history()
             self._reset_realtime_processing(reseed_from_buffer=True)
@@ -2948,9 +3148,15 @@ class ReflectometryModule(QMainWindow):
             QMessageBox.warning(self, "Reflectometry", f"Failed to apply IR config:\n{exc}")
 
     def on_filter_changed(self) -> None:
-        self.active_systems = {key for key, checkbox in self.chk_sys.items() if checkbox.isChecked()}
+        self.active_systems = {
+            key for key, checkbox in self.chk_sys.items() if checkbox.isChecked()
+        }
         self.observation_buffer = deque(
-            [record for record in self.observation_buffer if self._record_matches_buffer_filters(record)]
+            [
+                record
+                for record in self.observation_buffer
+                if self._record_matches_buffer_filters(record)
+            ]
         )
         self._clear_live_product_history()
         self._reset_realtime_processing(reseed_from_buffer=True)
@@ -2990,7 +3196,11 @@ class ReflectometryModule(QMainWindow):
         self.restart_streams(start_streams=False)
 
     def restart_streams(self, start_streams: bool = True) -> None:
-        self.append_log("=== Restarting reflectometry streams ===" if start_streams else "=== Disconnecting streams ===")
+        self.append_log(
+            "=== Restarting reflectometry streams ==="
+            if start_streams
+            else "=== Disconnecting streams ==="
+        )
         self._apply_gui_refresh_policy(announce=False)
         self._sync_mode_combo_label()
 
@@ -3043,7 +3253,8 @@ class ReflectometryModule(QMainWindow):
         if self._use_fast_file_analysis():
             self.stream_status["OBS"] = True
             self.eph_data_available = bool(
-                self.settings.get("EPH_ENABLED") and (self.settings.get("EPH", {}) or {}).get("file_path")
+                self.settings.get("EPH_ENABLED")
+                and (self.settings.get("EPH", {}) or {}).get("file_path")
             )
             self._render_status_indicators()
             self.append_log(
@@ -3084,7 +3295,9 @@ class ReflectometryModule(QMainWindow):
             and self._is_stream_configured(self.settings["EPH"])
         ):
             if self.settings["EPH"].get("source") == "File":
-                self.append_log("EPH file source is supported through RINEX observation replay mode")
+                self.append_log(
+                    "EPH file source is supported through RINEX observation replay mode"
+                )
             else:
                 eph_buffer = RingBuffer(maxsize=1000)
                 self.ring_buffers["EPH"] = eph_buffer
@@ -3161,7 +3374,11 @@ class ReflectometryModule(QMainWindow):
     def _current_receiver_position(self, fallback: ReceiverPosition | None) -> ReceiverPosition:
         config = get_global_config()
         approx_rec_pos = getattr(config, "approx_rec_pos", None)
-        if approx_rec_pos and len(approx_rec_pos) == 3 and any(abs(float(item)) > 1e-6 for item in approx_rec_pos):
+        if (
+            approx_rec_pos
+            and len(approx_rec_pos) == 3
+            and any(abs(float(item)) > 1e-6 for item in approx_rec_pos)
+        ):
             lat_rad, lon_rad, height_m = ecef2lla(approx_rec_pos)
             return ReceiverPosition(
                 latitude_deg=float(np.degrees(lat_rad)),
@@ -3206,7 +3423,9 @@ class ReflectometryModule(QMainWindow):
             self.settings.get("OBS", {}),
         )
 
-        timer_interval_ms = 100 if self.gui_update_interval >= THROTTLED_GUI_INTERVAL_SECONDS else 80
+        timer_interval_ms = (
+            100 if self.gui_update_interval >= THROTTLED_GUI_INTERVAL_SECONDS else 80
+        )
         if hasattr(self, "gui_update_timer"):
             self.gui_update_timer.start(timer_interval_ms)
 
@@ -3217,7 +3436,9 @@ class ReflectometryModule(QMainWindow):
             return
 
         if self.gui_update_interval >= THROTTLED_GUI_INTERVAL_SECONDS:
-            effective_period = estimate_effective_replay_period_seconds(self.settings.get("OBS", {}))
+            effective_period = estimate_effective_replay_period_seconds(
+                self.settings.get("OBS", {})
+            )
             if effective_period and effective_period > 0.0:
                 self.append_log(
                     f"High-rate RINEX replay detected, GUI refresh capped at {self.gui_update_interval:.1f}s "
@@ -3246,4 +3467,3 @@ def _circular_mean_deg(values) -> float | None:
     if abs(sin_mean) < 1e-12 and abs(cos_mean) < 1e-12:
         return None
     return float((np.degrees(np.arctan2(sin_mean, cos_mean)) + 360.0) % 360.0)
-

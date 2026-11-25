@@ -1,10 +1,10 @@
 """Arc builder tests."""
 
-from datetime import datetime, timedelta
 import math
+from datetime import datetime, timedelta
 
-from core.reflectometry.models import ObservationRecord
 from core.reflectometry.config import ReflectionZoneConfig
+from core.reflectometry.models import ObservationRecord
 from core.reflectometry.services.arc_builder import ArcBuilder
 from core.reflectometry.services.geometry import GeometryResolver, matches_reflection_zones
 from tests.reflectometry.helpers import generate_synthetic_observations
@@ -84,7 +84,19 @@ def test_multiple_reflection_zones_are_treated_as_union(example_config):
         ),
     ]
 
-    assert matches_reflection_zones(150.0, 8.0, example_config.geometry, example_config.processing) is True
-    assert matches_reflection_zones(235.0, 15.0, example_config.geometry, example_config.processing) is True
-    assert matches_reflection_zones(190.0, 8.0, example_config.geometry, example_config.processing) is False
-    assert matches_reflection_zones(150.0, 16.0, example_config.geometry, example_config.processing) is False
+    assert (
+        matches_reflection_zones(150.0, 8.0, example_config.geometry, example_config.processing)
+        is True
+    )
+    assert (
+        matches_reflection_zones(235.0, 15.0, example_config.geometry, example_config.processing)
+        is True
+    )
+    assert (
+        matches_reflection_zones(190.0, 8.0, example_config.geometry, example_config.processing)
+        is False
+    )
+    assert (
+        matches_reflection_zones(150.0, 16.0, example_config.geometry, example_config.processing)
+        is False
+    )

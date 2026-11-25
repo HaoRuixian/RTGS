@@ -1,0 +1,194 @@
+approx_rec_pos: null
+base_settings:
+  baudrate: 115200
+  data_format: RTCM3
+  databits: 8
+  enabled: false
+  file_path: ''
+  file_type: Auto Detect
+  final_results_only: false
+  flowctrl: None
+  host: ''
+  mountpoint: ''
+  parity: None
+  password: ''
+  port: '2101'
+  replay_speed: 1.0
+  serial_port: /dev/ttyS31
+  source_type: NTRIP Server
+  stopbits: 1.0
+  user: ''
+eph_settings:
+  baudrate: 115200
+  data_format: RTCM3
+  databits: 8
+  enabled: true
+  file_path: ''
+  file_type: Auto Detect
+  final_results_only: false
+  flowctrl: None
+  host: ntrip.data.gnss.ga.gov.au
+  mountpoint: BCEP00BKG0
+  parity: None
+  password: ''
+  port: '2101'
+  replay_speed: 1.0
+  serial_port: /dev/ttyS31
+  source_type: NTRIP Server
+  stopbits: 1.0
+  user: hrx
+obs_settings:
+  baudrate: 115200
+  data_format: RTCM3
+  databits: 8
+  enabled: true
+  file_path: ''
+  file_type: Auto Detect
+  final_results_only: false
+  flowctrl: None
+  host: grserg.top
+  mountpoint: GR02
+  parity: None
+  password: ''
+  port: '2101'
+  replay_speed: 1.0
+  serial_port: /dev/ttyS31
+  source_type: NTRIP Server
+  stopbits: 1.0
+  user: adminHRX
+positioning_settings:
+  allow_gps_fallback: false
+  code_sigma_m: 1.0
+  cutoff_elevation_deg: 10.0
+  fixed_std_pos: 2.5
+  gnss_systems:
+  - G
+  - R
+  - E
+  - C
+  - J
+  - I
+  ionosphere_option: IFLC
+  max_pdop: 10.0
+  min_satellites: 4
+  ppp_antenna_eccentricity_neu_m:
+  - 0.0
+  - 0.0
+  - 0.0
+  ppp_antex_file: ''
+  ppp_apply_ocean_loading: true
+  ppp_apply_phase_windup: true
+  ppp_apply_receiver_antenna: true
+  ppp_apply_satellite_antenna: true
+  ppp_apply_shapiro_delay: true
+  ppp_apply_solid_earth_tide: true
+  ppp_ar_constraint_sigma_m: 0.0001
+  ppp_ar_enabled: true
+  ppp_ar_max_nl_fraction: 0.12
+  ppp_ar_max_nl_sigma_cycles: 0.2
+  ppp_ar_max_position_shift_m: 0.5
+  ppp_ar_max_wl_fraction: 0.15
+  ppp_ar_max_wl_sigma_cycles: 0.2
+  ppp_ar_min_elevation_deg: 10.0
+  ppp_ar_min_epochs: 30
+  ppp_ar_min_satellites: 5
+  ppp_ar_ratio_threshold: 3.0
+  ppp_ar_require_full_group: true
+  ppp_ar_require_mw_consistency: true
+  ppp_ar_systems:
+  - G
+  - E
+  - C
+  - J
+  ppp_auto_ssr_apc_reference: true
+  ppp_blq_file: ''
+  ppp_estimate_trop_gradients: true
+  ppp_independent_mode: false
+  ppp_initial_ambiguity_sigma_m: 1000.0
+  ppp_initial_clock_sigma_m: 1000.0
+  ppp_initial_ionosphere_sigma_m: 30.0
+  ppp_initial_position_sigma_m: 100.0
+  ppp_initial_trop_gradient_sigma_m: 0.01
+  ppp_ionosphere_process_noise_mps: 0.001
+  ppp_max_code_postfit_residual_m: 3.0
+  ppp_max_phase_postfit_residual_m: 0.03
+  ppp_observation_model: IFLC
+  ppp_position_process_noise_mps: 0.0
+  ppp_postfit_enabled: true
+  ppp_precise_model_enabled: true
+  ppp_receiver_antenna: ''
+  ppp_spp_bootstrap_sigma_m: 100.0
+  ppp_ssr_apc_reference: false
+  ppp_station_apriori_sigma_m: 0.05
+  ppp_station_id: ''
+  ppp_trop_gradient_process_noise_mps: 1.0e-05
+  ppp_trop_process_noise_mps: 5.0e-05
+  ppp_use_config_initial_position: false
+  ppp_use_ssr_yaw: true
+  ppp_use_station_apriori: false
+  ppp_zwd_correlation_time_s: 604800.0
+  prefer_gps_only: false
+  random_walk: 0.0
+  require_ssr_corrections: true
+  rtk_ar_lock_count: 5
+  rtk_ar_min_fix: 10
+  rtk_ar_mode: fix-and-hold
+  rtk_ar_outage_count: 5
+  rtk_ar_ratio_threshold: 3.0
+  rtk_base_format: rtcm3
+  rtk_base_position:
+  - 0.0
+  - 0.0
+  - 0.0
+  rtk_base_position_source: rtcm
+  rtk_bds_ar: true
+  rtk_cycle_slip_threshold_m: 0.05
+  rtk_dynamics: true
+  rtk_filter_iterations: 1
+  rtk_frequency: l1+l2
+  rtk_gga_cycle_ms: 5000
+  rtk_gga_mode: auto
+  rtk_gga_position:
+  - 0.0
+  - 0.0
+  - 0.0
+  rtk_glonass_ar_mode: autocal
+  rtk_max_correction_age_s: 10.0
+  rtk_network_protocol: VRS
+  rtk_rover_format: rtcm3
+  rtk_rover_mode: kinematic
+  rtk_type: single_base
+  smoothing_window: 10
+  system_code_weight_factors:
+    R: 5.0
+  troposphere_model: Sastamoinen
+  uncertain_std_pos: 5.0
+  use_smoothing: false
+  weight_mode: elevation
+ssr_settings:
+  baudrate: 115200
+  data_format: RTCM3
+  databits: 8
+  enabled: true
+  file_path: ''
+  file_type: Auto Detect
+  final_results_only: false
+  flowctrl: None
+  host: ntrip.data.gnss.ga.gov.au
+  mountpoint: SSRA00CAS0
+  parity: None
+  password: ''
+  port: '2101'
+  replay_speed: 1.0
+  serial_port: /dev/ttyS31
+  source_type: NTRIP Server
+  stopbits: 1.0
+  user: hrx
+target_systems:
+- G
+- R
+- E
+- C
+- J
+- S
+- I

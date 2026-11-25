@@ -129,7 +129,7 @@ def test_rtcm_glonass_tau_is_normalized_to_rinex_clock_bias(monkeypatch):
 
     eph = handler.extract_glonass_ephemeris(msg)
 
-    assert eph["tau_n"] == pytest.approx(134_218 * (2 ** -30))
-    assert eph["gamma_n"] == pytest.approx(330 * (2 ** -40))
+    assert eph["tau_n"] == pytest.approx(134_218 * (2**-30))
+    assert eph["gamma_n"] == pytest.approx(330 * (2**-40))
     assert eph["tb"] == pytest.approx(5 * 86_400 + 32 * 900 - 3 * 3600 + 18)
     assert eph["tk"] == pytest.approx(5 * 86_400 - 3 * 3600 + 18)

@@ -1,0 +1,22 @@
+include README.md
+include pyproject.toml
+include requirements.txt
+
+recursive-include core *.py
+recursive-include core/resources *
+recursive-include ui *.py
+prune ui/legacy
+recursive-include utils *.py
+recursive-include utils/realtime_ekf_gnssir/static *.css *.html *.js
+recursive-include utils/rt_ntrip_rinex_service/static *.css *.html *.js
+recursive-include src *.py py.typed
+recursive-include scripts *.py
+recursive-include tests *.py *.md
+recursive-include doc *.md
+
+prune config
+prune build
+prune dist
+prune log
+prune output
+global-exclude __pycache__ *.py[cod] *.so

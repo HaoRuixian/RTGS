@@ -10,7 +10,7 @@ eph_settings:
   host: ntrip.data.gnss.ga.gov.au
   mountpoint: BCEP00BKG0
   parity: None
-  password: Hao20030801@
+  password: ''
   port: '2101'
   serial_port: COM3
   source_type: NTRIP Server
@@ -24,7 +24,7 @@ obs_settings:
   host: ntrip.data.gnss.ga.gov.au
   mountpoint: BRST00FRA0
   parity: None
-  password: Hao20030801@
+  password: ''
   port: '2101'
   serial_port: COM3
   source_type: NTRIP Server

@@ -6,6 +6,7 @@ import argparse
 import signal
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 
 from .config import AppConfigStore
@@ -20,11 +21,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=str(Path(__file__).resolve().parent / "config" / "app.yaml"),
         help="Realtime EKF-GNSSIR YAML config path.",
     )
-    parser.add_argument("--station", action="append", default=[], help="Only expose/run the named station.")
+    parser.add_argument(
+        "--station", action="append", default=[], help="Only expose/run the named station."
+    )
     parser.add_argument("--host", default=None, help="Override Web bind host.")
     parser.add_argument("--port", type=int, default=None, help="Override Web bind port.")
     parser.add_argument("--no-web", action="store_true", help="Run station workers without Web UI.")
-    parser.add_argument("--no-auto-start", action="store_true", help="Do not auto-start configured stations.")
+    parser.add_argument(
+        "--no-auto-start", action="store_true", help="Do not auto-start configured stations."
+    )
     return parser
 
 
@@ -50,10 +55,8 @@ def main(argv: list[str] | None = None) -> int:
     for sig_name in ("SIGINT", "SIGTERM"):
         sig = getattr(signal, sig_name, None)
         if sig is not None:
-            try:
+            with suppress(ValueError):
                 signal.signal(sig, request_stop)
-            except ValueError:
-                pass
 
     manager.start()
 
@@ -63,7 +66,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_web:
         server = build_server(manager, host, port)
         manager.logs.write("system", f"Web UI listening on http://{host}:{port}")
-        server_thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True)
+        server_thread = threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True
+        )
         server_thread.start()
         print(f"Realtime EKF-GNSSIR Web UI: http://{host}:{port}", flush=True)
 

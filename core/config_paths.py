@@ -1,11 +1,68 @@
-"""Repository-managed configuration file locations."""
+"""Configuration locations for repository and installed RTGS runtimes."""
 
 from __future__ import annotations
 
+import os
+import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-CONFIG_ROOT = PROJECT_ROOT / "config"
+CONFIG_DIR_ENVIRONMENT_VARIABLE = "RTGS_CONFIG_DIR"
+_REPOSITORY_CONFIG_ROOT = PROJECT_ROOT / "config"
+
+
+def _user_config_root(
+    *,
+    environ: Mapping[str, str] | None = None,
+    platform_name: str | None = None,
+    home: Path | None = None,
+) -> Path:
+    """Return the writable per-user configuration directory for this platform."""
+    resolved_environ = os.environ if environ is None else environ
+    override = str(resolved_environ.get(CONFIG_DIR_ENVIRONMENT_VARIABLE, "")).strip()
+    if override:
+        return Path(override).expanduser()
+
+    resolved_platform = sys.platform if platform_name is None else platform_name
+    resolved_home = Path.home() if home is None else home
+    if resolved_platform == "win32":
+        app_data = str(resolved_environ.get("APPDATA", "")).strip()
+        return (Path(app_data) if app_data else resolved_home / "AppData" / "Roaming") / "RTGS"
+    if resolved_platform == "darwin":
+        return resolved_home / "Library" / "Application Support" / "RTGS"
+
+    xdg_config_home = str(resolved_environ.get("XDG_CONFIG_HOME", "")).strip()
+    return (Path(xdg_config_home) if xdg_config_home else resolved_home / ".config") / "rtgs"
+
+
+def _select_config_root(
+    project_root: Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+    platform_name: str | None = None,
+    home: Path | None = None,
+) -> Path:
+    """Prefer an explicit override, then repository config, then user config."""
+    resolved_environ = os.environ if environ is None else environ
+    if str(resolved_environ.get(CONFIG_DIR_ENVIRONMENT_VARIABLE, "")).strip():
+        return _user_config_root(
+            environ=resolved_environ,
+            platform_name=platform_name,
+            home=home,
+        )
+
+    repository_config = project_root / "config"
+    if repository_config.is_dir():
+        return repository_config
+    return _user_config_root(
+        environ=resolved_environ,
+        platform_name=platform_name,
+        home=home,
+    )
+
+
+CONFIG_ROOT = _select_config_root(PROJECT_ROOT)
 STREAM_CONFIG_DIR = CONFIG_ROOT / "streams"
 IR_CONFIG_DIR = CONFIG_ROOT / "ir"
 LEGACY_STREAM_CONFIG_DIR = CONFIG_ROOT / "legacy"
@@ -16,19 +73,37 @@ DEFAULT_IR_CONFIG_NAME = "default_ir.yaml"
 
 
 def ensure_config_directories() -> None:
-    """确保仓库内配置目录存在。"""
+    """Ensure writable configuration directories exist."""
     for path in (CONFIG_ROOT, STREAM_CONFIG_DIR, IR_CONFIG_DIR, LEGACY_STREAM_CONFIG_DIR):
         path.mkdir(parents=True, exist_ok=True)
 
 
 def _resolve_repo_config_path(path: str | Path, base_dir: Path) -> Path:
-    """将相对配置路径解析到仓库配置目录下。"""
+    """Resolve legacy ``config/...`` and relative paths under the active root."""
     candidate = Path(path)
     if candidate.is_absolute():
         return candidate
     if candidate.parts and candidate.parts[0] == "config":
-        return PROJECT_ROOT / candidate
+        return CONFIG_ROOT.joinpath(*candidate.parts[1:])
     return base_dir / candidate
+
+
+def _ensure_default_stream_config(path: Path) -> None:
+    """Create a credential-free stream configuration when no default exists."""
+    if path.is_file():
+        return
+    from core.global_config import GlobalConfig
+
+    GlobalConfig().save_to_file(str(path))
+
+
+def _ensure_default_ir_config(path: Path) -> None:
+    """Create the built-in DEMO reflectometry configuration when missing."""
+    if path.is_file():
+        return
+    from core.reflectometry.config import dump_example_config
+
+    dump_example_config(path)
 
 
 def resolve_stream_config_path(
@@ -72,8 +147,11 @@ def resolve_ir_config_path(
 
 
 def default_stream_config_path(filename: str = DEFAULT_STREAM_CONFIG_NAME) -> Path:
-    """返回默认实时数据流配置路径。"""
-    return resolve_stream_config_path(filename)
+    """Return a stream config path, provisioning the safe default when needed."""
+    path = resolve_stream_config_path(filename)
+    if filename == DEFAULT_STREAM_CONFIG_NAME:
+        _ensure_default_stream_config(path)
+    return path
 
 
 def default_stream_save_path(filename: str = DEFAULT_STREAM_SAVE_NAME) -> Path:
@@ -82,12 +160,16 @@ def default_stream_save_path(filename: str = DEFAULT_STREAM_SAVE_NAME) -> Path:
 
 
 def default_ir_config_path(filename: str = DEFAULT_IR_CONFIG_NAME) -> Path:
-    """返回默认 GNSS-IR 配置路径。"""
-    return resolve_ir_config_path(filename)
+    """Return an IR config path, provisioning the DEMO default when needed."""
+    path = resolve_ir_config_path(filename)
+    if filename == DEFAULT_IR_CONFIG_NAME:
+        _ensure_default_ir_config(path)
+    return path
 
 
 __all__ = [
     "CONFIG_ROOT",
+    "CONFIG_DIR_ENVIRONMENT_VARIABLE",
     "DEFAULT_IR_CONFIG_NAME",
     "DEFAULT_STREAM_CONFIG_NAME",
     "DEFAULT_STREAM_SAVE_NAME",

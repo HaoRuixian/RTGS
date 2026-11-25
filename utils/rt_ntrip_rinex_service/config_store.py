@@ -18,7 +18,6 @@ from .service import (
     load_rt_rinex_config,
 )
 
-
 DEFAULT_CONFIG: dict[str, Any] = {
     "defaults": {
         "enabled": True,
@@ -89,7 +88,9 @@ class ConfigStore:
     def list_station_dicts(self) -> list[dict[str, Any]]:
         return list(self.load_raw().get("stations") or [])
 
-    def upsert_station(self, station: dict[str, Any], *, original_name: str | None = None) -> dict[str, Any]:
+    def upsert_station(
+        self, station: dict[str, Any], *, original_name: str | None = None
+    ) -> dict[str, Any]:
         cleaned = self._normalize_station_payload(station)
         target_name = str(original_name or cleaned["name"]).strip()
         with self._lock:
@@ -102,7 +103,10 @@ class ConfigStore:
                     replaced = True
                     break
             if not replaced:
-                if any(str((item or {}).get("name") or "").strip() == cleaned["name"] for item in stations):
+                if any(
+                    str((item or {}).get("name") or "").strip() == cleaned["name"]
+                    for item in stations
+                ):
                     raise ValueError(f"Station already exists: {cleaned['name']}")
                 stations.append(cleaned)
             self._write_raw_unlocked(raw)
@@ -115,7 +119,11 @@ class ConfigStore:
         with self._lock:
             raw = self.load_raw()
             stations = raw.setdefault("stations", [])
-            kept = [item for item in stations if str((item or {}).get("name") or "").strip() != station_name]
+            kept = [
+                item
+                for item in stations
+                if str((item or {}).get("name") or "").strip() != station_name
+            ]
             removed = len(kept) != len(stations)
             if removed:
                 raw["stations"] = kept
@@ -149,7 +157,9 @@ class ConfigStore:
                     continue
                 rinex = station.setdefault("rinex", {})
                 existing = self._normalize_position(rinex.get("approx_position"))
-                if existing is not None and all(abs(a - b) <= 0.0001 for a, b in zip(existing, normalized)):
+                if existing is not None and all(
+                    abs(a - b) <= 0.0001 for a, b in zip(existing, normalized, strict=True)
+                ):
                     return
                 rinex["approx_position"] = normalized
                 self._write_raw_unlocked(raw)

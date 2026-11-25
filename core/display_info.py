@@ -1,36 +1,53 @@
-
 """Console formatting helpers for printing parsed epoch and satellite summaries."""
 
-def print_epoch_header(epoch_data):
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+
+from core.data_models import EpochObservation, SatelliteState
+
+SYSTEM_NAMES = {
+    "G": "GPS",
+    "R": "GLONASS",
+    "E": "Galileo",
+    "C": "BeiDou",
+    "J": "QZSS",
+    "I": "IRNSS",
+    "S": "SBAS",
+}
+
+
+def print_epoch_header(epoch_data: EpochObservation) -> None:
+    """Print the time and satellite count for one observation epoch."""
     print("=" * 68)
     print(f" EPOCH TIME : {epoch_data.gps_time}")
     print(f" NUM SATS   : {len(epoch_data.satellites)}")
     print("-" * 68)
 
 
-def group_satellites_by_system(epoch_data):
-    sys_map = {
-        'G': 'GPS',
-        'R': 'GLONASS',
-        'E': 'Galileo',
-        'C': 'BeiDou',
-        'J': 'QZSS',
-        'I': 'IRNSS',
-        'S': 'SBAS'
-    }
-
-    sats_by_sys = {}
+def group_satellites_by_system(
+    epoch_data: EpochObservation,
+) -> tuple[dict[str, list[tuple[str, SatelliteState]]], dict[str, str]]:
+    """Group epoch satellites by one-character constellation identifier."""
+    sats_by_sys: dict[str, list[tuple[str, SatelliteState]]] = {}
     for key, sat in epoch_data.satellites.items():
         sys_char = key[0]
         sats_by_sys.setdefault(sys_char, []).append((key, sat))
 
-    return sats_by_sys, sys_map
+    return sats_by_sys, dict(SYSTEM_NAMES)
 
 
-def print_satellite_block(sys_char, sat_list, sys_map):
+def print_satellite_block(
+    sys_char: str,
+    sat_list: Sequence[tuple[str, SatelliteState]],
+    sys_map: Mapping[str, str],
+) -> int:
+    """Print one constellation block and return the number of present signals."""
     print(f"\n [{sys_map.get(sys_char, 'UNKNOWN')}] ({len(sat_list)} sats)\n")
     print("  PRN   Signal  |  El(°)  Az(°)  |   SNR(dB)   Pseudorange(m)     CarrierPhase(cyc)")
-    print(" ---------------------------------------------------------------------------------------")
+    print(
+        " ---------------------------------------------------------------------------------------"
+    )
 
     valid_count = 0
 
@@ -47,17 +64,15 @@ def print_satellite_block(sys_char, sat_list, sys_map):
 
             valid_count += 1
             snr = f"{sig.snr:5.1f}" if getattr(sig, "snr", None) else "  N/A"
-            pr  = f"{sig.pseudorange:14.3f}" if getattr(sig, "pseudorange", None) else "      N/A"
-            cp  = f"{sig.phase:16.3f}"       if getattr(sig, "phase", None)       else "        N/A"
+            pr = f"{sig.pseudorange:14.3f}" if getattr(sig, "pseudorange", None) else "      N/A"
+            cp = f"{sig.phase:16.3f}" if getattr(sig, "phase", None) else "        N/A"
 
             print(f"  {key:4}   {sig_code:4}   |  {el_str}  {az_str}  |   {snr}     {pr}     {cp}")
 
     return valid_count
 
 
-def print_epoch_footer(epoch_data, valid_count):
-    print(
-        "\n--- EPOCH PROCESSED: "
-        f"{epoch_data.gps_time} | Valid SNR sats = {valid_count} ---"
-    )
+def print_epoch_footer(epoch_data: EpochObservation, valid_count: int) -> None:
+    """Print the completion summary for one observation epoch."""
+    print("\n--- EPOCH PROCESSED: " f"{epoch_data.gps_time} | Valid SNR sats = {valid_count} ---")
     print("=" * 87 + "\n")

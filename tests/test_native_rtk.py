@@ -5,7 +5,6 @@ import time
 import pytest
 
 from core.global_config import GlobalConfig
-from core.positioning_models import PositioningMode, SolutionStatus
 from core.native_rtk import (
     NativeRTKRunner,
     build_rtk_engine_config,
@@ -13,7 +12,7 @@ from core.native_rtk import (
     parse_rtk_engine_solution,
     redact_sensitive_text,
 )
-
+from core.positioning_models import PositioningMode, SolutionStatus
 
 ROVER = {
     "source_type": "NTRIP Server",
@@ -88,7 +87,9 @@ def test_network_config_uses_receiver_position_for_vrs_gga():
     assert "inpstr2-nmeareq    =latlon" in config
     assert "misc-nmeacycle     =3000" in config
     latitude_line = next(line for line in config.splitlines() if line.startswith("inpstr2-nmealat"))
-    longitude_line = next(line for line in config.splitlines() if line.startswith("inpstr2-nmealon"))
+    longitude_line = next(
+        line for line in config.splitlines() if line.startswith("inpstr2-nmealon")
+    )
     latitude = float(latitude_line.split("=", 1)[1])
     longitude = float(longitude_line.split("=", 1)[1])
     assert 39.0 < latitude < 41.0

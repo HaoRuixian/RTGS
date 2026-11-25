@@ -13,10 +13,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="GNSS-IR realtime reflector subsystem")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    validate_parser = subparsers.add_parser("validate-config", help="Validate a YAML configuration file")
-    validate_parser.add_argument("--config", required=True, help="Path to the YAML configuration file")
+    validate_parser = subparsers.add_parser(
+        "validate-config", help="Validate a YAML configuration file"
+    )
+    validate_parser.add_argument(
+        "--config", required=True, help="Path to the YAML configuration file"
+    )
 
-    dump_parser = subparsers.add_parser("dump-example-config", help="Write the bundled example YAML")
+    dump_parser = subparsers.add_parser(
+        "dump-example-config", help="Write the bundled example YAML"
+    )
     dump_parser.add_argument("--output", default=str(default_ir_config_path()))
     return parser
 

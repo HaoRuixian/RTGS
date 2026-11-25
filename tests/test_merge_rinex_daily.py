@@ -28,7 +28,27 @@ def _write_hourly_rinex(path: Path, epoch_time: datetime, pseudorange: float) ->
     )
     assert writer.write_observation(
         epoch_time,
-        {"G01": type("Sat", (), {"signals": {"1C": type("Sig", (), {"pseudorange": pseudorange, "phase": 2.0, "doppler": 3.0, "snr": 4.0, "half_cycle": 0})()}})()},
+        {
+            "G01": type(
+                "Sat",
+                (),
+                {
+                    "signals": {
+                        "1C": type(
+                            "Sig",
+                            (),
+                            {
+                                "pseudorange": pseudorange,
+                                "phase": 2.0,
+                                "doppler": 3.0,
+                                "snr": 4.0,
+                                "half_cycle": 0,
+                            },
+                        )()
+                    }
+                },
+            )()
+        },
     )
     writer.close()
     return path
@@ -83,7 +103,27 @@ def test_merge_rinex_daily_files_resamples_to_15s(tmp_path):
     for second in range(31):
         assert writer.write_observation(
             datetime(2026, 3, 24, 0, 0, second),
-            {"G01": type("Sat", (), {"signals": {"1C": type("Sig", (), {"pseudorange": float(second), "phase": 2.0, "doppler": 3.0, "snr": 4.0, "half_cycle": 0})()}})()},
+            {
+                "G01": type(
+                    "Sat",
+                    (),
+                    {
+                        "signals": {
+                            "1C": type(
+                                "Sig",
+                                (),
+                                {
+                                    "pseudorange": float(second),
+                                    "phase": 2.0,
+                                    "doppler": 3.0,
+                                    "snr": 4.0,
+                                    "half_cycle": 0,
+                                },
+                            )()
+                        }
+                    },
+                )()
+            },
         )
     writer.close()
 
@@ -155,7 +195,27 @@ def test_merge_rinex_daily_files_resamples_on_gps_time_scale(tmp_path):
     for second in range(31):
         assert writer.write_observation(
             datetime(2026, 3, 24, 0, 0, second),
-            {"G01": type("Sat", (), {"signals": {"1C": type("Sig", (), {"pseudorange": float(second), "phase": 2.0, "doppler": 3.0, "snr": 4.0, "half_cycle": 0})()}})()},
+            {
+                "G01": type(
+                    "Sat",
+                    (),
+                    {
+                        "signals": {
+                            "1C": type(
+                                "Sig",
+                                (),
+                                {
+                                    "pseudorange": float(second),
+                                    "phase": 2.0,
+                                    "doppler": 3.0,
+                                    "snr": 4.0,
+                                    "half_cycle": 0,
+                                },
+                            )()
+                        }
+                    },
+                )()
+            },
         )
     writer.close()
 

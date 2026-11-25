@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import json
 from abc import ABC, abstractmethod
 from dataclasses import asdict, is_dataclass, replace
 from datetime import datetime
-import json
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from core.reflectometry.config import OutputConfig
-from core.reflectometry.models import ArcDirection, ArcSolution, ProcessingRunResult, ProductResult, ProductType
+from core.reflectometry.models import (
+    ArcDirection,
+    ArcSolution,
+    ProcessingRunResult,
+    ProductResult,
+    ProductType,
+)
 
 
 class ResultSerializer:
@@ -56,7 +62,9 @@ class ResultSerializer:
                     "success": solution.success,
                     "fail_reason": solution.fail_reason,
                     "candidate_count": len(solution.candidates),
-                    "confidence": solution.quality_metrics.confidence if solution.quality_metrics else None,
+                    "confidence": (
+                        solution.quality_metrics.confidence if solution.quality_metrics else None
+                    ),
                 }
             )
         return pd.DataFrame(rows)
@@ -119,14 +127,20 @@ class JsonResultWriter(ResultSink):
     def write(self, result: ProcessingRunResult, output_dir: Path) -> list[Path]:
         output_dir.mkdir(parents=True, exist_ok=True)
         path = output_dir / "results.json"
-        path.write_text(json.dumps(ResultSerializer.to_dict(result), indent=2, ensure_ascii=False), encoding="utf-8")
+        path.write_text(
+            json.dumps(ResultSerializer.to_dict(result), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
         return [path]
 
 
 class OutputManager:
     def __init__(self, output_config: OutputConfig) -> None:
         self.output_config = output_config
-        self._writers: dict[str, ResultSink] = {"csv": CsvResultWriter(), "json": JsonResultWriter()}
+        self._writers: dict[str, ResultSink] = {
+            "csv": CsvResultWriter(),
+            "json": JsonResultWriter(),
+        }
 
     def write(self, result: ProcessingRunResult) -> list[Path]:
         output_dir = Path(self.output_config.output_dir)

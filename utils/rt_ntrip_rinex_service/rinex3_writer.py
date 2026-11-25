@@ -10,14 +10,13 @@ Date:    2026-02-08
 Email: vitamin_n@outlook.com
 """
 
-import logging
 import os
 import re
-from datetime import datetime
-from typing import Dict, List, Optional
+from datetime import datetime, timezone
 
+from rtgs.infrastructure import get_logger
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = get_logger(__name__)
 
 
 class RINEX3Writer:
@@ -65,9 +64,9 @@ class RINEX3Writer:
         period: str = "01D",
         interval: str = "30S",
         datatype: str = "MO",
-        filename_template: Optional[str] = None,
-        file_time: Optional[datetime] = None,
-        header_interval_seconds: Optional[float] = None,
+        filename_template: str | None = None,
+        file_time: datetime | None = None,
+        header_interval_seconds: float | None = None,
         time_system: str = "GPS",
         antenna_number: str = "",
         receiver_serial: str = "",
@@ -103,15 +102,15 @@ class RINEX3Writer:
         self.interval = self._normalize_span_code(interval, "01S")
         self.datatype = str(datatype)[:2].upper() or "MO"
         self.filename_template = filename_template
-        self.file_time = file_time or datetime.utcnow()
+        self.file_time = file_time or datetime.now(timezone.utc).replace(tzinfo=None)
         self.header_interval_seconds = (
-            float(header_interval_seconds)
-            if header_interval_seconds is not None
-            else None
+            float(header_interval_seconds) if header_interval_seconds is not None else None
         )
         self.time_system = str(time_system or "GPS").strip().upper() or "GPS"
         self.antenna_number = self._format_a20(antenna_number).strip()
-        self.receiver_serial = self._format_a20(receiver_serial if receiver_serial else receiver_number).strip()
+        self.receiver_serial = self._format_a20(
+            receiver_serial if receiver_serial else receiver_number
+        ).strip()
         self.receiver_version = self._format_a20(receiver_version).strip()
 
         self.output_directory = "."
@@ -124,11 +123,11 @@ class RINEX3Writer:
 
         self.file_handle = None
         self.header_written = False
-        self.header_end_pos: Optional[int] = None
+        self.header_end_pos: int | None = None
 
-        self.sys_obs_types: Dict[str, List[str]] = {}
-        self.first_epoch: Optional[datetime] = None
-        self.last_epoch: Optional[datetime] = None
+        self.sys_obs_types: dict[str, list[str]] = {}
+        self.first_epoch: datetime | None = None
+        self.last_epoch: datetime | None = None
 
         self.receiver_type = "UNKNOWN"
         self.antenna_type = "UNKNOWN"
@@ -144,9 +143,9 @@ class RINEX3Writer:
     @classmethod
     def _format_a20_fields(cls, *values: object) -> str:
         """Format a RINEX 60-character content record from A20 fields."""
-        return "".join(cls._format_a20(value) for value in values)[: cls.HEADER_CONTENT_WIDTH].ljust(
-            cls.HEADER_CONTENT_WIDTH
-        )
+        return "".join(cls._format_a20(value) for value in values)[
+            : cls.HEADER_CONTENT_WIDTH
+        ].ljust(cls.HEADER_CONTENT_WIDTH)
 
     @classmethod
     def _normalize_span_code(cls, code: str, fallback: str) -> str:
@@ -212,7 +211,8 @@ class RINEX3Writer:
         """Open file for writing."""
         try:
             os.makedirs(self.output_directory or ".", exist_ok=True)
-            self.file_handle = open(self.filename, "w", encoding="utf-8")
+            # The writer owns this handle until close(); it cannot use a local context manager.
+            self.file_handle = open(self.filename, "w", encoding="utf-8")  # noqa: SIM115
             return True
         except OSError as exc:
             LOGGER.error("Cannot open RINEX file %s: %s", self.filename, exc)
@@ -229,7 +229,7 @@ class RINEX3Writer:
         self.file_handle.close()
         self.file_handle = None
 
-    def set_approx_position(self, coords: Optional[List[float]]) -> None:
+    def set_approx_position(self, coords: list[float] | None) -> None:
         """Update APPROX POSITION XYZ using ECEF XYZ coordinates."""
         if coords is None or len(coords) < 3:
             return
@@ -276,7 +276,7 @@ class RINEX3Writer:
 
     def _write_header_block(self) -> None:
         """Write the current header state at the file start position."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
         first_obs = self.first_epoch or self.file_time or now
         last_obs = self.last_epoch or self.first_epoch or self.file_time or now
 
@@ -293,7 +293,9 @@ class RINEX3Writer:
         self._write_header_line(f"{self.marker_number:<20}", "MARKER NUMBER")
         self._write_header_line(f"{'Automatic':<20}{'RTGS':<40}", "OBSERVER / AGENCY")
         self._write_header_line(
-            self._format_a20_fields(self.receiver_serial, self.receiver_type, self.receiver_version),
+            self._format_a20_fields(
+                self.receiver_serial, self.receiver_type, self.receiver_version
+            ),
             "REC # / TYPE / VERS",
         )
         self._write_header_line(
@@ -344,10 +346,10 @@ class RINEX3Writer:
 
     def write_header(
         self,
-        sys_obs_types: Optional[Dict[str, List[str]]] = None,
-        marker_lat: Optional[float] = None,
-        marker_lon: Optional[float] = None,
-        marker_alt: Optional[float] = None,
+        sys_obs_types: dict[str, list[str]] | None = None,
+        marker_lat: float | None = None,
+        marker_lon: float | None = None,
+        marker_alt: float | None = None,
         receiver_type: str = "UNKNOWN",
         antenna_type: str = "UNKNOWN",
         antenna_number: str = "",
@@ -364,7 +366,7 @@ class RINEX3Writer:
             return False
 
         if sys_obs_types:
-            cleaned: Dict[str, List[str]] = {}
+            cleaned: dict[str, list[str]] = {}
             for system, codes in sys_obs_types.items():
                 if not system:
                     continue
@@ -391,7 +393,7 @@ class RINEX3Writer:
         self.header_written = True
         return True
 
-    def write_observation(self, epoch_time: datetime, satellites: Dict[str, object]) -> bool:
+    def write_observation(self, epoch_time: datetime, satellites: dict[str, object]) -> bool:
         """
         Write one observation epoch in RINEX 3.04 format.
         """
@@ -430,9 +432,9 @@ class RINEX3Writer:
             f"{num_sats:3d}{'':21}\n"
         )
 
-    def _prepare_observations(self, satellites: Dict[str, object]) -> List[Dict]:
+    def _prepare_observations(self, satellites: dict[str, object]) -> list[dict]:
         """Prepare per-satellite observation dictionaries sorted by system then PRN."""
-        result: List[Dict] = []
+        result: list[dict] = []
 
         for sat_id, sat_state in satellites.items():
             if not sat_id or len(sat_id) < 2:
@@ -451,11 +453,16 @@ class RINEX3Writer:
             if not signals:
                 continue
 
-            obs_list: List[Dict] = []
+            obs_list: list[dict] = []
             for sig_id, sig_data in signals.items():
                 if getattr(sig_data, "pseudorange", None) is not None:
                     obs_list.append(
-                        {"code": f"C{sig_id}", "value": sig_data.pseudorange, "lli": None, "snr": None}
+                        {
+                            "code": f"C{sig_id}",
+                            "value": sig_data.pseudorange,
+                            "lli": None,
+                            "snr": None,
+                        }
                     )
                 if getattr(sig_data, "phase", None) is not None:
                     obs_list.append(
@@ -476,7 +483,9 @@ class RINEX3Writer:
                     )
 
             if obs_list:
-                result.append({"sys": system, "prn": prn, "sat_id": sat_id, "observations": obs_list})
+                result.append(
+                    {"sys": system, "prn": prn, "sat_id": sat_id, "observations": obs_list}
+                )
 
         result.sort(key=lambda item: (item["sys"], item["prn"]))
         return result
@@ -519,7 +528,7 @@ class RINEX3Writer:
             return " "
         return str(value) if 1 <= value <= 9 else " "
 
-    def _format_observation_field(self, obs_code: str, obs: Optional[Dict]) -> str:
+    def _format_observation_field(self, obs_code: str, obs: dict | None) -> str:
         """Format one 16-character RINEX observation field."""
         if not obs or obs.get("value") is None:
             return " " * 16
@@ -542,7 +551,7 @@ class RINEX3Writer:
 
         return f"{value_str}{lli_char}{ssi_char}"
 
-    def _write_satellite_observations(self, sat_data: Dict) -> None:
+    def _write_satellite_observations(self, sat_data: dict) -> None:
         """
         Write one satellite record using the header-defined observation order.
         """
@@ -553,7 +562,7 @@ class RINEX3Writer:
         prn = sat_data["prn"]
         observations = sat_data["observations"]
 
-        obs_dict: Dict[str, Dict] = {}
+        obs_dict: dict[str, dict] = {}
         for obs in observations or []:
             code = obs.get("code")
             if code:
@@ -566,7 +575,9 @@ class RINEX3Writer:
         line_content = f"{system}{prn:02d}"
         for obs_code in expected_obs_codes:
             normalized_code = str(obs_code).strip().upper()
-            line_content += self._format_observation_field(normalized_code, obs_dict.get(normalized_code))
+            line_content += self._format_observation_field(
+                normalized_code, obs_dict.get(normalized_code)
+            )
 
         self.file_handle.write(line_content + "\n")
 
@@ -574,12 +585,12 @@ class RINEX3Writer:
 def save_epoch_to_rinex(
     filename: str,
     epoch_time: datetime,
-    satellites: Dict[str, object],
-    sys_obs_types: Dict[str, List[str]],
+    satellites: dict[str, object],
+    sys_obs_types: dict[str, list[str]],
     marker_name: str = "UNKNOWN",
     marker_number: str = "0",
     append_mode: bool = False,
-    rinex_options: Optional[Dict] = None,
+    rinex_options: dict | None = None,
 ) -> bool:
     """
     Convenience function to save one observation epoch to a RINEX file.
@@ -591,9 +602,10 @@ def save_epoch_to_rinex(
 
     if file_exists and append_mode:
         try:
-            writer.file_handle = open(writer.filename, "a", encoding="utf-8")
+            # append_rinex_epoch transfers ownership to the writer lifecycle.
+            writer.file_handle = open(writer.filename, "a", encoding="utf-8")  # noqa: SIM115
             writer.header_written = True
-        except IOError:
+        except OSError:
             return False
     else:
         if not writer.open():

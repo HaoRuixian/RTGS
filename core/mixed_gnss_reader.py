@@ -15,6 +15,7 @@ from socket import socket
 
 from pynmeagps import SocketWrapper
 from pyrtcm import RTCMReader
+
 try:
     from pyrtcm import calc_crc24q
 except ImportError:  # pragma: no cover - compatibility for mocked pyrtcm in tests
@@ -27,7 +28,6 @@ from core.unicore import (
     UnicoreMessage,
     UnicoreParseError,
 )
-
 
 RTCM_PREAMBLE = 0xD3
 UBX_SYNC1 = 0xB5
@@ -244,10 +244,7 @@ class MixedGNSSReader:
         if num_words < 8:
             return None
 
-        words = [
-            int.from_bytes(payload[8 + i * 4 : 12 + i * 4], "little")
-            for i in range(8)
-        ]
+        words = [int.from_bytes(payload[8 + i * 4 : 12 + i * 4], "little") for i in range(8)]
         buff = bytearray(32)
         for i, word in enumerate(words):
             setbitu(buff, 32 * i, 32, word)

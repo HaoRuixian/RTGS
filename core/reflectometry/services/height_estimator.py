@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from core.reflectometry.services.spectrum import SpectrumAnalysisResult
 from core.reflectometry.models import ArcSolution, SatelliteArc, SnrSeries
 from core.reflectometry.services.quality import FATAL_QC_FLAGS, QualityController
+from core.reflectometry.services.spectrum import SpectrumAnalysisResult
 
 
 class HeightEstimator:
@@ -27,7 +27,9 @@ class HeightEstimator:
         fail_reason = None
         success = True
         peak_frequency = primary.spectral_frequency if primary else None
-        reflector_height_m = 0.5 * series.wavelength_m * peak_frequency if peak_frequency is not None else None
+        reflector_height_m = (
+            0.5 * series.wavelength_m * peak_frequency if peak_frequency is not None else None
+        )
         peak_power = primary.power if primary else None
         peak_to_noise_ratio = primary.peak_to_noise_ratio if primary else None
         primary_candidates = [primary] if primary is not None else []
@@ -65,5 +67,3 @@ class HeightEstimator:
                 "noise_floor": spectrum.noise_floor,
             },
         )
-
-

@@ -4,15 +4,17 @@ store for GNSS-IR focused observations.
 The store keeps only the data that matches a configurable elevation/azimuth
 window and automatically drops old samples to control memory usage.
 """
-from collections import deque
-from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional
+
 import threading
+from collections import deque
+from collections.abc import Iterable
+from dataclasses import dataclass
 
 
 @dataclass
 class IrSample:
     """Single filtered observation used for GNSS-IR analysis."""
+
     tow: float
     sys: str
     prn: str
@@ -33,6 +35,7 @@ class GnssIrStore:
     - Data is stored as small dataclasses inside a deque; at 1 Hz with tens of
       satellites this typically stays in the low tens of MB.
     """
+
     def __init__(self, keep_seconds: int = 900):
         self.keep_seconds = keep_seconds
         self._data: deque[IrSample] = deque()
@@ -42,12 +45,9 @@ class GnssIrStore:
         """Check if azimuth is inside any configured window."""
         if not az_windows:
             return True
-        for start, end in az_windows:
-            if start <= az <= end:
-                return True
-        return False
+        return any(start <= az <= end for start, end in az_windows)
 
-    def add_epoch(self, tow: float, satellites: Dict[str, object], cfg: dict, active_systems: set):
+    def add_epoch(self, tow: float, satellites: dict[str, object], cfg: dict, active_systems: set):
         """
         Filter and append observations from one epoch.
 
@@ -105,10 +105,10 @@ class GnssIrStore:
 
     def get_series(
         self,
-        prn: Optional[str] = None,
-        sys: Optional[str] = None,
-        signal_id: Optional[str] = None,
-    ) -> List[IrSample]:
+        prn: str | None = None,
+        sys: str | None = None,
+        signal_id: str | None = None,
+    ) -> list[IrSample]:
         """
         Return filtered samples for downstream processing (e.g., Lomb–Scargle).
         """
@@ -124,4 +124,3 @@ class GnssIrStore:
     def size(self) -> int:
         with self._lock:
             return len(self._data)
-

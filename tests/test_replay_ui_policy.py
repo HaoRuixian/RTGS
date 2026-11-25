@@ -17,7 +17,9 @@ def _header_line(content: str, label: str) -> str:
 def _write_sample_obs(path: Path, interval: float) -> Path:
     lines = [
         _header_line("     3.04           OBSERVATION DATA    M: MIXED", "RINEX VERSION / TYPE"),
-        _header_line("RTGS TESTER         OPENAI              20260323 000000 UTC", "PGM / RUN BY / DATE"),
+        _header_line(
+            "RTGS TESTER         OPENAI              20260323 000000 UTC", "PGM / RUN BY / DATE"
+        ),
         _header_line("G    4 C1C L1C D1C S1C", "SYS / # / OBS TYPES"),
         _header_line("  2025     7     5     0     0    0.0000000     GPS", "TIME OF FIRST OBS"),
         _header_line(f"{interval:10.3f}", "INTERVAL"),

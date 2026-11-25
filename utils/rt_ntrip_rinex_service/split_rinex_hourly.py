@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from collections import Counter
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from itertools import chain
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
-
 
 from .rinex3_writer import RINEX3Writer
 from .rinex_loader import RinexObservationReader, read_rinex_observation_header
@@ -80,7 +80,7 @@ def split_rinex_hourly_file(
     *,
     marker_name: str,
     receiver_type: str,
-    station_code: Optional[str] = None,
+    station_code: str | None = None,
     receiver_number: str = "00",
     country_code: str = "CHN",
     antenna_type: str = "UNKNOWN",
@@ -103,14 +103,18 @@ def split_rinex_hourly_file(
         raise ValueError(f"No observation epochs found in source RINEX file: {source_path}")
 
     estimated_interval = _estimate_interval_seconds(
-        [_normalize_utc_datetime(epoch.utc_datetime) for epoch in buffered_epochs if epoch.utc_datetime is not None],
+        [
+            _normalize_utc_datetime(epoch.utc_datetime)
+            for epoch in buffered_epochs
+            if epoch.utc_datetime is not None
+        ],
         fallback=float(metadata.interval_seconds or 1.0),
     )
 
     derived_station_code = station_code or derive_station_code(marker_name)
     output_files: list[Path] = []
-    writer: Optional[RINEX3Writer] = None
-    current_bucket: Optional[datetime] = None
+    writer: RINEX3Writer | None = None
+    current_bucket: datetime | None = None
 
     def open_writer(bucket_start: datetime) -> RINEX3Writer:
         writer = RINEX3Writer(
@@ -160,24 +164,38 @@ def split_rinex_hourly_file(
         if writer is not None:
             writer.close()
 
-    return SplitResult(source_path=source_path, output_files=output_files, interval_seconds=estimated_interval)
+    return SplitResult(
+        source_path=source_path, output_files=output_files, interval_seconds=estimated_interval
+    )
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Split a RINEX observation file into hourly RINEX 3 files.")
+    parser = argparse.ArgumentParser(
+        description="Split a RINEX observation file into hourly RINEX 3 files."
+    )
     parser.add_argument("input", type=Path, help="Input RINEX observation file.")
     parser.add_argument("output_dir", type=Path, help="Directory for hourly output files.")
-    parser.add_argument("--marker-name", required=True, help="Marker name to write into the hourly headers.")
-    parser.add_argument("--receiver-type", required=True, help="Receiver type string for the hourly headers.")
-    parser.add_argument("--station-code", default=None, help="Optional 4-character station code for long filenames.")
-    parser.add_argument("--receiver-number", default="00", help="Receiver number for long filenames.")
+    parser.add_argument(
+        "--marker-name", required=True, help="Marker name to write into the hourly headers."
+    )
+    parser.add_argument(
+        "--receiver-type", required=True, help="Receiver type string for the hourly headers."
+    )
+    parser.add_argument(
+        "--station-code", default=None, help="Optional 4-character station code for long filenames."
+    )
+    parser.add_argument(
+        "--receiver-number", default="00", help="Receiver number for long filenames."
+    )
     parser.add_argument("--country-code", default="CHN", help="Country code for long filenames.")
-    parser.add_argument("--antenna-type", default="UNKNOWN", help="Antenna type string for the hourly headers.")
+    parser.add_argument(
+        "--antenna-type", default="UNKNOWN", help="Antenna type string for the hourly headers."
+    )
     parser.add_argument("--datatype", default="MO", help="RINEX datatype code.")
     return parser
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 

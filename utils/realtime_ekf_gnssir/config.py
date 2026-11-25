@@ -10,7 +10,6 @@ from typing import Any
 
 import yaml
 
-
 PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_DIR.parent
 REFLECTOMETRY_CONFIG_WRITE_LOCK = RLock()
@@ -115,7 +114,9 @@ class AppConfigStore:
             return []
         return [deepcopy(item) for item in stations if isinstance(item, dict)]
 
-    def upsert_station(self, payload: dict[str, Any], *, original_name: str | None = None) -> dict[str, Any]:
+    def upsert_station(
+        self, payload: dict[str, Any], *, original_name: str | None = None
+    ) -> dict[str, Any]:
         station = sanitize_station_payload(payload)
         raw = self.load_raw()
         stations = raw.get("stations")
@@ -166,7 +167,9 @@ class AppConfigStore:
             return False
         before = len(stations)
         raw["stations"] = [
-            item for item in stations if not (isinstance(item, dict) and str(item.get("name", "")).strip() == name)
+            item
+            for item in stations
+            if not (isinstance(item, dict) and str(item.get("name", "")).strip() == name)
         ]
         removed = len(raw["stations"]) != before
         if removed:
@@ -201,7 +204,9 @@ def parse_app_config(raw: dict[str, Any], config_path: str | Path) -> AppConfig:
             poll_seconds=float(server_raw.get("poll_seconds", 1.0) or 1.0),
         ),
         storage=StorageConfig(
-            output_dir=_resolve_path(storage_raw.get("output_dir", "../output/realtime_ekf_gnssir"), base_dir),
+            output_dir=_resolve_path(
+                storage_raw.get("output_dir", "../output/realtime_ekf_gnssir"), base_dir
+            ),
             write_jsonl=bool(storage_raw.get("write_jsonl", True)),
             write_csv=bool(storage_raw.get("write_csv", True)),
         ),
@@ -273,7 +278,9 @@ def _normalize_station_aliases(raw: dict[str, Any]) -> dict[str, Any]:
 def _sanitize_stream_payload(raw: Any, *, default_enabled: bool) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
-    source_type = str(raw.get("source_type", raw.get("source", "NTRIP Server")) or "NTRIP Server").strip()
+    source_type = str(
+        raw.get("source_type", raw.get("source", "NTRIP Server")) or "NTRIP Server"
+    ).strip()
     return {
         "source_type": source_type,
         "enabled": bool(raw.get("enabled", default_enabled)),

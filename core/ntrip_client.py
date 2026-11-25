@@ -1,10 +1,11 @@
 """NTRIP caster socket 客户端。"""
 
 import base64
-import logging
 import socket
 
-LOGGER = logging.getLogger(__name__)
+from rtgs.infrastructure import get_logger
+
+LOGGER = get_logger(__name__)
 DEFAULT_SOCKET_TIMEOUT_SECONDS = 10.0
 
 
@@ -67,7 +68,9 @@ class NtripClient:
                 LOGGER.info("Connected to NTRIP mountpoint %s", self.mountpoint)
                 return self.sock
 
-            LOGGER.warning("NTRIP connection rejected: %s", response.decode(errors="ignore").strip())
+            LOGGER.warning(
+                "NTRIP connection rejected: %s", response.decode(errors="ignore").strip()
+            )
             self.close()
             return None
 

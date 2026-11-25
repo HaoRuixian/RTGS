@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from collections import deque
-from datetime import datetime, timezone
-from pathlib import Path
 import re
 import threading
-import time
-from typing import Iterable
+from collections import deque
+from collections.abc import Iterable
+from datetime import datetime, timezone
+from pathlib import Path
 
 from .config_store import ConfigStore
 from .merge_rinex_daily import merge_rinex_daily_files
@@ -68,7 +67,9 @@ class RuntimeManager:
         self.store = store
         self.poll_seconds = max(5, int(poll_seconds))
         self.merge_poll_seconds = max(30, int(merge_poll_seconds))
-        self.station_names = {str(name).strip() for name in (station_names or []) if str(name).strip()}
+        self.station_names = {
+            str(name).strip() for name in (station_names or []) if str(name).strip()
+        }
         self.logs = log_buffer or LogBuffer()
         self._workers: dict[str, RTNtripRinexStation] = {}
         self._signatures: dict[str, str] = {}
@@ -87,8 +88,12 @@ class RuntimeManager:
                 return
             self._started = True
         self.reload_config(force=True)
-        self._reload_thread = threading.Thread(target=self._reload_loop, name="RTRinexConfigPoller", daemon=True)
-        self._merge_thread = threading.Thread(target=self._merge_loop, name="RTRinexDailyMerger", daemon=True)
+        self._reload_thread = threading.Thread(
+            target=self._reload_loop, name="RTRinexConfigPoller", daemon=True
+        )
+        self._merge_thread = threading.Thread(
+            target=self._merge_loop, name="RTRinexDailyMerger", daemon=True
+        )
         self._reload_thread.start()
         self._merge_thread.start()
         self.logs.write(f"Manager started; config is polled every {self.poll_seconds}s")
@@ -229,14 +234,20 @@ class RuntimeManager:
         ):
             return []
 
-        station_folder = _normalize_station_folder_name(rinex_cfg.station_code, rinex_cfg.receiver_number)
+        station_folder = _normalize_station_folder_name(
+            rinex_cfg.station_code, rinex_cfg.receiver_number
+        )
         station_root = rinex_cfg.output_directory / station_folder
         if not station_root.exists():
             return []
 
         results: list[dict] = []
-        for year_dir in sorted(path for path in station_root.iterdir() if path.is_dir() and path.name.isdigit()):
-            for day_dir in sorted(path for path in year_dir.iterdir() if path.is_dir() and path.name.isdigit()):
+        for year_dir in sorted(
+            path for path in station_root.iterdir() if path.is_dir() and path.name.isdigit()
+        ):
+            for day_dir in sorted(
+                path for path in year_dir.iterdir() if path.is_dir() and path.name.isdigit()
+            ):
                 result = self._merge_day_if_due(station, day_dir)
                 if result is not None:
                     results.append(result)
@@ -244,7 +255,9 @@ class RuntimeManager:
 
     def _merge_day_if_due(self, station: RTStationConfig, day_dir: Path) -> dict | None:
         rinex_cfg = station.rinex
-        source_files = sorted(path for path in day_dir.iterdir() if path.is_file() and path.suffix.lower() == ".rnx")
+        source_files = sorted(
+            path for path in day_dir.iterdir() if path.is_file() and path.suffix.lower() == ".rnx"
+        )
         if not source_files:
             return None
 
@@ -252,9 +265,15 @@ class RuntimeManager:
         if day_start is None:
             return None
 
-        current_rinex_time = _convert_utc_to_time_system(datetime.now(timezone.utc), rinex_cfg.time_system)
+        current_rinex_time = _convert_utc_to_time_system(
+            datetime.now(timezone.utc), rinex_cfg.time_system
+        )
         current_day_start = current_rinex_time.replace(hour=0, minute=0, second=0, microsecond=0)
-        expected_count = max(1, (86400 + int(rinex_cfg.split_period_seconds) - 1) // int(rinex_cfg.split_period_seconds))
+        expected_count = max(
+            1,
+            (86400 + int(rinex_cfg.split_period_seconds) - 1)
+            // int(rinex_cfg.split_period_seconds),
+        )
         complete_by_time = day_start < current_day_start
         complete_by_count = len(source_files) >= expected_count
         if not (complete_by_time or complete_by_count):
@@ -274,9 +293,13 @@ class RuntimeManager:
                 receiver_number=rinex_cfg.receiver_number,
                 country_code=rinex_cfg.country_code,
                 antenna_type=rinex_cfg.antenna_type,
-                antenna_number=str(rinex_cfg.antenna_model or rinex_cfg.antenna_number or "").strip(),
+                antenna_number=str(
+                    rinex_cfg.antenna_model or rinex_cfg.antenna_number or ""
+                ).strip(),
                 datatype=rinex_cfg.datatype,
-                output_interval_seconds=float(max(15, int(rinex_cfg.daily_merge_min_interval_seconds))),
+                output_interval_seconds=float(
+                    max(15, int(rinex_cfg.daily_merge_min_interval_seconds))
+                ),
                 time_system=rinex_cfg.time_system,
             )
         except Exception as exc:
@@ -312,7 +335,9 @@ class RuntimeManager:
         return None
 
     @staticmethod
-    def _daily_output_is_fresh(output_dir: Path, source_files: list[Path], day_start: datetime, datatype: str) -> bool:
+    def _daily_output_is_fresh(
+        output_dir: Path, source_files: list[Path], day_start: datetime, datatype: str
+    ) -> bool:
         pattern = f"*_R_{day_start.strftime('%Y%j')}0000_01D_*_{datatype}.rnx"
         candidates = sorted(output_dir.glob(pattern))
         if not candidates:

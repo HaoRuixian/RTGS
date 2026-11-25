@@ -50,14 +50,14 @@ def _igs_ssr_gps_combined_frame() -> bytes:
             _unsigned_bits(1, 6),
             _unsigned_bits(1, 6),
             _unsigned_bits(7, 8),
-            _signed_bits(10000, 22),   # 1.0 m
-            _signed_bits(5000, 20),    # 2.0 m
-            _signed_bits(-7500, 20),   # -3.0 m
-            _signed_bits(10000, 21),   # 0.01 m/s
-            _signed_bits(5000, 19),    # 0.02 m/s
-            _signed_bits(-7500, 19),   # -0.03 m/s
-            _signed_bits(5000, 22),    # 0.5 m
-            _signed_bits(2000, 21),    # 0.002 m/s
+            _signed_bits(10000, 22),  # 1.0 m
+            _signed_bits(5000, 20),  # 2.0 m
+            _signed_bits(-7500, 20),  # -3.0 m
+            _signed_bits(10000, 21),  # 0.01 m/s
+            _signed_bits(5000, 19),  # 0.02 m/s
+            _signed_bits(-7500, 19),  # -0.03 m/s
+            _signed_bits(5000, 22),  # 0.5 m
+            _signed_bits(2000, 21),  # 0.002 m/s
             _signed_bits(-25000, 27),  # -0.0005 m/s^2
         )
     )
@@ -240,7 +240,9 @@ def test_rtcm_handler_parses_non_gps_ssr_satellite_fields():
 
 
 def test_rtcm_handler_converts_standard_glonass_ssr_epoch_with_precise_model():
-    handler = RTCMHandler(reference_utc=datetime(2026, 3, 26, tzinfo=timezone.utc), compute_geometry=False)
+    handler = RTCMHandler(
+        reference_utc=datetime(2026, 3, 26, tzinfo=timezone.utc), compute_geometry=False
+    )
     handler.process_message(
         FakeRTCMMessage(
             "1064",

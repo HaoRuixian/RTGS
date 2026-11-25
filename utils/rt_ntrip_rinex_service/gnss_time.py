@@ -54,7 +54,7 @@ class GNSSTime:
     def current_gps_week(cls, utc_dt: datetime = None) -> int:
         """Return current GPS week for given UTC (or now)."""
         if utc_dt is None:
-            utc_dt = datetime.utcnow().replace(tzinfo=timezone.utc)
+            utc_dt = datetime.now(timezone.utc)
         week, _ = cls.utc_to_gps(utc_dt)
         return week
 
@@ -65,7 +65,7 @@ class GNSSTime:
         This mirrors earlier code that computed day-of-week from GPS time.
         """
         if utc_dt is None:
-            utc_dt = datetime.utcnow().replace(tzinfo=timezone.utc)
+            utc_dt = datetime.now(timezone.utc)
         _, seconds_of_week = cls.utc_to_gps(utc_dt)
         day = int(seconds_of_week // (24 * 3600))
         return day

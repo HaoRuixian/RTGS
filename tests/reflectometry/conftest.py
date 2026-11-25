@@ -17,4 +17,3 @@ def example_config(tmp_path):
     config.logging.console = False
     config.logging.rotating_file = False
     return config
-

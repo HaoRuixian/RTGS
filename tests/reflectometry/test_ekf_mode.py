@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from core.reflectometry.models import ProductType
 from core.reflectometry.config import ReflectionZoneConfig
+from core.reflectometry.models import ProductType
 from core.reflectometry.providers import ListObservationProvider
 from core.reflectometry.services.batch import BatchProcessor
 from core.reflectometry.services.realtime import RealtimeProcessor
@@ -51,7 +51,9 @@ def test_batch_processor_emits_ekf_products(example_config):
     processor = BatchProcessor(config, provider=ListObservationProvider(observations))
     result = processor.run()
 
-    rh_products = [item for item in result.products if item.product_type == ProductType.REFLECTOR_HEIGHT]
+    rh_products = [
+        item for item in result.products if item.product_type == ProductType.REFLECTOR_HEIGHT
+    ]
     assert result.metadata["estimation_mode"] == "ekf"
     assert rh_products
     assert abs(rh_products[-1].value - 4.25) < 0.75
@@ -79,7 +81,9 @@ def test_realtime_processor_emits_ekf_products(example_config):
         processor.ingest(chunk, reference_time=chunk[-1].timestamp, include_open_preview=True)
 
     result = processor.flush()
-    rh_products = [item for item in result.products if item.product_type == ProductType.REFLECTOR_HEIGHT]
+    rh_products = [
+        item for item in result.products if item.product_type == ProductType.REFLECTOR_HEIGHT
+    ]
     assert result.metadata["estimation_mode"] == "ekf"
     assert rh_products
     assert any(item.metadata["active_arc_count"] >= 1 for item in rh_products)
@@ -108,7 +112,9 @@ def test_realtime_ekf_emits_when_output_window_exceeds_interval(example_config):
         processor.ingest(chunk, reference_time=chunk[-1].timestamp)
 
     rh_products = [
-        item for item in processor.last_result.products if item.product_type == ProductType.REFLECTOR_HEIGHT
+        item
+        for item in processor.last_result.products
+        if item.product_type == ProductType.REFLECTOR_HEIGHT
     ]
     assert rh_products
     assert all(item.metadata["active_arc_count"] > 0 for item in rh_products)

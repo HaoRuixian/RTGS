@@ -132,7 +132,9 @@ class EpochObservation:
     tropospheric_correction: TroposphericCorrection | None = None
     satellite_bias_corrections: dict[str, SatelliteBiasCorrection] = field(default_factory=dict)
     satellite_clock_corrections: dict[str, SatelliteClockCorrection] = field(default_factory=dict)
-    broadcast_eph_corrections: dict[str, BroadcastEphemerisCorrections] = field(default_factory=dict)
+    broadcast_eph_corrections: dict[str, BroadcastEphemerisCorrections] = field(
+        default_factory=dict
+    )
     gps_glonass_time_bias: float | None = None
     gps_galileo_time_bias: float | None = None
     gps_bds_time_bias: float | None = None

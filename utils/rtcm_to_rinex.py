@@ -6,11 +6,10 @@ import argparse
 import re
 import sys
 from collections import Counter
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, Optional
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -25,7 +24,6 @@ from core.gnss_time import GNSSTime
 from core.mixed_gnss_reader import MixedGNSSReader
 from core.rinex3_writer import RINEX3Writer
 from core.rtcm_handler import RTCMHandler
-
 
 DEFAULT_SYS_OBS_TYPES = {
     "G": ["C1C", "L1C", "D1C", "S1C"],
@@ -44,11 +42,11 @@ class ScanSummary:
 
     input_path: Path
     epoch_count: int = 0
-    first_epoch: Optional[datetime] = None
-    last_epoch: Optional[datetime] = None
+    first_epoch: datetime | None = None
+    last_epoch: datetime | None = None
     interval_seconds: float = 1.0
-    sys_obs_types: Dict[str, list[str]] = field(default_factory=dict)
-    approx_position: Optional[list[float]] = None
+    sys_obs_types: dict[str, list[str]] = field(default_factory=dict)
+    approx_position: list[float] | None = None
     receiver_type: str = ""
     receiver_serial: str = ""
     receiver_version: str = ""
@@ -65,7 +63,7 @@ class ConversionResult:
     written_epoch_count: int = 0
 
 
-def _copy_default_sys_obs_types() -> Dict[str, list[str]]:
+def _copy_default_sys_obs_types() -> dict[str, list[str]]:
     return {system: list(obs_types) for system, obs_types in DEFAULT_SYS_OBS_TYPES.items()}
 
 
@@ -139,9 +137,11 @@ def _merge_epoch_data(target: EpochObservation, source: EpochObservation) -> Epo
     return target
 
 
-def _iter_merged_epochs(messages: Iterable[tuple[bytes | None, object]], handler: RTCMHandler) -> Iterator[EpochObservation]:
-    current_epoch: Optional[EpochObservation] = None
-    current_key: Optional[int] = None
+def _iter_merged_epochs(
+    messages: Iterable[tuple[bytes | None, object]], handler: RTCMHandler
+) -> Iterator[EpochObservation]:
+    current_epoch: EpochObservation | None = None
+    current_key: int | None = None
 
     for _raw, msg in messages:
         if msg is None:
@@ -169,8 +169,8 @@ def _iter_merged_epochs(messages: Iterable[tuple[bytes | None, object]], handler
         yield current_epoch
 
 
-def _detect_sys_obs_types(epochs: Iterable[EpochObservation]) -> Dict[str, list[str]]:
-    observation_codes_by_system: Dict[str, set[str]] = {}
+def _detect_sys_obs_types(epochs: Iterable[EpochObservation]) -> dict[str, list[str]]:
+    observation_codes_by_system: dict[str, set[str]] = {}
 
     for epoch in epochs:
         for sat_id, sat_state in getattr(epoch, "satellites", {}).items():
@@ -194,11 +194,11 @@ def _detect_sys_obs_types(epochs: Iterable[EpochObservation]) -> Dict[str, list[
     return _build_sys_obs_types(observation_codes_by_system)
 
 
-def _build_sys_obs_types(observation_codes_by_system: Dict[str, set[str]]) -> Dict[str, list[str]]:
+def _build_sys_obs_types(observation_codes_by_system: dict[str, set[str]]) -> dict[str, list[str]]:
     if not observation_codes_by_system:
         return _copy_default_sys_obs_types()
 
-    sys_obs_types: Dict[str, list[str]] = {}
+    sys_obs_types: dict[str, list[str]] = {}
     for system in sorted(observation_codes_by_system.keys()):
         known_codes = observation_codes_by_system[system]
         obs_codes: list[str] = []
@@ -228,7 +228,7 @@ def _select_aligned_epoch_time(
     target_interval_seconds: float,
     *,
     alignment_time_system: str = "UTC",
-    return_time_system: Optional[str] = None,
+    return_time_system: str | None = None,
     tolerance_seconds: float = 0.01,
 ) -> datetime | None:
     alignment_epoch = _convert_utc_to_time_system(epoch_time, alignment_time_system)
@@ -236,7 +236,9 @@ def _select_aligned_epoch_time(
     if abs((alignment_epoch - rounded).total_seconds()) > max(0.001, float(tolerance_seconds)):
         return None
 
-    result_time_system = str(return_time_system or alignment_time_system).strip().upper() or alignment_time_system
+    result_time_system = (
+        str(return_time_system or alignment_time_system).strip().upper() or alignment_time_system
+    )
     if result_time_system == str(alignment_time_system or "UTC").strip().upper():
         return rounded
 
@@ -244,13 +246,13 @@ def _select_aligned_epoch_time(
     return _convert_utc_to_time_system(utc_time, result_time_system)
 
 
-def _resolve_output_target(input_path: Path, output_path: Optional[Path]) -> Path:
+def _resolve_output_target(input_path: Path, output_path: Path | None) -> Path:
     if output_path is None:
         return input_path.parent
     return output_path
 
 
-def _build_handler(handler_factory, reference_utc: Optional[datetime]) -> RTCMHandler:
+def _build_handler(handler_factory, reference_utc: datetime | None) -> RTCMHandler:
     factory = handler_factory or RTCMHandler
 
     try:
@@ -262,7 +264,7 @@ def _build_handler(handler_factory, reference_utc: Optional[datetime]) -> RTCMHa
             return factory()
 
 
-def _infer_reference_utc(input_path: Path) -> Optional[datetime]:
+def _infer_reference_utc(input_path: Path) -> datetime | None:
     stem = input_path.stem
 
     match = re.search(r"(?<!\d)(20\d{2})(\d{3})(\d{2})(?!\d)", stem)
@@ -336,10 +338,10 @@ def _update_summary_from_handler(summary: ScanSummary, handler: RTCMHandler) -> 
 def scan_rtcm_file(
     input_path: str | Path,
     *,
-    reference_utc: Optional[datetime] = None,
+    reference_utc: datetime | None = None,
     reader_factory=None,
     handler_factory=None,
-    max_epochs: Optional[int] = None,
+    max_epochs: int | None = None,
     stop_when_stable: bool = False,
     stable_epoch_threshold: int = 100,
     require_approx_position: bool = True,
@@ -351,10 +353,10 @@ def scan_rtcm_file(
     resolved_reference_utc = reference_utc or _infer_reference_utc(input_path)
     handler = _build_handler(handler_factory, resolved_reference_utc)
     summary = ScanSummary(input_path=input_path)
-    previous_epoch_ms: Optional[int] = None
+    previous_epoch_ms: int | None = None
     delta_counter: Counter[int] = Counter()
     reasonable_delta_counter: Counter[int] = Counter()
-    observation_codes_by_system: Dict[str, set[str]] = {}
+    observation_codes_by_system: dict[str, set[str]] = {}
     stable_epoch_count = 0
 
     with input_path.open("rb") as stream:
@@ -418,7 +420,9 @@ def scan_rtcm_file(
                 break
 
             if stop_when_stable:
-                has_position = (summary.approx_position is not None) or (not require_approx_position)
+                has_position = (summary.approx_position is not None) or (
+                    not require_approx_position
+                )
                 if (
                     summary.epoch_count >= max(10, int(stable_epoch_threshold))
                     and stable_epoch_count >= max(1, int(stable_epoch_threshold))
@@ -434,7 +438,11 @@ def scan_rtcm_file(
         most_common_delta_ms, _ = selected_counter.most_common(1)[0]
         summary.interval_seconds = max(0.001, most_common_delta_ms / 1000.0)
 
-    if summary.epoch_count > 1 and summary.first_epoch is not None and summary.last_epoch is not None:
+    if (
+        summary.epoch_count > 1
+        and summary.first_epoch is not None
+        and summary.last_epoch is not None
+    ):
         span_seconds = max(0.0, (summary.last_epoch - summary.first_epoch).total_seconds())
         average_interval = span_seconds / max(1, summary.epoch_count - 1)
         if 0.0 < average_interval <= 600.0 and summary.interval_seconds > 600.0:
@@ -450,21 +458,21 @@ def convert_rtcm_file_to_rinex(
     station_code: str = "RTGS",
     receiver_number: str = "00",
     country_code: str = "CHN",
-    marker_name: Optional[str] = None,
+    marker_name: str | None = None,
     marker_number: str = "0",
-    receiver_type: Optional[str] = None,
+    receiver_type: str | None = None,
     receiver_serial: str = "",
     receiver_version: str = "",
     antenna_type: str = "UNKNOWN",
     antenna_number: str = "",
     datatype: str = "MO",
-    interval_seconds: Optional[float] = None,
-    period_code: Optional[str] = None,
-    approx_position: Optional[Iterable[float]] = None,
-    reference_utc: Optional[datetime] = None,
+    interval_seconds: float | None = None,
+    period_code: str | None = None,
+    approx_position: Iterable[float] | None = None,
+    reference_utc: datetime | None = None,
     reader_factory=None,
     handler_factory=None,
-    summary: Optional[ScanSummary] = None,
+    summary: ScanSummary | None = None,
 ) -> ConversionResult:
     """Convert one RTCM file into a RINEX observation file.
 
@@ -473,7 +481,9 @@ def convert_rtcm_file_to_rinex(
     """
 
     input_path = Path(input_path)
-    output_target = _resolve_output_target(input_path, Path(output_path) if output_path is not None else None)
+    output_target = _resolve_output_target(
+        input_path, Path(output_path) if output_path is not None else None
+    )
     reader_factory = reader_factory or MixedGNSSReader
     resolved_reference_utc = reference_utc or _infer_reference_utc(input_path)
 
@@ -493,19 +503,25 @@ def convert_rtcm_file_to_rinex(
     source_interval_seconds = max(0.001, float(summary.interval_seconds or target_interval_seconds))
     summary.interval_seconds = target_interval_seconds
 
-    effective_first_epoch = summary.first_epoch or _normalize_utc_datetime(datetime.utcnow())
+    effective_first_epoch = summary.first_epoch or _normalize_utc_datetime(
+        datetime.now(timezone.utc)
+    )
     effective_last_epoch = summary.last_epoch or effective_first_epoch
     file_span_seconds = max(
         target_interval_seconds,
         (effective_last_epoch - effective_first_epoch).total_seconds() + target_interval_seconds,
     )
-    effective_period_code = period_code or RINEX3Writer.format_period_code(file_span_seconds, fallback="01D")
-    daily_file_start_time_utc: Optional[datetime] = None
+    effective_period_code = period_code or RINEX3Writer.format_period_code(
+        file_span_seconds, fallback="01D"
+    )
+    daily_file_start_time_utc: datetime | None = None
     if effective_period_code == "01D" and resolved_reference_utc is not None:
         daily_file_start_time_utc = _normalize_utc_datetime(resolved_reference_utc)
     writer_file_time = _utc_to_gps_file_datetime(daily_file_start_time_utc or effective_first_epoch)
 
-    effective_receiver_type = _clean_header_value(receiver_type) or summary.receiver_type or "Generic"
+    effective_receiver_type = (
+        _clean_header_value(receiver_type) or summary.receiver_type or "Generic"
+    )
     effective_receiver_serial = _clean_header_value(receiver_serial) or summary.receiver_serial
     effective_receiver_version = _clean_header_value(receiver_version) or summary.receiver_version
     effective_antenna_type = _clean_header_value(antenna_type)
@@ -550,7 +566,7 @@ def convert_rtcm_file_to_rinex(
             raise OSError(f"Failed to write RINEX header: {writer.filename}")
 
         handler = _build_handler(handler_factory, resolved_reference_utc)
-        last_written_time: Optional[datetime] = None
+        last_written_time: datetime | None = None
         written_epoch_count = 0
         with input_path.open("rb") as stream:
             reader = reader_factory(stream)
@@ -562,7 +578,10 @@ def convert_rtcm_file_to_rinex(
 
                 if daily_file_start_time_utc is not None:
                     daily_file_end_time_utc = daily_file_start_time_utc + timedelta(days=1)
-                    if normalized_time < daily_file_start_time_utc or normalized_time >= daily_file_end_time_utc:
+                    if (
+                        normalized_time < daily_file_start_time_utc
+                        or normalized_time >= daily_file_end_time_utc
+                    ):
                         continue
 
                 output_time = _utc_to_gps_file_datetime(normalized_time)
@@ -581,7 +600,9 @@ def convert_rtcm_file_to_rinex(
                     output_time = selected_time
 
                 if not writer.write_observation(output_time, getattr(epoch, "satellites", {})):
-                    raise OSError(f"Failed to write RINEX observation epoch at {output_time.isoformat()}")
+                    raise OSError(
+                        f"Failed to write RINEX observation epoch at {output_time.isoformat()}"
+                    )
                 last_written_time = output_time
                 written_epoch_count += 1
     finally:
@@ -624,12 +645,42 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Output .rnx file path or output directory. Default: input file directory.",
     )
-    common.add_argument("-s", "--site", dest="station_code", default="RTGS", help="Station code in the long filename.")
-    common.add_argument("-n", "--name", dest="marker_name", default=None, help="Marker name written to the header.")
-    common.add_argument("-r", "--rx", dest="receiver_type", default=None, help="Receiver type written to the header.")
-    common.add_argument("--rx-serial", dest="receiver_serial", default="", help="Receiver serial number for the header.")
-    common.add_argument("--rx-version", dest="receiver_version", default="", help="Receiver firmware/version for the header.")
-    common.add_argument("-a", "--ant", dest="antenna_type", default="UNKNOWN", help="Antenna type written to the header.")
+    common.add_argument(
+        "-s",
+        "--site",
+        dest="station_code",
+        default="RTGS",
+        help="Station code in the long filename.",
+    )
+    common.add_argument(
+        "-n", "--name", dest="marker_name", default=None, help="Marker name written to the header."
+    )
+    common.add_argument(
+        "-r",
+        "--rx",
+        dest="receiver_type",
+        default=None,
+        help="Receiver type written to the header.",
+    )
+    common.add_argument(
+        "--rx-serial",
+        dest="receiver_serial",
+        default="",
+        help="Receiver serial number for the header.",
+    )
+    common.add_argument(
+        "--rx-version",
+        dest="receiver_version",
+        default="",
+        help="Receiver firmware/version for the header.",
+    )
+    common.add_argument(
+        "-a",
+        "--ant",
+        dest="antenna_type",
+        default="UNKNOWN",
+        help="Antenna type written to the header.",
+    )
     common.add_argument(
         "--ant-num",
         "--antenna-number",
@@ -666,25 +717,65 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Approximate receiver ECEF position in meters for the header.",
     )
-    advanced.add_argument("--num", dest="receiver_number", default="00", help="Receiver number in the long filename.")
-    advanced.add_argument("--country", dest="country_code", default="CHN", help="Country code in the long filename.")
+    advanced.add_argument(
+        "--num", dest="receiver_number", default="00", help="Receiver number in the long filename."
+    )
+    advanced.add_argument(
+        "--country", dest="country_code", default="CHN", help="Country code in the long filename."
+    )
 
-    parser.add_argument("--station-code", dest="station_code", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
-    parser.add_argument("--receiver-number", dest="receiver_number", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
-    parser.add_argument("--country-code", dest="country_code", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
-    parser.add_argument("--marker-name", dest="marker_name", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
-    parser.add_argument("--marker-number", dest="marker_number", default="0", help=argparse.SUPPRESS)
-    parser.add_argument("--receiver-type", dest="receiver_type", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
-    parser.add_argument("--receiver-serial", dest="receiver_serial", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
-    parser.add_argument("--receiver-version", dest="receiver_version", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
-    parser.add_argument("--antenna-type", dest="antenna_type", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--station-code", dest="station_code", default=argparse.SUPPRESS, help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--receiver-number",
+        dest="receiver_number",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--country-code", dest="country_code", default=argparse.SUPPRESS, help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--marker-name", dest="marker_name", default=argparse.SUPPRESS, help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--marker-number", dest="marker_number", default="0", help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--receiver-type", dest="receiver_type", default=argparse.SUPPRESS, help=argparse.SUPPRESS
+    )
+    parser.add_argument(
+        "--receiver-serial",
+        dest="receiver_serial",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--receiver-version",
+        dest="receiver_version",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--antenna-type", dest="antenna_type", default=argparse.SUPPRESS, help=argparse.SUPPRESS
+    )
     parser.add_argument("--datatype", dest="datatype", default="MO", help=argparse.SUPPRESS)
-    parser.add_argument("--approx-position", dest="approx_position", nargs=3, type=float, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
-    parser.add_argument("--reference-date", dest="reference_date", default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--approx-position",
+        dest="approx_position",
+        nargs=3,
+        type=float,
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--reference-date", dest="reference_date", default=argparse.SUPPRESS, help=argparse.SUPPRESS
+    )
     return parser
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
@@ -695,9 +786,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     reference_utc = None
     if args.reference_date:
         try:
-            reference_utc = datetime.strptime(args.reference_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            reference_utc = datetime.strptime(args.reference_date, "%Y-%m-%d").replace(
+                tzinfo=timezone.utc
+            )
         except ValueError:
-            parser.error(f"Invalid --reference-date value: {args.reference_date}. Expected YYYY-MM-DD.")
+            parser.error(
+                f"Invalid --reference-date value: {args.reference_date}. Expected YYYY-MM-DD."
+            )
 
     try:
         result = convert_rtcm_file_to_rinex(

@@ -9,22 +9,22 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from utils.realtime_ekf_gnssir.config import (
-    StationConfig,
-    StationRuntimeConfig,
-    StorageConfig,
-    StreamConfig,
-)
+from tests.reflectometry.helpers import generate_synthetic_observations
 from utils.realtime_ekf_gnssir._vendor.core.reflectometry.config import load_config
 from utils.realtime_ekf_gnssir._vendor.core.reflectometry.services.ekf import (
     EkfPoint,
     EkfReflectometryProcessor,
 )
 from utils.realtime_ekf_gnssir._vendor.core.reflectometry.services.realtime import RealtimeProcessor
-from utils.realtime_ekf_gnssir.station_worker import RealtimeEkfStationWorker
-from utils.realtime_ekf_gnssir.runtime import _normalize_receiver_position_payload
 from utils.realtime_ekf_gnssir._vendor.rt_ntrip_rinex_service.rtcm_handler import RTCMHandler
-from tests.reflectometry.helpers import generate_synthetic_observations
+from utils.realtime_ekf_gnssir.config import (
+    StationConfig,
+    StationRuntimeConfig,
+    StorageConfig,
+    StreamConfig,
+)
+from utils.realtime_ekf_gnssir.runtime import _normalize_receiver_position_payload
+from utils.realtime_ekf_gnssir.station_worker import RealtimeEkfStationWorker
 
 
 def _blank_coordinate_config(tmp_path: Path) -> Path:
@@ -191,7 +191,10 @@ def test_web_config_accepts_all_blank_coordinates_as_rtcm_auto_mode():
 
     position = raw["station"]["receiver_position"]
     assert position["source"] == "rtcm_auto"
-    assert all(position[key] is None for key in ("x_m", "y_m", "z_m", "latitude_deg", "longitude_deg", "height_m"))
+    assert all(
+        position[key] is None
+        for key in ("x_m", "y_m", "z_m", "latitude_deg", "longitude_deg", "height_m")
+    )
 
 
 def test_web_config_rejects_partial_coordinates():

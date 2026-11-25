@@ -1,8 +1,9 @@
 # Python
 __pycache__/
 *.pyc
-.venv/
+.venv*/
 venv/
+*.egg-info/
 
 # Qt / CMake
 build/
@@ -17,8 +18,17 @@ CMakeFiles/
 .DS_Store
 Thumbs.db
 
-# test
-test/
+# Test and quality-tool output
+test-results/
+.coverage
+.coverage.*
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+htmlcov/
+coverage.xml
+*.lprof
+mprofile_*.dat
 log/
 output/
 GNSS_Data/

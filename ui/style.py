@@ -1,8 +1,10 @@
 """Shared Qt stylesheet helpers for keeping module visuals consistent."""
 
-from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QPalette
+from PySide6.QtWidgets import QApplication
+
 from ui.responsive import compute_ui_scale
+
 
 def ui_scale_for_width(width: int, height: int | None = None) -> float:
     return compute_ui_scale(width, height)
@@ -19,29 +21,29 @@ def get_app_stylesheet(scale: float = 1.0):
 
     if is_dark:
         # --- 深海蓝色调 (Professional Dark Blue) ---
-        bg_main    = "#0F121A"  # 极深蓝黑（主背景）
-        bg_card    = "#1C212D"  # 深灰蓝（卡片/容器）
-        bg_input   = "#161A23"  # 略深的输入框
-        bg_hover   = "#2D3446"  # 悬停色
-        border     = "#2F374A"  # 边框色
-        fg_main    = "#E2E8F0"  # 主文字（冷白）
-        fg_muted   = "#94A3B8"  # 辅助文字（灰蓝）
-        accent     = "#3B82F6"  # 科技蓝 (Primary Blue)
-        selection  = "#1E3A8A"  # 选中深蓝色
+        bg_main = "#0F121A"  # 极深蓝黑（主背景）
+        bg_card = "#1C212D"  # 深灰蓝（卡片/容器）
+        bg_input = "#161A23"  # 略深的输入框
+        bg_hover = "#2D3446"  # 悬停色
+        border = "#2F374A"  # 边框色
+        fg_main = "#E2E8F0"  # 主文字（冷白）
+        fg_muted = "#94A3B8"  # 辅助文字（灰蓝）
+        accent = "#3B82F6"  # 科技蓝 (Primary Blue)
+        selection = "#1E3A8A"  # 选中深蓝色
         # 绘图区专用色
-        plot_bg    = "#0B0E14"
+        plot_bg = "#0B0E14"
     else:
         # --- 专业浅蓝色调 (Clean Academic Light) ---
-        bg_main    = "#F8FAFC"
-        bg_card    = "#FFFFFF"
-        bg_input   = "#F1F5F9"
-        bg_hover   = "#E2E8F0"
-        border     = "#CBD5E1"
-        fg_main    = "#0F172A"
-        fg_muted   = "#64748B"
-        accent     = "#2563EB"
-        selection  = "#DBEAFE"
-        plot_bg    = "#FFFFFF"
+        bg_main = "#F8FAFC"
+        bg_card = "#FFFFFF"
+        bg_input = "#F1F5F9"
+        bg_hover = "#E2E8F0"
+        border = "#CBD5E1"
+        fg_main = "#0F172A"
+        fg_muted = "#64748B"
+        accent = "#2563EB"
+        selection = "#DBEAFE"
+        plot_bg = "#FFFFFF"
 
     # 通用变量
     radius = "6px"
@@ -154,12 +156,13 @@ def get_app_stylesheet(scale: float = 1.0):
     }}
 
     /* 输入控件 */
-    QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QComboBox {{
+    QLineEdit, QTextEdit, QPlainTextEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
         background-color: {bg_input};
         border: 1px solid {border};
         border-radius: {radius};
         padding: {input_pad_v}px {input_pad_h}px;
         selection-background-color: {accent};
+        min-height: {max(24, int(30 * scale))}px;
     }}
     QLineEdit:focus, QComboBox:focus {{
         border: 1px solid {accent};

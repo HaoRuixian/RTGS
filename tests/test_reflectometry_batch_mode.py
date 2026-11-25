@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import sys
 from types import ModuleType, SimpleNamespace
 
 from core.config_paths import default_ir_config_path
@@ -17,7 +17,9 @@ from core.reflectometry.rinex_batch import (
 )
 
 
-def _signal(signal_id: str, *, snr: float, pseudorange: float, phase: float, doppler: float) -> SignalData:
+def _signal(
+    signal_id: str, *, snr: float, pseudorange: float, phase: float, doppler: float
+) -> SignalData:
     return SignalData(
         signal_id=signal_id,
         snr=snr,
@@ -48,8 +50,12 @@ def test_build_observation_records_from_epoch_uses_override_timestamp_and_filter
                 azimuth=123.4,
                 elevation=18.5,
                 signals={
-                    "1C": _signal("1C", snr=45.0, pseudorange=21474836.0, phase=123456.5, doppler=-1234.0),
-                    "5Q": _signal("5Q", snr=48.0, pseudorange=21474840.0, phase=223456.5, doppler=-1134.0),
+                    "1C": _signal(
+                        "1C", snr=45.0, pseudorange=21474836.0, phase=123456.5, doppler=-1234.0
+                    ),
+                    "5Q": _signal(
+                        "5Q", snr=48.0, pseudorange=21474840.0, phase=223456.5, doppler=-1134.0
+                    ),
                 },
             ),
             "E11": SatelliteState(
@@ -57,7 +63,11 @@ def test_build_observation_records_from_epoch_uses_override_timestamp_and_filter
                 prn=11,
                 azimuth=222.0,
                 elevation=25.0,
-                signals={"1C": _signal("1C", snr=40.0, pseudorange=23456789.0, phase=654321.0, doppler=123.0)},
+                signals={
+                    "1C": _signal(
+                        "1C", snr=40.0, pseudorange=23456789.0, phase=654321.0, doppler=123.0
+                    )
+                },
             ),
         },
     )
@@ -94,17 +104,35 @@ def test_signal_enabled_for_reflectometry_respects_include_and_exclude_rules():
         exclude_signals=["5Q"],
     )
 
-    assert signal_enabled_for_reflectometry("G", "1C", active_systems={"G", "E"}, input_config=config) is True
-    assert signal_enabled_for_reflectometry("E", "1C", active_systems={"G", "E"}, input_config=config) is False
-    assert signal_enabled_for_reflectometry("G", "5Q", active_systems={"G", "E"}, input_config=config) is False
-    assert signal_enabled_for_reflectometry("R", "1C", active_systems={"G", "E"}, input_config=config) is False
+    assert (
+        signal_enabled_for_reflectometry("G", "1C", active_systems={"G", "E"}, input_config=config)
+        is True
+    )
+    assert (
+        signal_enabled_for_reflectometry("E", "1C", active_systems={"G", "E"}, input_config=config)
+        is False
+    )
+    assert (
+        signal_enabled_for_reflectometry("G", "5Q", active_systems={"G", "E"}, input_config=config)
+        is False
+    )
+    assert (
+        signal_enabled_for_reflectometry("R", "1C", active_systems={"G", "E"}, input_config=config)
+        is False
+    )
 
 
 def test_signal_enabled_for_reflectometry_normalizes_rinex_snr_prefix():
     config = InputConfig(constellations=["C"], signals=["S2I"])
 
-    assert signal_enabled_for_reflectometry("C", "2I", active_systems={"C"}, input_config=config) is True
-    assert signal_enabled_for_reflectometry("C", "S2I", active_systems={"C"}, input_config=config) is True
+    assert (
+        signal_enabled_for_reflectometry("C", "2I", active_systems={"C"}, input_config=config)
+        is True
+    )
+    assert (
+        signal_enabled_for_reflectometry("C", "S2I", active_systems={"C"}, input_config=config)
+        is True
+    )
 
 
 def test_global_config_round_trip_preserves_final_results_only_flag():
@@ -181,7 +209,9 @@ def test_rinex_fast_loop_realtime_logic_respects_analysis_interval(tmp_path, mon
             self.logger = logger
             self.ingest_calls: list[tuple[datetime, int, bool, float | None]] = []
             self.batch_processor = SimpleNamespace(
-                product_converter=SimpleNamespace(aggregate=lambda products, window_start, window_end: [])
+                product_converter=SimpleNamespace(
+                    aggregate=lambda products, window_start, window_end: []
+                )
             )
             self.final_series_by_arc = {}
             self.final_spectra_by_arc = {}
@@ -194,7 +224,14 @@ def test_rinex_fast_loop_realtime_logic_respects_analysis_interval(tmp_path, mon
                 window_aggregates=[],
             )
 
-        def ingest(self, observations, *, reference_time=None, window_seconds=None, include_open_preview=True):
+        def ingest(
+            self,
+            observations,
+            *,
+            reference_time=None,
+            window_seconds=None,
+            include_open_preview=True,
+        ):
             self.ingest_calls.append(
                 (reference_time, len(observations), include_open_preview, window_seconds)
             )
@@ -247,7 +284,11 @@ def test_rinex_fast_loop_realtime_logic_respects_analysis_interval(tmp_path, mon
         return processor
 
     monkeypatch.setattr(workers_module, "RealtimeProcessor", build_processor)
-    monkeypatch.setattr(workers_module, "build_observation_records_from_epoch", fake_build_observation_records_from_epoch)
+    monkeypatch.setattr(
+        workers_module,
+        "build_observation_records_from_epoch",
+        fake_build_observation_records_from_epoch,
+    )
 
     worker = RinexBatchAnalysisThread(
         obs_settings={"file_path": "dummy.obs"},

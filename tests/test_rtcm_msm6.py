@@ -6,18 +6,19 @@ from datetime import datetime, timezone
 import pytest
 from pyrtcm import RTCMReader, crc2bytes
 
-from core.mixed_gnss_reader import MixedGNSSReader
 from core.geo_utils import get_freq
+from core.mixed_gnss_reader import MixedGNSSReader
 from core.pyrtcm_compat import patch_pyrtcm_glonass_g3
 from core.rinex3_writer import RINEX3Writer
 from core.rt_ntrip_rinex import _detect_sys_obs_types_from_satellites as detect_core_obs_types
 from core.rtcm_handler import RTCMHandler as CoreRTCMHandler
+from ui.monitoring.formatting import format_optional_observation
 from utils import rtcm_to_rinex
-from utils.realtime_ekf_gnssir._vendor.rt_ntrip_rinex_service.rtcm_handler import (
-    RTCMHandler as VendoredRTCMHandler,
-)
 from utils.realtime_ekf_gnssir._vendor.rt_ntrip_rinex_service.mixed_gnss_reader import (
     MixedGNSSReader as VendoredMixedGNSSReader,
+)
+from utils.realtime_ekf_gnssir._vendor.rt_ntrip_rinex_service.rtcm_handler import (
+    RTCMHandler as VendoredRTCMHandler,
 )
 from utils.realtime_ekf_gnssir._vendor.rt_ntrip_rinex_service.service import (
     _detect_sys_obs_types_from_satellites as detect_vendored_obs_types,
@@ -27,8 +28,6 @@ from utils.rt_ntrip_rinex_service.rtcm_handler import RTCMHandler as ServiceRTCM
 from utils.rt_ntrip_rinex_service.service import (
     _detect_sys_obs_types_from_satellites as detect_service_obs_types,
 )
-from ui.monitoring.formatting import format_optional_observation
-
 
 MSM6_CASES = (
     ("1076", "G03", "1C"),

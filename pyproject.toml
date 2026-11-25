@@ -1,0 +1,160 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rtgs"
+dynamic = ["version"]
+description = "Real-time GNSS acquisition, positioning, monitoring, and reflectometry studio."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Ruixian Hao", email = "vitamin_n@outlook.com" },
+]
+keywords = ["GNSS", "RTCM", "RINEX", "NTRIP", "positioning", "reflectometry"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Scientific/Engineering",
+]
+dependencies = [
+  "matplotlib>=3.5.0",
+  "numpy>=1.21.0",
+  "pandas>=2.2.0",
+  "Pillow>=9.0.0",
+  "pynmeagps>=1.0.0",
+  "pyrtcm>=1.1.0",
+  "PySide6>=6.4.0",
+  "pyserial>=3.5",
+  "PyYAML>=6.0",
+  "scipy>=1.11.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "black>=24.10",
+  "build>=1.2",
+  "mypy>=1.14",
+  "pytest>=7.0",
+  "pytest-cov>=6.0",
+  "ruff>=0.9",
+  "types-PyYAML>=6.0.12",
+  "types-pyserial>=3.5.0",
+]
+maps = ["folium>=0.14"]
+legacy-gui = ["PyQt6>=6.4"]
+profile = [
+  "line-profiler>=4.2",
+  "memory-profiler>=0.61",
+  "psutil>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/HaoRuixian/RTGS"
+Repository = "https://github.com/HaoRuixian/RTGS.git"
+Issues = "https://github.com/HaoRuixian/RTGS/issues"
+
+[project.gui-scripts]
+rtgs = "gui_main:main"
+rtgs-batch = "batch_main:main"
+rtgs-rtcm-batch = "ui.rtcm_batch_converter:main"
+
+[tool.setuptools]
+package-dir = { rtgs = "src/rtgs" }
+include-package-data = false
+py-modules = ["gui_main", "main", "batch_main", "rtcm_batch_gui"]
+
+[tool.setuptools.dynamic]
+version = { attr = "rtgs.__version__" }
+
+[tool.setuptools.packages.find]
+where = [".", "src"]
+include = ["core*", "rtgs*", "ui*", "utils*"]
+exclude = ["ui.legacy*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+core = ["resources/ppp/*"]
+rtgs = ["py.typed"]
+"utils.realtime_ekf_gnssir" = ["static/*"]
+"utils.rt_ntrip_rinex_service" = ["static/*"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+extend-exclude = '''
+/(
+    ui/legacy
+  | utils/realtime_ekf_gnssir/_vendor
+)/
+'''
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+  "ui/legacy",
+  "utils/realtime_ekf_gnssir/_vendor",
+]
+
+[tool.ruff.lint]
+select = ["B", "E4", "E7", "E9", "F", "I", "SIM", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["core", "rtgs", "scripts", "ui", "utils"]
+
+[tool.ruff.lint.per-file-ignores]
+"ui/monitoring/workers.py" = ["E402"]
+"utils/merge_rinex_daily.py" = ["E402"]
+"utils/rt_ntrip_to_rinex.py" = ["E402"]
+"utils/rtcm_to_rinex.py" = ["E402"]
+"utils/split_rinex_hourly.py" = ["E402"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+testpaths = ["tests"]
+pythonpath = [".", "src"]
+markers = [
+  "unit: isolated, deterministic unit tests",
+  "integration: interactions between modules or external adapters",
+  "regression: compatibility and golden-data regression tests",
+  "performance: opt-in performance benchmarks and profiler harnesses",
+]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["src/rtgs"]
+mypy_path = "src"
+explicit_package_bases = true
+strict = true
+pretty = true
+show_error_codes = true
+warn_unused_configs = true
+
+[tool.coverage.run]
+branch = true
+source = ["src/rtgs", "core", "ui", "utils"]
+omit = [
+  "ui/legacy/*",
+  "utils/realtime_ekf_gnssir/_vendor/*",
+]
+
+[tool.coverage.report]
+exclude_also = [
+  "if TYPE_CHECKING:",
+  "if __name__ == .__main__.:",
+  "raise NotImplementedError",
+]
+show_missing = true
+skip_covered = true

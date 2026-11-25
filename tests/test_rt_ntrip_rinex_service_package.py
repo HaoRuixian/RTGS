@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 
 from utils.rt_ntrip_rinex_service.config_store import ConfigStore
 from utils.rt_ntrip_rinex_service.data_models import EpochObservation, SatelliteState, SignalData
 from utils.rt_ntrip_rinex_service.manager import LogBuffer, RuntimeManager
 from utils.rt_ntrip_rinex_service.merge_rinex_daily import merge_rinex_daily_files
 from utils.rt_ntrip_rinex_service.rinex3_writer import RINEX3Writer
-from utils.rt_ntrip_rinex_service.service import PrefetchedSocketStream, RTNtripRinexStation, load_rt_rinex_config
+from utils.rt_ntrip_rinex_service.service import (
+    PrefetchedSocketStream,
+    RTNtripRinexStation,
+    load_rt_rinex_config,
+)
 
 
 def _signal(signal_id: str, pseudorange: float = 21000000.0) -> SignalData:
@@ -23,7 +26,9 @@ def _signal(signal_id: str, pseudorange: float = 21000000.0) -> SignalData:
     )
 
 
-def _epoch(epoch_time: datetime, satellite_defs: dict[str, dict[str, SignalData]]) -> EpochObservation:
+def _epoch(
+    epoch_time: datetime, satellite_defs: dict[str, dict[str, SignalData]]
+) -> EpochObservation:
     epoch = EpochObservation(gps_time=0.0, utc_datetime=epoch_time)
     for sat_id, signals in satellite_defs.items():
         sat_state = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))
@@ -479,8 +484,12 @@ def test_daily_merge_buckets_output_by_gps_day(tmp_path):
         receiver_type="TestReceiver",
         antenna_type="TestAntenna",
     )
-    assert writer.write_observation(datetime(2026, 3, 25, 23, 59, 42), {"G01": _satellite("1C", 21000000.0)})
-    assert writer.write_observation(datetime(2026, 3, 25, 23, 59, 43), {"G01": _satellite("1C", 21000001.0)})
+    assert writer.write_observation(
+        datetime(2026, 3, 25, 23, 59, 42), {"G01": _satellite("1C", 21000000.0)}
+    )
+    assert writer.write_observation(
+        datetime(2026, 3, 25, 23, 59, 43), {"G01": _satellite("1C", 21000001.0)}
+    )
     writer.close()
 
     output_dir = tmp_path / "daily"

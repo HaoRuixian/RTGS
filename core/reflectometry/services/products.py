@@ -11,10 +11,10 @@ from statistics import mean
 import numpy as np
 
 from core.reflectometry.config import ProductsConfig
-from core.reflectometry.models import ProductType
 from core.reflectometry.models import (
     ArcSolution,
     ProductResult,
+    ProductType,
     ReflectorHeightResult,
     SeaLevelResult,
     SnowDepthResult,
@@ -167,7 +167,9 @@ class ProductConverter:
         for product_type, items in grouped.items():
             weights = [_product_weight(item) for item in items]
             total_weight = sum(weights)
-            weighted_value = sum(item.value * weight for item, weight in zip(items, weights)) / max(total_weight, 1e-12)
+            weighted_value = sum(
+                item.value * weight for item, weight in zip(items, weights, strict=True)
+            ) / max(total_weight, 1e-12)
             aggregate_products.append(
                 ProductResult(
                     product_type=product_type,
@@ -176,15 +178,24 @@ class ProductConverter:
                     unit=items[0].unit,
                     source_arc_count=len(items),
                     confidence=round(float(mean([item.confidence for item in items])), 4),
-                    metadata={"aggregation": "pnr_weighted_mean", "weight_field": "peak_to_noise_ratio"},
+                    metadata={
+                        "aggregation": "pnr_weighted_mean",
+                        "weight_field": "peak_to_noise_ratio",
+                    },
                 )
             )
 
         if not aggregate_products:
             return []
-        return [WindowAggregateResult(window_start=window_start, window_end=window_end, products=aggregate_products)]
+        return [
+            WindowAggregateResult(
+                window_start=window_start, window_end=window_end, products=aggregate_products
+            )
+        ]
 
-    def _build_dynamic_sea_level_products(self, products: list[ProductResult]) -> list[ProductResult]:
+    def _build_dynamic_sea_level_products(
+        self, products: list[ProductResult]
+    ) -> list[ProductResult]:
         sea_level_products = sorted(
             [item for item in products if item.product_type == ProductType.SEA_LEVEL],
             key=lambda item: item.timestamp,
@@ -312,7 +323,9 @@ class ProductConverter:
         fit = self._solve_dynamic_regression(X, y, weights)
         if fit is None:
             return None
-        required_effective_samples = min(len(design_rows), max(3, self.config.dynamic_sea_level_min_points - 1))
+        required_effective_samples = min(
+            len(design_rows), max(3, self.config.dynamic_sea_level_min_points - 1)
+        )
         if fit.effective_sample_count < required_effective_samples:
             return None
 
@@ -320,7 +333,9 @@ class ProductConverter:
         velocity = float(fit.beta[1])
         acceleration = float(fit.beta[2])
         weighted_peak_to_noise_ratio = (
-            peak_to_noise_weighted_sum / peak_to_noise_weight_total if peak_to_noise_weight_total > 0.0 else None
+            peak_to_noise_weighted_sum / peak_to_noise_weight_total
+            if peak_to_noise_weight_total > 0.0
+            else None
         )
         return DynamicSeaLevelEstimate(
             corrected_value_m=corrected_value,
@@ -335,7 +350,11 @@ class ProductConverter:
             window_end=reference_product.timestamp,
             robust_iterations=fit.iterations,
             sigma0=fit.sigma0,
-            max_standardized_residual=float(np.max(np.abs(fit.standardized_residuals))) if fit.standardized_residuals.size else 0.0,
+            max_standardized_residual=(
+                float(np.max(np.abs(fit.standardized_residuals)))
+                if fit.standardized_residuals.size
+                else 0.0
+            ),
             condition_number_before=fit.condition_number_before,
             condition_number_after=fit.condition_number_after,
         )
@@ -370,7 +389,9 @@ def _base_product_metadata(solution: ArcSolution) -> dict[str, str | float | Non
         "constellation": solution.constellation,
         "satellite": solution.satellite,
         "signal": solution.signal,
-        "arc_direction": solution.arc_direction.value if solution.arc_direction is not None else None,
+        "arc_direction": (
+            solution.arc_direction.value if solution.arc_direction is not None else None
+        ),
         "peak_to_noise_ratio": solution.peak_to_noise_ratio,
         "roc_like_seconds": solution.metadata.get("roc_like"),
         "elevation_rate_deg_per_min": solution.metadata.get("elevation_rate_deg_per_min"),
@@ -388,7 +409,9 @@ def _product_weight(product: ProductResult) -> float:
         return 1.0
 
 
-def _second_order_dynamic_design_row(roc_like_seconds: float, delta_t_seconds: float) -> list[float]:
+def _second_order_dynamic_design_row(
+    roc_like_seconds: float, delta_t_seconds: float
+) -> list[float]:
     return [
         1.0,
         roc_like_seconds + delta_t_seconds,
@@ -463,7 +486,12 @@ def _robust_igg3_fit(
             sigma0 = max(_robust_scale(residuals), np.finfo(float).eps)
         else:
             sigma0 = float(
-                np.sqrt(max(float(residuals.T @ (weights * residuals)) / degrees_of_freedom, np.finfo(float).eps))
+                np.sqrt(
+                    max(
+                        float(residuals.T @ (weights * residuals)) / degrees_of_freedom,
+                        np.finfo(float).eps,
+                    )
+                )
             )
 
         qx = np.linalg.pinv(normal_matrix)
@@ -488,7 +516,10 @@ def _robust_igg3_fit(
 
         beta_normalized = beta_candidate
         iterations = iteration
-        if previous_beta is not None and float(np.max(np.abs(beta_candidate - previous_beta))) < tolerance:
+        if (
+            previous_beta is not None
+            and float(np.max(np.abs(beta_candidate - previous_beta))) < tolerance
+        ):
             weights = new_weights
             break
         previous_beta = beta_candidate
@@ -503,14 +534,22 @@ def _robust_igg3_fit(
     beta_normalized, normal_matrix = solved
     residuals = X_normalized @ beta_normalized - y
     degrees_of_freedom = max(X_normalized.shape[0] - X_normalized.shape[1], 1)
-    sigma0 = float(np.sqrt(max(float(residuals.T @ (weights * residuals)) / degrees_of_freedom, np.finfo(float).eps)))
+    sigma0 = float(
+        np.sqrt(
+            max(
+                float(residuals.T @ (weights * residuals)) / degrees_of_freedom, np.finfo(float).eps
+            )
+        )
+    )
     qx = np.linalg.pinv(normal_matrix)
     hat_diagonal = _weighted_hat_diagonal(X_normalized, qx)
     denominator = sigma0 * np.sqrt(
         np.maximum((1.0 / np.maximum(weights, min_weight)) - hat_diagonal, np.finfo(float).eps)
     )
     standardized_residuals = residuals / denominator
-    beta = _backtransform_normalized_coefficients(beta_normalized, means, scales, normalized_columns)
+    beta = _backtransform_normalized_coefficients(
+        beta_normalized, means, scales, normalized_columns
+    )
     residuals_original = X @ beta - y
 
     rejection_mask = weights <= (min_weight * (1.0 + 1e-6))
@@ -572,7 +611,9 @@ def _backtransform_normalized_coefficients(
         if not normalized:
             continue
         beta[column_index] = beta_normalized[column_index] / scales[column_index]
-        intercept_adjustment += beta_normalized[column_index] * means[column_index] / scales[column_index]
+        intercept_adjustment += (
+            beta_normalized[column_index] * means[column_index] / scales[column_index]
+        )
     if beta.size > 0:
         beta[0] = beta_normalized[0] - intercept_adjustment
     return beta
@@ -631,7 +672,9 @@ def classify_environment(environment_type: str | None) -> str:
     return "manual"
 
 
-def apply_environment_product_policy(config: ProductsConfig, environment_type: str | None) -> ProductsConfig:
+def apply_environment_product_policy(
+    config: ProductsConfig, environment_type: str | None
+) -> ProductsConfig:
     """Adjust enabled products to match the configured station environment."""
     mode = classify_environment(environment_type)
     if mode == "water":

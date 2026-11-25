@@ -7,21 +7,24 @@ Includes:
   - Tropospheric delay modeling (Saastamoinen)
   - Frequency lookups for GNSS signals
 """
-import numpy as np
+
 import math
 
+import numpy as np
+
 # WGS84 Constants
-CLIGHT = 299792458.0       # Speed of light
+CLIGHT = 299792458.0  # Speed of light
+
 
 def get_freq(sig_id: str, sat_key: str, fcn: int = 0):
     """
     Get frequency and wavelength based on Signal ID and Satellite Key.
-    
+
     Args:
         sig_id: Signal ID (e.g., "1C", "2W")
         sat_key: Satellite Key (e.g., "G14", "R01")
         fcn: Frequency Channel Number (Required for GLONASS, -7 to +6)
-    
+
     Returns:
         (frequency_Hz, wavelength_m)
     """
@@ -31,12 +34,19 @@ def get_freq(sig_id: str, sat_key: str, fcn: int = 0):
     # Galileo
     gal_freq = {"1": 1575.42e6, "5": 1176.45e6, "7": 1207.14e6, "8": 1191.795e6, "6": 1278.75e6}
     # BDS
-    bds_freq = {"1": 1575.42e6, "2": 1561.098e6, "5": 1176.45e6, "7": 1207.140e6, "8": 1191.795e6, "6": 1268.52e6}
+    bds_freq = {
+        "1": 1575.42e6,
+        "2": 1561.098e6,
+        "5": 1176.45e6,
+        "7": 1207.140e6,
+        "8": 1191.795e6,
+        "6": 1268.52e6,
+    }
     # SBAS
     sbas_freq = {"1": 1575.42e6, "5": 1176.45e6}
     # IRNSS / NavIC
     irnss_freq = {"1": 1575.42e6, "5": 1176.45e6, "9": 2492.028e6}
-    
+
     sys = sat_key[0]
     band = sig_id[0]
     freq = None
@@ -68,56 +78,54 @@ def get_freq(sig_id: str, sat_key: str, fcn: int = 0):
 
     return freq, CLIGHT / freq
 
+
 # -----------------------------------------------------
 # Coordinate Transformations
 # -----------------------------------------------------
 
+
 def ecef2lla(pos):
     """
     Convert ECEF XYZ to Lat, Lon, Alt (WGS84).
-    
+
     Args:
         pos: [x, y, z] in meters (ECEF)
-    
+
     Returns:
         Tuple of (latitude_rad, longitude_rad, altitude_m)
     """
     x, y, z = pos[0], pos[1], pos[2]
     a = 6378137.0  # WGS84 semi-major axis
     e2 = 6.69437999014e-3  # WGS84 eccentricity squared
-    
+
     b = a * math.sqrt(1 - e2)
     ep = math.sqrt((a**2 - b**2) / b**2)
     p = math.sqrt(x**2 + y**2)
-    
+
     if p == 0:
         # Pole case
         if z >= 0:
-            return math.pi/2, 0.0, z - b
+            return math.pi / 2, 0.0, z - b
         else:
-            return -math.pi/2, 0.0, -z - b
+            return -math.pi / 2, 0.0, -z - b
 
-    th = math.atan2(a*z, b*p)
+    th = math.atan2(a * z, b * p)
     lon = math.atan2(y, x)
-    lat = math.atan2(z + ep*ep*b*(math.sin(th)**3),
-                     p - e2*a*(math.cos(th)**3))
-    
+    lat = math.atan2(z + ep * ep * b * (math.sin(th) ** 3), p - e2 * a * (math.cos(th) ** 3))
+
     # Altitude calculation using more stable method
-    N = a / math.sqrt(1 - e2 * math.sin(lat)**2)
+    N = a / math.sqrt(1 - e2 * math.sin(lat) ** 2)
     sin_lat = math.sin(lat)
     cos_lat = math.cos(lat)
-    
+
     # Use sin-based formula when latitude is steep, cos-based when flat
     if abs(sin_lat) > abs(cos_lat):
         alt = z / sin_lat - N * (1 - e2)
     else:
-        if cos_lat != 0:
-            alt = p / cos_lat - N
-        else:
-            # Fallback if exactly at pole
-            alt = abs(z) - b
-    
+        alt = p / cos_lat - N if cos_lat != 0 else abs(z) - b
+
     return lat, lon, alt
+
 
 def rot_ecef2enu(lat, lon):
     """
@@ -128,12 +136,9 @@ def rot_ecef2enu(lat, lon):
     slon = math.sin(lon)
     clon = math.cos(lon)
 
-    R = np.array([
-        [-slon,        clon,        0],
-        [-sl*clon, -sl*slon,    cl],
-        [ cl*clon,  cl*slon,    sl]
-    ])
+    R = np.array([[-slon, clon, 0], [-sl * clon, -sl * slon, cl], [cl * clon, cl * slon, sl]])
     return R
+
 
 def ecef2enu(sat_pos, rec_pos):
     """
@@ -141,24 +146,25 @@ def ecef2enu(sat_pos, rec_pos):
     """
     # Difference vector in ECEF
     diff = np.array(sat_pos) - np.array(rec_pos)
-    
+
     # Get Receiver Geodetic Lat/Lon
     lat, lon, _ = ecef2lla(rec_pos)
-    
+
     # Get Rotation Matrix
     R = rot_ecef2enu(lat, lon)
-    
+
     # Rotate
     enu = R @ diff
     return enu
 
+
 def calculate_az_el(sat_ecef, rec_ecef):
     """
-    Calculate Azimuth and Elevation. 
-    
-    Args: sat_ecef: Satellite position [x, y, z] (meters) 
-    rec_ecef: Receiver position [x, y, z] (meters) 
-    Returns: tuple: (Azimuth [deg], Elevation [deg]) or (0, 0) if error 
+    Calculate Azimuth and Elevation.
+
+    Args: sat_ecef: Satellite position [x, y, z] (meters)
+    rec_ecef: Receiver position [x, y, z] (meters)
+    Returns: tuple: (Azimuth [deg], Elevation [deg]) or (0, 0) if error
     """
 
     if sat_ecef is None or rec_ecef is None:
@@ -176,7 +182,7 @@ def calculate_az_el(sat_ecef, rec_ecef):
         az += 360.0
 
     # ---- Elevation ----
-    rnorm = math.sqrt(e*e + n*n + u*u)
+    rnorm = math.sqrt(e * e + n * n + u * u)
     el = math.degrees(math.asin(u / rnorm))
 
     return az, el
@@ -185,7 +191,7 @@ def calculate_az_el(sat_ecef, rec_ecef):
 def tropsphere_model(pos, azel, humi=0.7):
     """
     Saastamoinen troposphere model (standard atmosphere).
-    
+
     Computes tropospheric delay using the Saastamoinen model with standard
     atmosphere assumptions.
 
@@ -229,36 +235,36 @@ def tropsphere_model(pos, azel, humi=0.7):
     z = math.pi / 2.0 - el  # zenith angle
 
     trph = (
-        0.0022768 * pres
-        / (1.0 - 0.00266 * math.cos(2.0 * lat) - 0.00028 * hgt / 1e3)
-        / math.cos(z)
+        0.0022768 * pres / (1.0 - 0.00266 * math.cos(2.0 * lat) - 0.00028 * hgt / 1e3) / math.cos(z)
     )
 
-    trpw = (
-        0.002277
-        * (1255.0 / temp + 0.05)
-        * e
-        / math.cos(z)
-    )
+    trpw = 0.002277 * (1255.0 / temp + 0.05) * e / math.cos(z)
 
-    return trph + trpw, (0.3/(math.sin(el) + 0.1))**2  # delay in meters, variance estimate
+    return trph + trpw, (0.3 / (math.sin(el) + 0.1)) ** 2  # delay in meters, variance estimate
+
 
 def ionospheric_model(pos, azel, t, ion):
     # 常数定义
     CLIGHT = 299792458.0
     PI = 3.1415926535897932
-    
+
     # 2004/1/1 默认参数 (如果输入参数为空时使用)
     ION_DEFAULT = [
-        0.1118E-07, -0.7451E-08, -0.5961E-07,  0.1192E-06,
-        0.1167E+06, -0.2294E+06, -0.1311E+06,  0.1049E+07
+        0.1118e-07,
+        -0.7451e-08,
+        -0.5961e-07,
+        0.1192e-06,
+        0.1167e06,
+        -0.2294e06,
+        -0.1311e06,
+        0.1049e07,
     ]
 
     # 1. 基础检查
     # 如果高度低于-1000米或卫星仰角小于等于0，不计算延迟
-    if pos[2] < -1E3 or azel[1] <= 0:
+    if pos[2] < -1e3 or azel[1] <= 0:
         return 0.0
-    
+
     # 如果参数全为0，使用默认参数
     if all(abs(x) < 1e-20 for x in ion):
         ion = ION_DEFAULT
@@ -291,7 +297,7 @@ def ionospheric_model(pos, azel, t, ion):
     # 8. 计算振幅 (amp) 和 周期 (per)
     amp = ion[0] + phi * (ion[1] + phi * (ion[2] + phi * ion[3]))
     per = ion[4] + phi * (ion[5] + phi * (ion[6] + phi * ion[7]))
-    
+
     amp = max(amp, 0.0)
     per = max(per, 72000.0)
 
@@ -304,8 +310,8 @@ def ionospheric_model(pos, azel, t, ion):
     if abs(x) < 1.57:
         # 使用泰勒展开近似 cos(x)
         cos_x = 1.0 + x * x * (-0.5 + x * x / 24.0)
-        ion_delay_sec = 5E-9 + amp * cos_x
+        ion_delay_sec = 5e-9 + amp * cos_x
     else:
-        ion_delay_sec = 5E-9
+        ion_delay_sec = 5e-9
 
     return CLIGHT * f * ion_delay_sec

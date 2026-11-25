@@ -1,14 +1,29 @@
 """Dialog for configuring live observation logging output and file rotation."""
 
-from PySide6.QtWidgets import (QDialog, QFormLayout, QLineEdit, QPushButton,
-                                 QCheckBox, QLabel, QHBoxLayout, QDialogButtonBox,
-                                 QSpinBox, QListWidget, QGroupBox, QVBoxLayout, QRadioButton,
-                                 QFrame, QTextEdit, QWidget, QListWidgetItem)
-from PySide6.QtCore import Qt, Signal, QSize
-from PySide6.QtGui import QFont, QIcon, QColor
-from PySide6.QtWidgets import QFileDialog, QStyle
-from ui.responsive import adaptive_window_size
+from PySide6.QtCore import Signal
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QPushButton,
+    QRadioButton,
+    QSpinBox,
+    QStyle,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
 from core.global_config import get_global_config
+from ui.responsive import adaptive_window_size
 
 # 定义全局样式
 STYLESHEET = """
@@ -98,6 +113,7 @@ QFormLayout {
 }
 """
 
+
 class LogSettingsDialog(QDialog):
     recording_toggled = Signal(bool)
 
@@ -119,14 +135,14 @@ class LogSettingsDialog(QDialog):
         storage_layout = QFormLayout()
         storage_layout.setVerticalSpacing(8)
         storage_layout.setHorizontalSpacing(10)
-        
+
         # 目录
         self.dir_edit = QLineEdit()
         self.btn_browse = QPushButton("Browse")
         self.btn_browse.setObjectName("BrowseBtn")
         self.btn_browse.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         self.btn_browse.clicked.connect(self.browse)
-        
+
         h_dir = QHBoxLayout()
         h_dir.addWidget(self.dir_edit)
         h_dir.addWidget(self.btn_browse)
@@ -139,12 +155,12 @@ class LogSettingsDialog(QDialog):
         self.split_spin.setRange(1, 1440)
         self.split_spin.setSuffix(" min")
         self.split_spin.setMaximumWidth(90)
-        
+
         self.sample_spin = QSpinBox()
         self.sample_spin.setRange(1, 3600)
         self.sample_spin.setSuffix(" s")
         self.sample_spin.setMaximumWidth(90)
-        
+
         h_intervals.addWidget(QLabel("Split:"))
         h_intervals.addWidget(self.split_spin)
         h_intervals.addSpacing(15)
@@ -152,7 +168,7 @@ class LogSettingsDialog(QDialog):
         h_intervals.addWidget(self.sample_spin)
         h_intervals.addStretch()
         storage_layout.addRow("Timing:", h_intervals)
-        
+
         storage_group.setLayout(storage_layout)
         self.main_layout.addWidget(storage_group)
 
@@ -161,7 +177,7 @@ class LogSettingsDialog(QDialog):
         format_vbox = QVBoxLayout()
         format_vbox.setSpacing(8)
         format_vbox.setContentsMargins(5, 5, 5, 5)
-        
+
         h_radio = QHBoxLayout()
         h_radio.setSpacing(15)
         self.radio_csv = QRadioButton("CSV")
@@ -184,36 +200,47 @@ class LogSettingsDialog(QDialog):
         fields_vbox.setSpacing(4)
         self.fields_label = QLabel("CSV Fields:")
         self.fields_label.setStyleSheet("color: #666; font-size: 10px; font-weight: bold;")
-        
+
         self.fields_list = QListWidget()
         self.fields_list.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
         self.fields_list.setMaximumHeight(95)
-        default_fields = ["UTC Time", "PRN", "Sys", "El(°)", "Az(°)", "Freq", "SNR (dBHz)", "Pseudorange (m)", "Phase (cyc)", "Doppler (Hz)"]
+        default_fields = [
+            "UTC Time",
+            "PRN",
+            "Sys",
+            "El(°)",
+            "Az(°)",
+            "Freq",
+            "SNR (dBHz)",
+            "Pseudorange (m)",
+            "Phase (cyc)",
+            "Doppler (Hz)",
+        ]
         for f in default_fields:
             item = QListWidgetItem(f)
             self.fields_list.addItem(item)
             item.setSelected(True)
-        
+
         fields_vbox.addWidget(self.fields_label)
         fields_vbox.addWidget(self.fields_list)
         format_vbox.addWidget(self.fields_container)
-        
+
         # RINEX配置容器
         self.rinex_container = QWidget()
         rinex_vbox = QVBoxLayout(self.rinex_container)
         rinex_vbox.setContentsMargins(0, 3, 0, 0)
         rinex_vbox.setSpacing(6)
-        
+
         # RINEX参数配置
         rinex_form = QFormLayout()
         rinex_form.setVerticalSpacing(6)
         rinex_form.setHorizontalSpacing(10)
-        
+
         # Station ID - 从mountpoint自动生成，显示为标签
         self.station_label = QLabel("RTGS00")
         self.station_label.setStyleSheet("font-family: monospace; font-weight: bold;")
         rinex_form.addRow("Station ID (4+2):", self.station_label)
-        
+
         # Country Code - 可编辑
         self.country_code_input = QLineEdit()
         self.country_code_input.setMaxLength(3)
@@ -221,7 +248,7 @@ class LogSettingsDialog(QDialog):
         self.country_code_input.setText("CHN")
         self.country_code_input.setMaximumWidth(80)
         rinex_form.addRow("Country Code:", self.country_code_input)
-        
+
         # Data Type - 可编辑
         self.datatype_input = QLineEdit()
         self.datatype_input.setMaxLength(2)
@@ -229,10 +256,10 @@ class LogSettingsDialog(QDialog):
         self.datatype_input.setText("MO")
         self.datatype_input.setMaximumWidth(80)
         rinex_form.addRow("Data Type:", self.datatype_input)
-        
+
         rinex_vbox.addLayout(rinex_form)
         format_vbox.addWidget(self.rinex_container)
-        
+
         format_group.setLayout(format_vbox)
         self.main_layout.addWidget(format_group)
 
@@ -241,14 +268,14 @@ class LogSettingsDialog(QDialog):
         control_layout = QVBoxLayout(control_section)
         control_layout.setContentsMargins(10, 8, 10, 8)
         control_layout.setSpacing(6)
-        
+
         # 录制按钮
         self.btn_start_stop = QPushButton("Start Recording")
         self.btn_start_stop.setMinimumHeight(36)
         self.btn_start_stop.setMaximumWidth(150)
         self.btn_start_stop.clicked.connect(self.toggle_recording)
         control_layout.addWidget(self.btn_start_stop)
-        
+
         # 录制日志信息
         self.recording_info = QTextEdit()
         self.recording_info.setObjectName("LogInfo")
@@ -257,7 +284,7 @@ class LogSettingsDialog(QDialog):
         self.recording_info.setFont(QFont("Courier", 8))
         self.recording_info.setPlaceholderText("Recording logs will appear here...")
         control_layout.addWidget(self.recording_info)
-        
+
         self.main_layout.addWidget(control_section)
 
         # --- 4. 底部关闭按钮 ---
@@ -272,14 +299,15 @@ class LogSettingsDialog(QDialog):
         self.radio_rinex.toggled.connect(self.on_format_changed)
         self.radio_rinex_nav.toggled.connect(self.on_format_changed)
         self.radio_sp3.toggled.connect(self.on_format_changed)
-        
+
         # 自动同步RINEX参数
         self.split_spin.valueChanged.connect(self._update_rinex_period)
         self.sample_spin.valueChanged.connect(self._update_rinex_interval)
-        
+
         # 初始化状态
         self.radio_csv.setChecked(True)
-        if settings: self.load_settings(settings)
+        if settings:
+            self.load_settings(settings)
         self._update_station_id()  # 初始化station ID
         self.update_recording_state()
 
@@ -287,47 +315,49 @@ class LogSettingsDialog(QDialog):
         """显示或隐藏字段选择器和RINEX配置面板"""
         is_csv = self.radio_csv.isChecked()
         is_rinex = self.radio_rinex.isChecked()
-        
+
         self.fields_container.setVisible(is_csv)
         self.rinex_container.setVisible(is_rinex)
         self.adjustSize()
 
     def browse(self):
         d = QFileDialog.getExistingDirectory(self, "Select Output Directory")
-        if d: self.dir_edit.setText(d)
-    
+        if d:
+            self.dir_edit.setText(d)
+
     def _update_station_id(self):
         """从OBS配置的mountpoint自动生成station ID（4+2）"""
         try:
             config = get_global_config()
-            mountpoint = getattr(config.obs_settings, 'mountpoint', '')
-            
+            mountpoint = getattr(config.obs_settings, "mountpoint", "")
+
             if mountpoint:
                 # 从mountpoint名称中提取前4个字符作为station code
-                station_code = (mountpoint[:4] if len(mountpoint) >= 4 else mountpoint).upper().ljust(4, 'X')
+                station_code = (
+                    (mountpoint[:4] if len(mountpoint) >= 4 else mountpoint).upper().ljust(4, "X")
+                )
                 # 第5-6位为receiver number，默认为00
                 receiver_no = "00"
             else:
                 station_code = "RTGS"
                 receiver_no = "00"
-            
+
             station_id = f"{station_code}{receiver_no}"
             self.station_label.setText(station_id)
         except Exception:
             self.station_label.setText("RTGS00")
-    
+
     def _update_rinex_period(self, value):
         """同步RINEX Period和Split值"""
         # Split值单位为分钟，应该转换为RINEX Period格式（01D表示1天）
         if value >= 1440:  # 1440分钟 = 1天
-            period = "01D"
+            pass
         elif value >= 60:  # 60分钟 = 1小时
-            hours = value // 60
-            period = f"{hours:02d}H"
+            value // 60
         else:  # 分钟
-            period = f"{value:02d}M"
+            pass
         # 这里不需要存储period，因为它从split自动计算
-    
+
     def _update_rinex_interval(self, value):
         """同步RINEX Interval和Timing Interval值"""
         # Sample_spin值单位为秒，应该转换为RINEX Interval格式（30S表示30秒）
@@ -353,7 +383,9 @@ class LogSettingsDialog(QDialog):
                 QPushButton:hover { background-color: #ffeef0; }
             """
             self.btn_start_stop.setText(" STOP RECORDING")
-            self.btn_start_stop.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop))
+            self.btn_start_stop.setIcon(
+                self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
+            )
             self.set_widgets_enabled(False)
         else:
             # 停止中样式 (绿色/开始)
@@ -368,9 +400,11 @@ class LogSettingsDialog(QDialog):
                 QPushButton:pressed { background-color: #298e46; }
             """
             self.btn_start_stop.setText(" START RECORDING")
-            self.btn_start_stop.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+            self.btn_start_stop.setIcon(
+                self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+            )
             self.set_widgets_enabled(True)
-        
+
         self.btn_start_stop.setStyleSheet(style)
 
     def set_widgets_enabled(self, enabled):
@@ -400,12 +434,17 @@ class LogSettingsDialog(QDialog):
         self.split_spin.setValue(s.get("split_minutes", 60))
         self.sample_spin.setValue(s.get("sample_interval", 1))
         fmt = s.get("format", "csv")
-        if fmt == "csv": self.radio_csv.setChecked(True)
-        elif fmt == "binary": self.radio_binary.setChecked(True)
-        elif fmt == "rinex": self.radio_rinex.setChecked(True)
-        elif fmt == "rinex_nav": self.radio_rinex_nav.setChecked(True)
-        elif fmt == "sp3": self.radio_sp3.setChecked(True)
-        
+        if fmt == "csv":
+            self.radio_csv.setChecked(True)
+        elif fmt == "binary":
+            self.radio_binary.setChecked(True)
+        elif fmt == "rinex":
+            self.radio_rinex.setChecked(True)
+        elif fmt == "rinex_nav":
+            self.radio_rinex_nav.setChecked(True)
+        elif fmt == "sp3":
+            self.radio_sp3.setChecked(True)
+
         # Load RINEX options
         rinex_opts = s.get("rinex_options", {})
         self.country_code_input.setText(rinex_opts.get("country_code", "CHN"))
@@ -413,26 +452,30 @@ class LogSettingsDialog(QDialog):
 
     def get_settings(self):
         fmt = "csv"
-        if self.radio_binary.isChecked(): fmt = "binary"
-        elif self.radio_rinex.isChecked(): fmt = "rinex"
-        elif self.radio_rinex_nav.isChecked(): fmt = "rinex_nav"
-        elif self.radio_sp3.isChecked(): fmt = "sp3"
-        
+        if self.radio_binary.isChecked():
+            fmt = "binary"
+        elif self.radio_rinex.isChecked():
+            fmt = "rinex"
+        elif self.radio_rinex_nav.isChecked():
+            fmt = "rinex_nav"
+        elif self.radio_sp3.isChecked():
+            fmt = "sp3"
+
         settings = {
             "directory": self.dir_edit.text(),
             "split_minutes": self.split_spin.value(),
             "sample_interval": self.sample_spin.value(),
             "format": fmt,
-            "fields": [it.text() for it in self.fields_list.selectedItems()]
+            "fields": [it.text() for it in self.fields_list.selectedItems()],
         }
-        
+
         # Add RINEX options
         if fmt == "rinex":
             # 从station_label中提取station code和receiver number（自动生成）
             station_id = self.station_label.text()
             station_code = station_id[:4] if len(station_id) >= 4 else "RTGS"
             receiver_number = station_id[4:6] if len(station_id) >= 6 else "00"
-            
+
             # 从split自动生成period
             split_min = self.split_spin.value()
             if split_min >= 1440:
@@ -442,7 +485,7 @@ class LogSettingsDialog(QDialog):
                 period = f"{hours:02d}H"
             else:
                 period = f"{split_min:02d}M"
-            
+
             # 从sample_spin生成interval
             sample_sec = self.sample_spin.value()
             if sample_sec >= 60:
@@ -450,14 +493,14 @@ class LogSettingsDialog(QDialog):
                 interval = f"{minutes:02d}M"
             else:
                 interval = f"{sample_sec:02d}S"
-            
+
             settings["rinex_options"] = {
                 "station_code": station_code,
                 "receiver_number": receiver_number,
                 "country_code": self.country_code_input.text() or "CHN",
                 "period": period,
                 "interval": interval,
-                "datatype": self.datatype_input.text() or "MO"
+                "datatype": self.datatype_input.text() or "MO",
             }
-        
+
         return settings

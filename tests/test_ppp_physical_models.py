@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import math
+from datetime import datetime, timedelta, timezone
 
 import numpy as np
 import pytest
 
+from core.geo_utils import ecef2lla, rot_ecef2enu
 from core.ppp_physical_models import (
     AntexCalibration,
     BlqOceanLoading,
@@ -17,8 +18,6 @@ from core.ppp_physical_models import (
     solid_earth_tide_displacement,
     sun_position_ecef,
 )
-from core.geo_utils import ecef2lla, rot_ecef2enu
-
 
 EPOCH = datetime(2026, 7, 17, 4, 0, tzinfo=timezone.utc)
 RECEIVER_ECEF = np.array([-2171646.234, 4385696.114, 4076742.303], dtype=float)
@@ -90,9 +89,7 @@ def test_precise_antex_parser_applies_receiver_and_satellite_noazi(tmp_path) -> 
     receiver, receiver_found = calibration.receiver_correction(
         "TESTANT NONE", "G01", math.pi / 2.0, 0.0
     )
-    satellite, satellite_found = calibration.satellite_correction(
-        "G01", "G01", math.pi / 2.0, 0.0
-    )
+    satellite, satellite_found = calibration.satellite_correction("G01", "G01", math.pi / 2.0, 0.0)
 
     assert calibration.loaded
     assert receiver_found and satellite_found
@@ -147,12 +144,8 @@ def test_niell_mapping_uses_distinct_hydrostatic_and_wet_factors() -> None:
     epoch = datetime(2026, 7, 19, tzinfo=timezone.utc)
     latitude = math.radians(48.5461932208)
 
-    hydro_zenith, wet_zenith = niell_mapping_factors(
-        epoch, latitude, -15.0345, math.pi / 2.0
-    )
-    hydro_low, wet_low = niell_mapping_factors(
-        epoch, latitude, -15.0345, math.radians(10.0)
-    )
+    hydro_zenith, wet_zenith = niell_mapping_factors(epoch, latitude, -15.0345, math.pi / 2.0)
+    hydro_low, wet_low = niell_mapping_factors(epoch, latitude, -15.0345, math.radians(10.0))
 
     assert hydro_zenith == pytest.approx(1.0)
     assert wet_zenith == pytest.approx(1.0)

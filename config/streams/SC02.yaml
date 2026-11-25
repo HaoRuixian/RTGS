@@ -33,7 +33,7 @@ eph_settings:
   host: ntrip.data.gnss.ga.gov.au
   mountpoint: BCEP00BKG0
   parity: None
-  password: Hao20030801@
+  password: ''
   port: '2101'
   replay_speed: 1.0
   serial_port: /dev/ttyS31
@@ -52,7 +52,7 @@ obs_settings:
   host: ntrip.earthscope.org
   mountpoint: SC02_RTCM3P3
   parity: None
-  password: NpwPoUk73wbRE7DS
+  password: ''
   port: '2101'
   replay_speed: 1.0
   serial_port: /dev/ttyS31
@@ -186,7 +186,7 @@ ssr_settings:
   host: ntrip.data.gnss.ga.gov.au
   mountpoint: SSRA00CNE0
   parity: None
-  password: Hao20030801@
+  password: ''
   port: '2101'
   replay_speed: 1.0
   serial_port: /dev/ttyS31

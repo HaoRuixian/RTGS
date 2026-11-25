@@ -1,143 +1,167 @@
 # ui/widgets.py
 """Monitoring plots and tables shared by the active PySide6 monitoring module."""
 
-import numpy as np
 import matplotlib
-matplotlib.use('QtAgg')
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-import matplotlib.dates as mdates
-from matplotlib.ticker import ScalarFormatter, MaxNLocator
+import numpy as np
+
+matplotlib.use("QtAgg")
+import contextlib
 from collections import defaultdict
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QSizePolicy, QApplication
+
+import matplotlib.dates as mdates
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
+from matplotlib.figure import Figure
+from matplotlib.ticker import MaxNLocator, ScalarFormatter
+from PySide6.QtWidgets import QApplication, QSizePolicy, QVBoxLayout, QWidget
 
+from ui.shared.colors import get_signal_color, get_sys_color
 
-from ui.shared.colors import get_sys_color, get_signal_color
 
 class SkyplotWidget(FigureCanvas):
     def __init__(self, parent=None):
         palette = QApplication.palette()
         is_dark = palette.color(palette.ColorRole.Window).lightness() < 128
-        
+
         self.theme = {
-            'bg': "#161A23" if is_dark else "#FFFFFF",
-            'fg': "#B1B6BC" if is_dark else "#0F172A",
-            'grid': "#1D2435" if is_dark else "#CBD5E1",
-            'accent': "#1D2E4A",
-            'text_muted': "#94A3B8"
+            "bg": "#161A23" if is_dark else "#FFFFFF",
+            "fg": "#B1B6BC" if is_dark else "#0F172A",
+            "grid": "#1D2435" if is_dark else "#CBD5E1",
+            "accent": "#1D2E4A",
+            "text_muted": "#94A3B8",
         }
 
-        self.fig = Figure(figsize=(4, 4), dpi=100, facecolor=self.theme['bg'])
-        self.ax = self.fig.add_subplot(111, projection='polar')
-        
+        self.fig = Figure(figsize=(4, 4), dpi=100, facecolor=self.theme["bg"])
+        self.ax = self.fig.add_subplot(111, projection="polar")
+
         super().__init__(self.fig)
         self.setParent(parent)
         self.init_plot()
-        
+
         self.scatter_artists = []
         self.text_artists = []
 
     def init_plot(self):
         ax = self.ax
-        ax.set_facecolor(self.theme['bg'])
-        
+        ax.set_facecolor(self.theme["bg"])
+
         # 方向设置：北向上，顺时针
-        ax.set_theta_zero_location('N')
+        ax.set_theta_zero_location("N")
         ax.set_theta_direction(-1)
-        
+
         # 设置仰角范围 (0-90)
         ax.set_rlim(0, 90)
         ax.set_yticks([0, 30, 60, 90])
-        ax.set_yticklabels(['90°', '60°', '30°', '0°'], 
-                           fontsize=8, color=self.theme['text_muted'])
-        ax.set_yticklabels(['90\u00b0', '60\u00b0', '30\u00b0', '0\u00b0'], fontsize=8, color=self.theme['text_muted'])
-        
+        ax.set_yticklabels(["90°", "60°", "30°", "0°"], fontsize=8, color=self.theme["text_muted"])
+        ax.set_yticklabels(
+            ["90\u00b0", "60\u00b0", "30\u00b0", "0\u00b0"],
+            fontsize=8,
+            color=self.theme["text_muted"],
+        )
+
         # 设置方位角标签 (N, E, S, W)
-        ax.set_thetagrids([0, 45, 90, 135, 180, 225, 270, 315], 
-                          ['N', '45', 'E', '135', 'S', '225', 'W', '315'],
-                          fontsize=9, fontweight='bold', color=self.theme['fg'])
+        ax.set_thetagrids(
+            [0, 45, 90, 135, 180, 225, 270, 315],
+            ["N", "45", "E", "135", "S", "225", "W", "315"],
+            fontsize=9,
+            fontweight="bold",
+            color=self.theme["fg"],
+        )
 
         # 网格线美化
-        ax.grid(True, color=self.theme['grid'], linestyle='--', linewidth=1, alpha=0.5)
-        
+        ax.grid(True, color=self.theme["grid"], linestyle="--", linewidth=1, alpha=0.5)
+
         # 隐藏最外圈的圆框线
-        ax.spines['polar'].set_visible(False)
-        
+        ax.spines["polar"].set_visible(False)
+
         # 标题样式
-        ax.set_title("SATELLITE SKYPLOT", pad=20, fontsize=10, 
-                     fontweight='bold', color=self.theme['accent'], alpha=0.8)
+        ax.set_title(
+            "SATELLITE SKYPLOT",
+            pad=20,
+            fontsize=10,
+            fontweight="bold",
+            color=self.theme["accent"],
+            alpha=0.8,
+        )
 
         # 预先绘制一个半透明的底色
-        ax.fill(np.linspace(0, 2*np.pi, 100), np.full(100, 90), 
-                color=self.theme['accent'], alpha=0.03)
+        ax.fill(
+            np.linspace(0, 2 * np.pi, 100), np.full(100, 90), color=self.theme["accent"], alpha=0.03
+        )
 
     def update_satellites(self, satellites, active_systems):
         while self.scatter_artists:
             self.scatter_artists.pop().remove()
         while self.text_artists:
             self.text_artists.pop().remove()
-            
+
         satellites_snapshot = dict(satellites)
-        
+
         for key, sat in satellites_snapshot.items():
             sys_type = key[0]
-            if sys_type not in active_systems: continue
+            if sys_type not in active_systems:
+                continue
 
             el = getattr(sat, "el", getattr(sat, "elevation", None))
             az = getattr(sat, "az", getattr(sat, "azimuth", None))
-            
+
             if el is not None and az is not None:
                 color = get_sys_color(sys_type)
                 radius = 90.0 - float(el)
 
                 # 绘制卫星点：增加边缘颜色使其更有立体感
                 scatter = self.ax.scatter(
-                    np.radians(az), radius,
-                    c=color, s=120, 
-                    alpha=0.9, 
-                    edgecolors=self.theme['bg'], 
+                    np.radians(az),
+                    radius,
+                    c=color,
+                    s=120,
+                    alpha=0.9,
+                    edgecolors=self.theme["bg"],
                     linewidth=1.5,
-                    zorder=3
+                    zorder=3,
                 )
-                
+
                 # 卫星编号文字：放在圆点中心或略偏移
                 text = self.ax.text(
-                    np.radians(az), radius, key, 
-                    fontsize=7, 
-                    ha='center', va='center', 
-                    fontweight='bold',
-                    color='white' if self.theme['bg'] != "#FFFFFF" else 'black',
+                    np.radians(az),
+                    radius,
+                    key,
+                    fontsize=7,
+                    ha="center",
+                    va="center",
+                    fontweight="bold",
+                    color="white" if self.theme["bg"] != "#FFFFFF" else "black",
                     clip_on=True,
-                    zorder=4
+                    zorder=4,
                 )
-                
+
                 self.scatter_artists.append(scatter)
                 self.text_artists.append(text)
-        
+
         self.draw_idle()
+
 
 class MultiSignalBarWidget(FigureCanvas):
     def __init__(self, parent=None):
         palette = QApplication.palette()
         is_dark = palette.color(palette.ColorRole.Window).lightness() < 128
-        
+
         self.theme = {
-            'bg': "#161A23" if is_dark else "#FFFFFF",
-            'fg': "#E2E8F0" if is_dark else "#0F172A",
-            'grid': "#1A1E29" if is_dark else "#CBD5E1",
-            'muted': "#000000"
+            "bg": "#161A23" if is_dark else "#FFFFFF",
+            "fg": "#E2E8F0" if is_dark else "#0F172A",
+            "grid": "#1A1E29" if is_dark else "#CBD5E1",
+            "muted": "#000000",
         }
 
         # 增加 figsize 的高度比例，为底部图例留出空间
-        self.fig = Figure(figsize=(8, 5), dpi=100, facecolor=self.theme['bg'])
+        self.fig = Figure(figsize=(8, 5), dpi=100, facecolor=self.theme["bg"])
         self.ax = self.fig.add_subplot(111)
         super().__init__(self.fig)
         self.setParent(parent)
-        
+
         # 预留底部空间给 X 轴标签和图例
         self.fig.subplots_adjust(bottom=0.25, top=0.92, left=0.07, right=0.97)
-        
+
         self.bar_artists = []
         # 存储bar数据的字典：{bar对象: (卫星号, 信号标识, SNR值)}
         self.bar_data_map = {}
@@ -146,47 +170,54 @@ class MultiSignalBarWidget(FigureCanvas):
         # 保存最后的鼠标坐标，用于图表更新后恢复tooltip
         self.last_mouse_x = None
         self.last_mouse_y = None
-        
+
         self.init_plot()
-        
+
         # 连接鼠标移动事件用于显示tooltip
-        self.mpl_connect('motion_notify_event', self._on_mouse_move)
+        self.mpl_connect("motion_notify_event", self._on_mouse_move)
 
     def init_plot(self):
         ax = self.ax
-        ax.set_facecolor(self.theme['bg'])
+        ax.set_facecolor(self.theme["bg"])
         ax.set_ylim(0, 60)
-        ax.set_ylabel("SNR (dB-Hz)", color=self.theme['muted'], fontsize=10, fontweight='bold')
-        
-        # 绘制背景色带（增强学术感：区分强弱信号）
-        ax.axhspan(0, 30, color='#FF0000', alpha=0.05)   # 弱信号区
-        ax.axhspan(30, 40, color='#FFA500', alpha=0.03)  # 中等信号
-        ax.axhspan(40, 60, color='#00FF00', alpha=0.05)  # 强信号区
+        ax.set_ylabel("SNR (dB-Hz)", color=self.theme["muted"], fontsize=10, fontweight="bold")
 
-        ax.grid(True, axis='y', color=self.theme['grid'], linestyle='--', alpha=0.4)
-        
+        # 绘制背景色带（增强学术感：区分强弱信号）
+        ax.axhspan(0, 30, color="#FF0000", alpha=0.05)  # 弱信号区
+        ax.axhspan(30, 40, color="#FFA500", alpha=0.03)  # 中等信号
+        ax.axhspan(40, 60, color="#00FF00", alpha=0.05)  # 强信号区
+
+        ax.grid(True, axis="y", color=self.theme["grid"], linestyle="--", alpha=0.4)
+
         # 隐藏上方和右侧边框
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_color(self.theme['grid'])
-        ax.spines['bottom'].set_color(self.theme['grid'])
-        
-        ax.tick_params(colors=self.theme['muted'], labelsize=9)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color(self.theme["grid"])
+        ax.spines["bottom"].set_color(self.theme["grid"])
+
+        ax.tick_params(colors=self.theme["muted"], labelsize=9)
 
     def update_data(self, satellites, active_systems):
         self.ax.clear()
-        self.init_plot() # 重新初始化背景和设置
+        self.init_plot()  # 重新初始化背景和设置
         self.bar_artists.clear()
         self.bar_data_map.clear()  # 清空bar数据映射
-        
+
         satellites_snapshot = dict(satellites)
         valid_sats = {k: v for k, v in satellites_snapshot.items() if k[0] in active_systems}
         sorted_keys = sorted(valid_sats.keys())
-        
+
         if not sorted_keys:
-            self.ax.text(0.5, 0.5, "Waiting for GNSS data...", 
-                         ha='center', va='center', transform=self.ax.transAxes,
-                         color=self.theme['muted'], fontsize=12)
+            self.ax.text(
+                0.5,
+                0.5,
+                "Waiting for GNSS data...",
+                ha="center",
+                va="center",
+                transform=self.ax.transAxes,
+                color=self.theme["muted"],
+                fontsize=12,
+            )
             self.draw_idle()
             # 图表更新完成，尝试恢复tooltip
             self._restore_tooltip_if_needed()
@@ -195,15 +226,15 @@ class MultiSignalBarWidget(FigureCanvas):
         # 假设每个卫星占据 0.8 的单位宽度，根据信号数量平分
         num_sats = len(sorted_keys)
         x_indices = np.arange(num_sats)
-        
+
         # 收集数据
         sig_plot_data = defaultdict(list)
         all_signals = set()
-        
+
         # 找出每个卫星拥有的最大信号数量，以确定基础柱宽
         max_sigs_in_any_sat = 1
         for sat in valid_sats.values():
-            valid_count = len([c for c, s in sat.signals.items() if getattr(s, 'snr', 0) > 0])
+            valid_count = len([c for c, s in sat.signals.items() if getattr(s, "snr", 0) > 0])
             max_sigs_in_any_sat = max(max_sigs_in_any_sat, valid_count)
 
         # 计算柱宽：保证在卫星很多时，柱子依然有最小宽度
@@ -211,19 +242,19 @@ class MultiSignalBarWidget(FigureCanvas):
         total_group_width = 0.8
         bar_width = total_group_width / max(max_sigs_in_any_sat, 1)
         # 限制最小宽度，防止卫星过多时看不见
-        bar_width = max(bar_width, 0.05) 
+        bar_width = max(bar_width, 0.05)
 
         # 2. 分配位置
         for i, k in enumerate(sorted_keys):
             sat = valid_sats[k]
             # 获取 SNR > 0 的有效信号
-            sigs = {c: s.snr for c, s in sat.signals.items() if getattr(s, 'snr', 0) > 0}
+            sigs = {c: s.snr for c, s in sat.signals.items() if getattr(s, "snr", 0) > 0}
             sorted_codes = sorted(sigs.keys())
-            
+
             n_sigs = len(sorted_codes)
             # 计算该组信号的起始偏移位置，使其居中对齐刻度
-            start_offset = - (n_sigs * bar_width) / 2 + (bar_width / 2)
-            
+            start_offset = -(n_sigs * bar_width) / 2 + (bar_width / 2)
+
             for j, code in enumerate(sorted_codes):
                 offset = start_offset + j * bar_width
                 sig_plot_data[code].append((i + offset, sigs[code], k))  # 添加卫星编号k
@@ -232,54 +263,57 @@ class MultiSignalBarWidget(FigureCanvas):
         # 3. 绘制
         sorted_all_signals = sorted(list(all_signals))
         legend_handles = []
-        
+
         for code in sorted_all_signals:
             points = sig_plot_data[code]
             x_vals = [p[0] for p in points]
             y_vals = [p[1] for p in points]
             sat_keys = [p[2] for p in points]  # 获取对应的卫星编号
-            
+
             color = get_signal_color(code)
-            
+
             # 使用更细的边框，颜色深一点，看起来更精致
-            bars = self.ax.bar(x_vals, y_vals, width=bar_width, color=color, 
-                             alpha=0.85, edgecolor=self.theme['bg'], linewidth=0.3,
-                             label=code)
+            bars = self.ax.bar(
+                x_vals,
+                y_vals,
+                width=bar_width,
+                color=color,
+                alpha=0.85,
+                edgecolor=self.theme["bg"],
+                linewidth=0.3,
+                label=code,
+            )
             legend_handles.append(bars)
-            
+
             # 保存每个bar块对应的数据（卫星号、信号、SNR值）
-            for bar, snr_value, sat_key in zip(bars, y_vals, sat_keys):
-                self.bar_data_map[bar] = {
-                    'satellite': sat_key,
-                    'signal': code,
-                    'snr': snr_value
-                }
+            for bar, snr_value, sat_key in zip(bars, y_vals, sat_keys, strict=False):
+                self.bar_data_map[bar] = {"satellite": sat_key, "signal": code, "snr": snr_value}
 
         # 4. 更新坐标轴标签
         self.ax.set_xticks(x_indices)
-        self.ax.set_xticklabels(sorted_keys, rotation=90, color=self.theme['fg'], fontsize=8)
-        
+        self.ax.set_xticklabels(sorted_keys, rotation=90, color=self.theme["fg"], fontsize=8)
+
         # 自动调整x轴范围以填满整个坐标轴，无论有多少卫星
         if num_sats > 0:
             self.ax.set_xlim(-0.5, num_sats - 0.5)
-        
+
         # 5. 改进图例布局：放置在 Axes 之外的底部
         if legend_handles:
             # 根据信号数量动态调整列数
             ncol = min(len(legend_handles), 10)
             self.ax.legend(
-                loc='upper center', 
-                bbox_to_anchor=(0.5, -0.18), # 关键：将图例移出绘图区，放置在下方
-                ncol=ncol, 
-                fontsize=8, 
+                loc="upper center",
+                bbox_to_anchor=(0.5, -0.18),  # 关键：将图例移出绘图区，放置在下方
+                ncol=ncol,
+                fontsize=8,
                 frameon=False,
                 handletextpad=0.4,
                 columnspacing=1.0,
-                labelcolor=self.theme['muted']
+                labelcolor=self.theme["muted"],
             )
 
         self.draw_idle()
-        
+
         # 图表更新完成，尝试恢复tooltip
         self._restore_tooltip_if_needed()
 
@@ -293,28 +327,28 @@ class MultiSignalBarWidget(FigureCanvas):
             self.last_mouse_x = None
             self.last_mouse_y = None
             return
-        
+
         # 保存最后的鼠标坐标，用于图表更新后恢复tooltip
         self.last_mouse_x = event.xdata
         self.last_mouse_y = event.ydata
-        
+
         # 检查鼠标是否在某个bar上
         found_bar = None
         mouse_x = event.xdata
         mouse_y = event.ydata
-        
+
         for bar, bar_info in self.bar_data_map.items():
             # 获取bar的x位置和宽度
             # bar是一个Rectangle对象
             x = bar.get_x()
             width = bar.get_width()
             height = bar.get_height()
-            
+
             # 检查鼠标是否在bar的边界框内
             if x <= mouse_x <= x + width and 0 <= mouse_y <= height:
                 found_bar = bar_info
                 break
-        
+
         if found_bar:
             self._show_tooltip(event, found_bar)
         else:
@@ -325,36 +359,34 @@ class MultiSignalBarWidget(FigureCanvas):
         显示tooltip，显示卫星号、信号、SNR值
         """
         # 构造提示文本
-        satellite = bar_info['satellite']
-        signal = bar_info['signal']
-        snr = bar_info['snr']
-        
+        satellite = bar_info["satellite"]
+        signal = bar_info["signal"]
+        snr = bar_info["snr"]
+
         tooltip_text = f"Satellite: {satellite}\nSignal: {signal}\nSNR: {snr:.1f} dB-Hz"
-        
+
         # 如果已有annotation，先移除
         if self.tooltip_annotation is not None:
-            try:
+            with contextlib.suppress(AttributeError, RuntimeError, ValueError):
                 self.tooltip_annotation.remove()
-            except (AttributeError, RuntimeError, ValueError):
-                pass
-        
+
         # 创建新的annotation（tooltip）
         self.tooltip_annotation = self.ax.annotate(
             tooltip_text,
             xy=(event.xdata, event.ydata),
             xytext=(10, 10),  # 偏离鼠标10像素
-            textcoords='offset points',
+            textcoords="offset points",
             fontsize=9,
             bbox=dict(
-                boxstyle='round,pad=0.5',
-                facecolor='#FFE680' if self.theme['bg'] == "#161A23" else '#FFFACD',
-                edgecolor=self.theme['fg'],
-                alpha=0.9
+                boxstyle="round,pad=0.5",
+                facecolor="#FFE680" if self.theme["bg"] == "#161A23" else "#FFFACD",
+                edgecolor=self.theme["fg"],
+                alpha=0.9,
             ),
-            color=self.theme['muted'],
-            zorder=10
+            color=self.theme["muted"],
+            zorder=10,
         )
-        
+
         self.draw_idle()
 
     def _hide_tooltip(self):
@@ -362,10 +394,8 @@ class MultiSignalBarWidget(FigureCanvas):
         隐藏tooltip
         """
         if self.tooltip_annotation is not None:
-            try:
+            with contextlib.suppress(AttributeError, RuntimeError, ValueError):
                 self.tooltip_annotation.remove()
-            except (AttributeError, RuntimeError, ValueError):
-                pass
             self.tooltip_annotation = None
             self.draw_idle()
 
@@ -377,49 +407,47 @@ class MultiSignalBarWidget(FigureCanvas):
         # 如果没有保存的鼠标坐标或坐标无效，直接返回
         if self.last_mouse_x is None or self.last_mouse_y is None:
             return
-        
+
         mouse_x = self.last_mouse_x
         mouse_y = self.last_mouse_y
-        
+
         # 检查鼠标坐标是否在最新的bar上
         for bar, bar_info in self.bar_data_map.items():
             x = bar.get_x()
             width = bar.get_width()
             height = bar.get_height()
-            
+
             # 检查鼠标是否在bar的边界框内
             if x <= mouse_x <= x + width and 0 <= mouse_y <= height:
                 # 找到了对应的bar，直接显示tooltip（无需鼠标事件对象）
-                satellite = bar_info['satellite']
-                signal = bar_info['signal']
-                snr = bar_info['snr']
-                
+                satellite = bar_info["satellite"]
+                signal = bar_info["signal"]
+                snr = bar_info["snr"]
+
                 tooltip_text = f"Satellite: {satellite}\nSignal: {signal}\nSNR: {snr:.1f} dB-Hz"
-                
+
                 # 移除旧的tooltip
                 if self.tooltip_annotation is not None:
-                    try:
+                    with contextlib.suppress(AttributeError, RuntimeError, ValueError):
                         self.tooltip_annotation.remove()
-                    except (AttributeError, RuntimeError, ValueError):
-                        pass
-                
+
                 # 创建新的tooltip，使用保存的坐标
                 self.tooltip_annotation = self.ax.annotate(
                     tooltip_text,
                     xy=(mouse_x, mouse_y),
                     xytext=(10, 10),
-                    textcoords='offset points',
+                    textcoords="offset points",
                     fontsize=9,
                     bbox=dict(
-                        boxstyle='round,pad=0.5',
-                        facecolor='#FFE680' if self.theme['bg'] == "#161A23" else '#FFFACD',
-                        edgecolor=self.theme['fg'],
-                        alpha=0.9
+                        boxstyle="round,pad=0.5",
+                        facecolor="#FFE680" if self.theme["bg"] == "#161A23" else "#FFFACD",
+                        edgecolor=self.theme["fg"],
+                        alpha=0.9,
                     ),
-                    color=self.theme['muted'],
-                    zorder=10
+                    color=self.theme["muted"],
+                    zorder=10,
                 )
-                
+
                 self.draw_idle()
                 return
 
@@ -431,19 +459,20 @@ class PlotSNRWidget(QWidget):
     2. 支持 sin(Elevation) 模式。
     3. 解决了 Title 和 Legend 重叠问题。
     """
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         # 1. 创建垂直布局
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         # 2. 初始化 Matplotlib 画布
-        self.fig = Figure(figsize=(5, 4), dpi=100, facecolor='#ffffff')
+        self.fig = Figure(figsize=(5, 4), dpi=100, facecolor="#ffffff")
         self.canvas = FigureCanvas(self.fig)
         self.ax = self.fig.add_subplot(111)
-        
+
         # 设置布局调整，预留顶部空间给 Legend 和 Title
         # top=0.85 留出 15% 的顶部空间
         self.fig.subplots_adjust(bottom=0.15, top=0.85, left=0.12, right=0.95)
@@ -454,7 +483,7 @@ class PlotSNRWidget(QWidget):
         # 4. 添加到布局：工具栏在上，画布在下
         layout.addWidget(self.toolbar)
         layout.addWidget(self.canvas)
-        
+
         # 设置策略，让画布尽可能扩展
         self.canvas.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -468,7 +497,7 @@ class PlotSNRWidget(QWidget):
             line.remove()
         for collection in self.ax.collections:
             collection.remove()
-        
+
         if not data:
             self.canvas.draw_idle()
             return
@@ -478,12 +507,12 @@ class PlotSNRWidget(QWidget):
         valid_data = []
         for d in data:
             # 如果模式是高度角相关，且高度角为 None、0 或负，则跳过
-            if ("Elevation" in mode or "sin" in mode):
-                el = d.get('el')
+            if "Elevation" in mode or "sin" in mode:
+                el = d.get("el")
                 if el is None or el <= 0:
                     continue
             valid_data.append(d)
-        
+
         # 如果过滤完没数据了，直接返回
         if not valid_data:
             self.canvas.draw_idle()
@@ -492,68 +521,68 @@ class PlotSNRWidget(QWidget):
         # 提取所有出现的信号（可选按单个 signal 过滤）
         all_sigs = set()
         for d in valid_data:
-            all_sigs.update(d['snr'].keys())
+            all_sigs.update(d["snr"].keys())
         sorted_sigs = sorted(all_sigs)
         if signal and signal != "All":
             # 如果所选 signal 不在出现的集合中，仍然保留但会导致无点绘制
             sorted_sigs = [signal]
 
         # 提取基础列表
-        times = [d['time'] for d in valid_data]
-        els = [d['el'] for d in valid_data] # 角度制
+        times = [d["time"] for d in valid_data]
+        els = [d["el"] for d in valid_data]  # 角度制
 
         # --- 绘图逻辑 ---
         plotted_any = False
         all_y_vals = []
         for sig in sorted_sigs:
-            vals = [d['snr'].get(sig, np.nan) for d in valid_data]
+            vals = [d["snr"].get(sig, np.nan) for d in valid_data]
             # 收集用于 autoscale 的 y 值（去掉 nan）
-            clean_vals = [v for v in vals if v is not None and not (isinstance(v, float) and np.isnan(v))]
+            clean_vals = [
+                v for v in vals if v is not None and not (isinstance(v, float) and np.isnan(v))
+            ]
             if clean_vals:
                 all_y_vals.extend(clean_vals)
                 plotted_any = True
-            color = get_signal_color(sig) # 确保你有引入这个函数
+            color = get_signal_color(sig)  # 确保你有引入这个函数
 
             if "Time" in mode:
-                self.ax.plot(times, vals, '.-', markersize=3, label=sig, color=color, linewidth=1)
+                self.ax.plot(times, vals, ".-", markersize=3, label=sig, color=color, linewidth=1)
 
             elif "sin" in mode:
                 x_vals = np.sin(np.radians(els))
-                self.ax.plot(x_vals, vals, '.-', markersize=3, label=sig, color=color, linewidth=1, alpha=0.8)
+                self.ax.plot(
+                    x_vals, vals, ".-", markersize=3, label=sig, color=color, linewidth=1, alpha=0.8
+                )
 
             else:
                 # Elevation mode: draw line+points for readability
-                self.ax.plot(els, vals, '.-', markersize=3, label=sig, color=color, linewidth=1, alpha=0.8)
+                self.ax.plot(
+                    els, vals, ".-", markersize=3, label=sig, color=color, linewidth=1, alpha=0.8
+                )
 
         # --- 更新 X 轴格式（不重建）---
         if "Time" in mode:
             # Use date formatter and auto locator for time axis
-            self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+            self.ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
             self.ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-            try:
+            with contextlib.suppress(Exception):
                 self.ax.xaxis_date(True)
-            except Exception:
-                pass
             self.ax.set_xlabel("Time")
 
         elif "sin" in mode:
             # Numeric axis for sin(Elevation)
             self.ax.xaxis.set_major_formatter(ScalarFormatter())
             self.ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
-            try:
+            with contextlib.suppress(Exception):
                 self.ax.xaxis_date(False)
-            except Exception:
-                pass
             self.ax.set_xlabel("sin(Elevation)")
 
         else:
             # Elevation numeric axis
             self.ax.xaxis.set_major_formatter(ScalarFormatter())
             self.ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
-            try:
+            with contextlib.suppress(Exception):
                 self.ax.xaxis_date(False)
-            except Exception:
-                pass
             self.ax.set_xlabel("Elevation (°)")
         # --- 更新通用属性（不重建）---
         self.ax.set_ylabel("SNR (dB-Hz)")
@@ -563,11 +592,8 @@ class PlotSNRWidget(QWidget):
             if plotted_any and all_y_vals:
                 y_min = float(np.min(all_y_vals))
                 y_max = float(np.max(all_y_vals))
-                if y_min == y_max:
-                    # Single value - provide a small range
-                    pad = 3.0
-                else:
-                    pad = max(3.0, 0.08 * (y_max - y_min))
+                # A single value still needs a visible plotting range.
+                pad = 3.0 if y_min == y_max else max(3.0, 0.08 * (y_max - y_min))
                 self.ax.set_ylim(max(0.0, y_min - pad), y_max + pad)
             else:
                 # No data: set a reasonable default
@@ -581,7 +607,7 @@ class PlotSNRWidget(QWidget):
                 # If only a single time point, expand a little around it
                 if len(times) == 1:
                     t = mdates.date2num(times[0])
-                    delta = 1.0 / (24*60*60) * 5  # 5 seconds
+                    delta = 1.0 / (24 * 60 * 60) * 5  # 5 seconds
                     self.ax.set_xlim(t - delta, t + delta)
                 else:
                     self.ax.set_xlim(mdates.date2num(times[0]), mdates.date2num(times[-1]))
@@ -601,183 +627,201 @@ class PlotSNRWidget(QWidget):
         except Exception:
             pass
 
-        self.ax.set_title(f"Satellite: {prn}", y=1.12, fontsize=10, fontweight='bold')
-        
+        self.ax.set_title(f"Satellite: {prn}", y=1.12, fontsize=10, fontweight="bold")
+
         # 网格只设置一次，不需要每次更新
-        if not hasattr(self, '_grid_initialized'):
-            self.ax.grid(True, linestyle=':', alpha=0.6)
+        if not hasattr(self, "_grid_initialized"):
+            self.ax.grid(True, linestyle=":", alpha=0.6)
             self._grid_initialized = True
 
         # 更新图例
         if self.ax.legend_:
             self.ax.legend_.remove()
-        self.ax.legend(loc='lower center', bbox_to_anchor=(0.5, 1.02), 
-                       ncol=6, fontsize='small', frameon=False)
-        
+        self.ax.legend(
+            loc="lower center", bbox_to_anchor=(0.5, 1.02), ncol=6, fontsize="small", frameon=False
+        )
+
         # 性能优化：使用draw_idle而不是draw，更高效
         self.canvas.draw_idle()
 
 
 class SatelliteNumWidget(FigureCanvas):
     """Real-time satellite count statistics over time."""
-    
+
     def __init__(self, parent=None):
         palette = QApplication.palette()
         is_dark = palette.color(palette.ColorRole.Window).lightness() < 128
-        
+
         self.theme = {
-            'bg': "#161A23" if is_dark else "#FFFFFF",
-            'fg': "#B1B6BC" if is_dark else "#0F172A",
-            'grid': "#1D2435" if is_dark else "#CBD5E1",
-            'text': "#E2E8F0" if is_dark else "#1E293B",
-            'text_muted': "#94A3B8"
+            "bg": "#161A23" if is_dark else "#FFFFFF",
+            "fg": "#B1B6BC" if is_dark else "#0F172A",
+            "grid": "#1D2435" if is_dark else "#CBD5E1",
+            "text": "#E2E8F0" if is_dark else "#1E293B",
+            "text_muted": "#94A3B8",
         }
-        
-        self.fig = Figure(figsize=(5, 2.2), dpi=100, facecolor=self.theme['bg'])
+
+        self.fig = Figure(figsize=(5, 2.2), dpi=100, facecolor=self.theme["bg"])
         self.ax = self.fig.add_subplot(111)
-        
+
         super().__init__(self.fig)
         self.setParent(parent)
         self.setMinimumHeight(150)
-        
+
         # 系统配置
         self.systems = {
-            'G': 'GPS',
-            'R': 'GLONASS',
-            'E': 'Galileo',
-            'C': 'BeiDou',
-            'J': 'QZSS',
-            'S': 'SBAS',
-            'I': 'IRNSS',
+            "G": "GPS",
+            "R": "GLONASS",
+            "E": "Galileo",
+            "C": "BeiDou",
+            "J": "QZSS",
+            "S": "SBAS",
+            "I": "IRNSS",
         }
-        self.colors = {sys: get_sys_color(sys) for sys in self.systems.keys()}
-        
+        self.colors = {sys: get_sys_color(sys) for sys in self.systems}
+
         # 时间序列存储（保持最近60秒的数据）- 必须在init_plot()之前定义
         self.time_history = []
-        self.sat_history = {sys: [] for sys in self.systems.keys()}
-        self.max_history = 60*60  
-        
+        self.sat_history = {sys: [] for sys in self.systems}
+        self.max_history = 60 * 60
+
         # 初始化图表
         self.init_plot()
-        
+
     def init_plot(self):
         """初始化图表"""
         ax = self.ax
-        ax.set_facecolor(self.theme['bg'])
-        
+        ax.set_facecolor(self.theme["bg"])
+
         # 设置X轴（时间）
         ax.set_xlim(0, self.max_history)
-        ax.set_xlabel("Time (s)", fontsize=9, color=self.theme['text_muted'])
-        
+        ax.set_xlabel("Time (s)", fontsize=9, color=self.theme["text_muted"])
+
         # 设置Y轴
-        ax.set_ylabel("Count", fontsize=9, color=self.theme['text_muted'])
+        ax.set_ylabel("Count", fontsize=9, color=self.theme["text_muted"])
         ax.set_ylim(0, 40)
-        ax.tick_params(colors=self.theme['text_muted'], labelsize=8)
-        
+        ax.tick_params(colors=self.theme["text_muted"], labelsize=8)
+
         # 网格
-        ax.grid(True, linestyle=':', alpha=0.3, color=self.theme['grid'])
+        ax.grid(True, linestyle=":", alpha=0.3, color=self.theme["grid"])
         ax.set_axisbelow(True)
-        
+
         # 移除顶部和右侧spine
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_color(self.theme['grid'])
-        ax.spines['bottom'].set_color(self.theme['grid'])
-        
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color(self.theme["grid"])
+        ax.spines["bottom"].set_color(self.theme["grid"])
+
         self.fig.tight_layout()
-        
+
     def update_data(self, satellites_dict, active_systems):
         """
         更新统计数据
-        
+
         Args:
             satellites_dict: {PRN: SatData, ...}
             active_systems: set of active system chars {'G', 'R', 'E', ...}
         """
         from datetime import datetime
-        
+
         # 统计各系统卫星数
-        sys_counts = {sys: 0 for sys in self.systems.keys()}
+        sys_counts = {sys: 0 for sys in self.systems}
         total_count = 0
-        
-        for prn, sat in satellites_dict.items():
+
+        for prn, _sat in satellites_dict.items():
             sys_char = prn[0]
             if sys_char in sys_counts:
                 sys_counts[sys_char] += 1
                 total_count += 1
-        
+
         # 添加时间点到历史
         current_time = datetime.now()
         self.time_history.append(current_time)
-        for sys in self.systems.keys():
+        for sys in self.systems:
             self.sat_history[sys].append(sys_counts[sys])
-        
+
         # 限制历史长度
         if len(self.time_history) > self.max_history:
             self.time_history.pop(0)
-            for sys in self.systems.keys():
+            for sys in self.systems:
                 self.sat_history[sys].pop(0)
-        
+
         # 清空但保留坐标轴配置，重新绘制（不调用init_plot）
         self.ax.clear()
-        self.ax.set_facecolor(self.theme['bg'])
-        self.ax.set_xlabel("Time (s)", fontsize=9, color=self.theme['text_muted'])
-        self.ax.set_ylabel("Count", fontsize=9, color=self.theme['text_muted'])
-        self.ax.tick_params(colors=self.theme['text_muted'], labelsize=8)
-        self.ax.grid(True, linestyle=':', alpha=0.3, color=self.theme['grid'])
+        self.ax.set_facecolor(self.theme["bg"])
+        self.ax.set_xlabel("Time (s)", fontsize=9, color=self.theme["text_muted"])
+        self.ax.set_ylabel("Count", fontsize=9, color=self.theme["text_muted"])
+        self.ax.tick_params(colors=self.theme["text_muted"], labelsize=8)
+        self.ax.grid(True, linestyle=":", alpha=0.3, color=self.theme["grid"])
         self.ax.set_axisbelow(True)
-        self.ax.spines['top'].set_visible(False)
-        self.ax.spines['right'].set_visible(False)
-        self.ax.spines['left'].set_color(self.theme['grid'])
-        self.ax.spines['bottom'].set_color(self.theme['grid'])
-        
+        self.ax.spines["top"].set_visible(False)
+        self.ax.spines["right"].set_visible(False)
+        self.ax.spines["left"].set_color(self.theme["grid"])
+        self.ax.spines["bottom"].set_color(self.theme["grid"])
+
         # 绘制每个系统的折线
-        active_sys_list = [sys for sys in self.systems.keys() if sys in active_systems]
-        
+        active_sys_list = [sys for sys in self.systems if sys in active_systems]
+
         if len(self.time_history) > 0:
             x_time = np.arange(len(self.time_history))
-            
+
             # 使用面积图展示，自下而上堆叠
             bottom = np.zeros(len(self.time_history))
-            
+
             for sys in active_sys_list:
                 counts = np.array(self.sat_history[sys])
-                
+
                 # 绘制面积（填充）
-                self.ax.fill_between(x_time, bottom, bottom + counts, 
-                                    label=self.systems[sys],
-                                    color=self.colors[sys], 
-                                    alpha=0.2, edgecolor='none')
-                
+                self.ax.fill_between(
+                    x_time,
+                    bottom,
+                    bottom + counts,
+                    label=self.systems[sys],
+                    color=self.colors[sys],
+                    alpha=0.2,
+                    edgecolor="none",
+                )
+
                 # 在上边界绘制折线
-                self.ax.plot(x_time, bottom + counts,
-                           color=self.colors[sys],
-                           linewidth=0.5, alpha=0.9)
-                
+                self.ax.plot(
+                    x_time, bottom + counts, color=self.colors[sys], linewidth=0.5, alpha=0.9
+                )
+
                 bottom += counts
-            
+
             # 计算最大值并设置Y轴范围
             max_total = np.max(bottom) if len(bottom) > 0 else 10
             y_max = max(40, int(max_total * 1.2))
             self.ax.set_ylim(0, y_max)
-            
+
             # 设置X轴范围
             self.ax.set_xlim(0, len(x_time))
-            
+
             # 设置Y轴刻度
             step = max(5, int(y_max / 8))
             y_ticks = range(0, y_max + 1, step)
             self.ax.set_yticks(y_ticks)
-                        
+
             # 在右下角显示总数
-            total_text = f'Total: {int(bottom[-1])}'
-            self.ax.text(0.98, 0.05, total_text, transform=self.ax.transAxes,
-                        fontsize=7, fontweight='bold', color=self.theme['text'],
-                        horizontalalignment='right',
-                        bbox=dict(boxstyle='round', facecolor=self.theme['grid'], 
-                                 alpha=0.8, edgecolor='none', pad=1.5))
+            total_text = f"Total: {int(bottom[-1])}"
+            self.ax.text(
+                0.98,
+                0.05,
+                total_text,
+                transform=self.ax.transAxes,
+                fontsize=7,
+                fontweight="bold",
+                color=self.theme["text"],
+                horizontalalignment="right",
+                bbox=dict(
+                    boxstyle="round",
+                    facecolor=self.theme["grid"],
+                    alpha=0.8,
+                    edgecolor="none",
+                    pad=1.5,
+                ),
+            )
         else:
             self.ax.set_ylim(0, 40)
-        
+
         self.fig.tight_layout()
         self.draw_idle()

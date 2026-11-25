@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import tempfile
+from pathlib import Path
 
+import yaml
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
@@ -12,25 +13,24 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QFrame,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
-    QPushButton,
-    QDoubleSpinBox,
-    QHeaderView,
     QPlainTextEdit,
+    QPushButton,
     QScrollArea,
-    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
-import yaml
 
 from core.config_paths import IR_CONFIG_DIR, ensure_config_directories, resolve_ir_config_path
 from core.reflectometry.config import DEFAULT_CONFIG_YAML, config_to_dict, load_config
@@ -51,14 +51,20 @@ class ReflectometryConfigDialog(QDialog):
         ("I", "IRNSS"),
     ]
 
-    def __init__(self, config_path: str | Path, parent=None, initial_yaml_text: str | None = None) -> None:
+    def __init__(
+        self, config_path: str | Path, parent=None, initial_yaml_text: str | None = None
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Reflectometry IR Config")
         adaptive_window_size(self, target=(960, 680), minimum=(700, 520))
         ensure_config_directories()
         self.config_path = self._resolve_path(config_path)
         self.current_path = self.config_path
-        self.current_yaml_text = initial_yaml_text if initial_yaml_text is not None else self._read_initial_yaml(self.current_path)
+        self.current_yaml_text = (
+            initial_yaml_text
+            if initial_yaml_text is not None
+            else self._read_initial_yaml(self.current_path)
+        )
         self.config = self._load_config_from_text(self.current_yaml_text)
         self._building_form = False
         self._loading_zone_editor = False
@@ -78,7 +84,10 @@ class ReflectometryConfigDialog(QDialog):
         self.tabs.tabBar().setExpanding(False)
         self.tabs.tabBar().setDrawBase(False)
 
-        self.tabs.addTab(self._build_tab_page(self._build_station_section(), self._build_geometry_section()), "Station")
+        self.tabs.addTab(
+            self._build_tab_page(self._build_station_section(), self._build_geometry_section()),
+            "Station",
+        )
         self.tabs.addTab(self._build_tab_page(self._build_input_section()), "Scope")
         self.tabs.addTab(self._build_tab_page(self._build_processing_section()), "Processing")
         self.tabs.addTab(self._build_tab_page(self._build_ekf_section()), "EKF")
@@ -87,7 +96,9 @@ class ReflectometryConfigDialog(QDialog):
         yaml_tab = QWidget()
         yaml_layout = QVBoxLayout(yaml_tab)
         yaml_layout.setContentsMargins(0, 0, 0, 0)
-        yaml_card = self._build_card("YAML Editor", "Import or fine-tune the reflectometry configuration directly.")
+        yaml_card = self._build_card(
+            "YAML Editor", "Import or fine-tune the reflectometry configuration directly."
+        )
         yaml_card_layout = yaml_card.layout()
         self.yaml_editor = QPlainTextEdit()
         self.yaml_editor.setPlaceholderText("Paste or edit reflectometry YAML configuration here.")
@@ -174,7 +185,9 @@ class ReflectometryConfigDialog(QDialog):
         self.max_height_spin = _float_spin(0.0, 100.0, 3)
         self.environment_combo = QComboBox()
         self.environment_combo.setEditable(True)
-        self.environment_combo.addItems(["unknown", "coastal", "riverbank", "snowfield", "inland", "custom"])
+        self.environment_combo.addItems(
+            ["unknown", "coastal", "riverbank", "snowfield", "inland", "custom"]
+        )
         self.environment_combo.currentTextChanged.connect(self._on_environment_changed)
         self.surface_combo = QComboBox()
         self.surface_combo.setEditable(True)
@@ -273,7 +286,9 @@ class ReflectometryConfigDialog(QDialog):
             self.output_dir_edit,
         ]:
             _connect_change(widget, self._sync_form_to_yaml)
-        self.smoothing_method_combo.currentTextChanged.connect(self._update_processing_control_state)
+        self.smoothing_method_combo.currentTextChanged.connect(
+            self._update_processing_control_state
+        )
 
         form.addRow("Realtime Arc Window (min)", self.live_arc_window_spin)
         form.addRow("Realtime Analysis Interval (s)", self.live_interval_spin)
@@ -384,7 +399,9 @@ class ReflectometryConfigDialog(QDialog):
         card.layout().addWidget(usage_label)
 
         self.zone_table = QTableWidget(0, 4)
-        self.zone_table.setHorizontalHeaderLabels(["Zone", "Min El (deg)", "Max El (deg)", "Azimuth Windows"])
+        self.zone_table.setHorizontalHeaderLabels(
+            ["Zone", "Min El (deg)", "Max El (deg)", "Azimuth Windows"]
+        )
         self.zone_table.verticalHeader().setVisible(False)
         self.zone_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.zone_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -587,9 +604,15 @@ class ReflectometryConfigDialog(QDialog):
         default_max = 30.0
         default_windows = "0-360"
         if self.zone_table.rowCount() > 0:
-            default_min = _table_float(self.zone_table.item(self.zone_table.rowCount() - 1, 1), default_min)
-            default_max = _table_float(self.zone_table.item(self.zone_table.rowCount() - 1, 2), default_max)
-            default_windows = _table_text(self.zone_table.item(self.zone_table.rowCount() - 1, 3), default_windows)
+            default_min = _table_float(
+                self.zone_table.item(self.zone_table.rowCount() - 1, 1), default_min
+            )
+            default_max = _table_float(
+                self.zone_table.item(self.zone_table.rowCount() - 1, 2), default_max
+            )
+            default_windows = _table_text(
+                self.zone_table.item(self.zone_table.rowCount() - 1, 3), default_windows
+            )
         self.zone_table.blockSignals(True)
         try:
             self._append_zone_row(f"zone_{next_index}", default_min, default_max, default_windows)
@@ -599,7 +622,9 @@ class ReflectometryConfigDialog(QDialog):
         self._sync_form_to_yaml()
 
     def _remove_selected_zone_rows(self) -> None:
-        selected_rows = sorted({index.row() for index in self.zone_table.selectionModel().selectedRows()}, reverse=True)
+        selected_rows = sorted(
+            {index.row() for index in self.zone_table.selectionModel().selectedRows()}, reverse=True
+        )
         if not selected_rows and self.zone_table.rowCount() > 0:
             selected_rows = [self.zone_table.rowCount() - 1]
         self.zone_table.blockSignals(True)
@@ -610,7 +635,9 @@ class ReflectometryConfigDialog(QDialog):
                 self._append_zone_row("zone_1", 5.0, 30.0, "0-360")
         finally:
             self.zone_table.blockSignals(False)
-        self._ensure_zone_selection(min(selected_rows[-1] if selected_rows else 0, self.zone_table.rowCount() - 1))
+        self._ensure_zone_selection(
+            min(selected_rows[-1] if selected_rows else 0, self.zone_table.rowCount() - 1)
+        )
         self._sync_form_to_yaml()
 
     def _zones_from_table(self) -> list[dict[str, object]]:
@@ -619,7 +646,9 @@ class ReflectometryConfigDialog(QDialog):
             name = _table_text(self.zone_table.item(row, 0), f"zone_{row + 1}")
             min_elevation_deg = _table_float(self.zone_table.item(row, 1), 5.0)
             max_elevation_deg = _table_float(self.zone_table.item(row, 2), 30.0)
-            azimuth_windows = _parse_angle_windows(_table_text(self.zone_table.item(row, 3), "0-360"))
+            azimuth_windows = _parse_angle_windows(
+                _table_text(self.zone_table.item(row, 3), "0-360")
+            )
             if not azimuth_windows:
                 azimuth_windows = [[0.0, 360.0]]
             zones.append(
@@ -666,7 +695,9 @@ class ReflectometryConfigDialog(QDialog):
 
         self._loading_zone_editor = True
         try:
-            self.zone_name_edit.setText(_table_text(self.zone_table.item(row, 0), f"zone_{row + 1}"))
+            self.zone_name_edit.setText(
+                _table_text(self.zone_table.item(row, 0), f"zone_{row + 1}")
+            )
             self.zone_min_el_spin.setValue(_table_float(self.zone_table.item(row, 1), 5.0))
             self.zone_max_el_spin.setValue(_table_float(self.zone_table.item(row, 2), 30.0))
             self.zone_windows_edit.setText(_table_text(self.zone_table.item(row, 3), "0-360"))
@@ -749,38 +780,64 @@ class ReflectometryConfigDialog(QDialog):
                 f"using a {window_minutes:g} min averaging window."
             )
         else:
-            self.ekf_status_label.setText("Spectrum mode is active; EKF parameters are preserved for later use.")
+            self.ekf_status_label.setText(
+                "Spectrum mode is active; EKF parameters are preserved for later use."
+            )
 
     def _load_config_to_form(self) -> None:
         self._building_form = True
         try:
             data = config_to_dict(self.config)
             self.station_id_edit.setText(data["station"]["station_id"])
-            self.latitude_spin.setValue(float(data["station"]["receiver_position"]["latitude_deg"] or 0.0))
-            self.longitude_spin.setValue(float(data["station"]["receiver_position"]["longitude_deg"] or 0.0))
-            self.height_spin.setValue(float(data["station"]["receiver_position"]["height_m"] or 0.0))
+            self.latitude_spin.setValue(
+                float(data["station"]["receiver_position"]["latitude_deg"] or 0.0)
+            )
+            self.longitude_spin.setValue(
+                float(data["station"]["receiver_position"]["longitude_deg"] or 0.0)
+            )
+            self.height_spin.setValue(
+                float(data["station"]["receiver_position"]["height_m"] or 0.0)
+            )
             self.antenna_height_spin.setValue(float(data["station"]["antenna_height"]))
             self.monument_height_value = float(data["station"]["monument_height"] or 0.0)
             _set_combo_value(self.environment_combo, str(data["station"]["environment_type"]))
             _set_combo_value(self.surface_combo, str(data["station"]["reflector_surface_type"]))
             self.min_height_spin.setValue(float(data["ir"]["min_reflector_height"]))
             self.max_height_spin.setValue(float(data["ir"]["max_reflector_height"]))
-            _set_combo_data(self.estimation_mode_combo, str(data["ir"].get("estimation_mode", "spectrum")))
+            _set_combo_data(
+                self.estimation_mode_combo, str(data["ir"].get("estimation_mode", "spectrum"))
+            )
             ekf_data = data["ir"].get("ekf", {}) or {}
             self.ekf_initial_rh_spin.setValue(float(ekf_data.get("initial_rh_m") or 0.0))
-            self.ekf_initial_rh_variance_spin.setValue(float(ekf_data.get("initial_rh_variance", 1.0)))
-            self.ekf_local_state_variance_spin.setValue(float(ekf_data.get("local_state_variance", 1.0)))
+            self.ekf_initial_rh_variance_spin.setValue(
+                float(ekf_data.get("initial_rh_variance", 1.0))
+            )
+            self.ekf_local_state_variance_spin.setValue(
+                float(ekf_data.get("local_state_variance", 1.0))
+            )
             self.ekf_q_rh_spin.setValue(float(ekf_data.get("q_rh", 5.0e-5)))
             self.ekf_q_amplitude_spin.setValue(float(ekf_data.get("q_amplitude", 6.0e-5)))
-            self.ekf_measurement_variance_spin.setValue(float(ekf_data.get("measurement_variance", 1.5)))
+            self.ekf_measurement_variance_spin.setValue(
+                float(ekf_data.get("measurement_variance", 1.5))
+            )
             self.ekf_init_min_samples_spin.setValue(float(ekf_data.get("init_min_samples", 20)))
             self.ekf_init_max_samples_spin.setValue(float(ekf_data.get("init_max_samples", 600)))
-            self.ekf_rh_init_min_height_spin.setValue(float(ekf_data.get("rh_init_min_height_m") or 0.0))
-            self.ekf_rh_init_max_height_spin.setValue(float(ekf_data.get("rh_init_max_height_m") or 0.0))
-            self.ekf_rh_init_min_samples_spin.setValue(float(ekf_data.get("rh_init_min_samples", 80)))
+            self.ekf_rh_init_min_height_spin.setValue(
+                float(ekf_data.get("rh_init_min_height_m") or 0.0)
+            )
+            self.ekf_rh_init_max_height_spin.setValue(
+                float(ekf_data.get("rh_init_max_height_m") or 0.0)
+            )
+            self.ekf_rh_init_min_samples_spin.setValue(
+                float(ekf_data.get("rh_init_min_samples", 80))
+            )
             self.ekf_rh_init_max_arcs_spin.setValue(float(ekf_data.get("rh_init_max_arcs", 8)))
-            self.ekf_rh_init_max_samples_spin.setValue(float(ekf_data.get("rh_init_max_samples_per_arc", 300)))
-            self.ekf_output_interval_spin.setValue(float(ekf_data.get("output_interval_seconds", 300)))
+            self.ekf_rh_init_max_samples_spin.setValue(
+                float(ekf_data.get("rh_init_max_samples_per_arc", 300))
+            )
+            self.ekf_output_interval_spin.setValue(
+                float(ekf_data.get("output_interval_seconds", 300))
+            )
             self.ekf_output_window_spin.setValue(float(ekf_data.get("output_window_seconds", 60)))
             self.ekf_min_active_arcs_spin.setValue(float(ekf_data.get("min_active_arcs", 1)))
             self.ekf_max_gap_spin.setValue(float(ekf_data.get("max_time_gap_seconds", 90.0)))
@@ -791,11 +848,19 @@ class ReflectometryConfigDialog(QDialog):
             self.include_signals_edit.setText(",".join(data["input"].get("signals", [])))
             self.exclude_signals_edit.setText(",".join(data["input"].get("exclude_signals", [])))
 
-            self.live_arc_window_spin.setValue(float(data["processing"].get("live_arc_window_minutes", 20)))
-            self.live_interval_spin.setValue(float(data["processing"].get("live_analysis_interval_seconds", 20)))
+            self.live_arc_window_spin.setValue(
+                float(data["processing"].get("live_arc_window_minutes", 20))
+            )
+            self.live_interval_spin.setValue(
+                float(data["processing"].get("live_analysis_interval_seconds", 20))
+            )
             self.detrend_order_spin.setValue(float(data["processing"].get("detrend_order", 2)))
-            _set_combo_value(self.smoothing_method_combo, str(data["processing"].get("smoothing_method", "none")))
-            self.smoothing_window_spin.setValue(float(data["processing"].get("smoothing_window", 5)))
+            _set_combo_value(
+                self.smoothing_method_combo, str(data["processing"].get("smoothing_method", "none"))
+            )
+            self.smoothing_window_spin.setValue(
+                float(data["processing"].get("smoothing_window", 5))
+            )
             self.min_arc_seconds_spin.setValue(float(data["qc"]["min_arc_duration"]))
             self.min_pnr_spin.setValue(float(data["qc"]["min_peak_to_noise_ratio"]))
             self.output_dir_edit.setText(str(data["output"]["output_dir"]))
@@ -804,8 +869,12 @@ class ReflectometryConfigDialog(QDialog):
                 zones.append(
                     {
                         "name": zone.get("name") or f"zone_{index}",
-                        "min_elevation_deg": zone.get("min_elevation_deg", data["processing"]["min_elevation_deg"]),
-                        "max_elevation_deg": zone.get("max_elevation_deg", data["processing"]["max_elevation_deg"]),
+                        "min_elevation_deg": zone.get(
+                            "min_elevation_deg", data["processing"]["min_elevation_deg"]
+                        ),
+                        "max_elevation_deg": zone.get(
+                            "max_elevation_deg", data["processing"]["max_elevation_deg"]
+                        ),
                         "azimuth_windows": _format_angle_windows(zone.get("azimuth_windows", [])),
                     }
                 )
@@ -815,19 +884,33 @@ class ReflectometryConfigDialog(QDialog):
             self.enable_sea_level_chk.setChecked(bool(data["products"]["enable_sea_level"]))
             self.enable_snow_depth_chk.setChecked(bool(data["products"]["enable_snow_depth"]))
             self.sea_level_ref_spin.setValue(float(data["products"]["sea_level_reference"] or 0.0))
-            self.dynamic_sea_level_chk.setChecked(bool(data["products"].get("enable_dynamic_sea_level_correction", False)))
-            self.dynamic_window_hours_spin.setValue(float(data["products"].get("dynamic_sea_level_window_hours", 4.0)))
-            self.dynamic_min_points_spin.setValue(float(data["products"].get("dynamic_sea_level_min_points", 6)))
+            self.dynamic_sea_level_chk.setChecked(
+                bool(data["products"].get("enable_dynamic_sea_level_correction", False))
+            )
+            self.dynamic_window_hours_spin.setValue(
+                float(data["products"].get("dynamic_sea_level_window_hours", 4.0))
+            )
+            self.dynamic_min_points_spin.setValue(
+                float(data["products"].get("dynamic_sea_level_min_points", 6))
+            )
             self.dynamic_max_iterations_spin.setValue(
                 float(data["products"].get("dynamic_sea_level_max_iterations", 12))
             )
-            self.dynamic_tolerance_spin.setValue(float(data["products"].get("dynamic_sea_level_tolerance", 1e-4)))
-            self.dynamic_igg3_k0_spin.setValue(float(data["products"].get("dynamic_sea_level_igg3_k0", 0.5)))
-            self.dynamic_igg3_k1_spin.setValue(float(data["products"].get("dynamic_sea_level_igg3_k1", 2.0)))
+            self.dynamic_tolerance_spin.setValue(
+                float(data["products"].get("dynamic_sea_level_tolerance", 1e-4))
+            )
+            self.dynamic_igg3_k0_spin.setValue(
+                float(data["products"].get("dynamic_sea_level_igg3_k0", 0.5))
+            )
+            self.dynamic_igg3_k1_spin.setValue(
+                float(data["products"].get("dynamic_sea_level_igg3_k1", 2.0))
+            )
             self.dynamic_normalize_design_chk.setChecked(
                 bool(data["products"].get("dynamic_sea_level_normalize_design", True))
             )
-            self.snow_ref_spin.setValue(float(data["products"]["snow_depth_reference_height"] or 0.0))
+            self.snow_ref_spin.setValue(
+                float(data["products"]["snow_depth_reference_height"] or 0.0)
+            )
             self._apply_environment_policy(sync_yaml=False)
             self._update_dynamic_control_state()
         finally:
@@ -870,11 +953,21 @@ class ReflectometryConfigDialog(QDialog):
         station["reflector_surface_type"] = self.surface_combo.currentText().strip()
 
         input_data = data["input"]
-        for legacy_key in ("source_type", "source_path", "cache_endpoint", "time_window", "source_options"):
+        for legacy_key in (
+            "source_type",
+            "source_path",
+            "cache_endpoint",
+            "time_window",
+            "source_options",
+        ):
             input_data.pop(legacy_key, None)
-        enabled_systems = [sys_char for sys_char, checkbox in self.system_checks.items() if checkbox.isChecked()]
+        enabled_systems = [
+            sys_char for sys_char, checkbox in self.system_checks.items() if checkbox.isChecked()
+        ]
         all_systems = [sys_char for sys_char, _label in self.SYSTEM_OPTIONS]
-        input_data["constellations"] = [] if set(enabled_systems) == set(all_systems) else enabled_systems
+        input_data["constellations"] = (
+            [] if set(enabled_systems) == set(all_systems) else enabled_systems
+        )
         input_data["signals"] = _split_csv(self.include_signals_edit.text())
         input_data["exclude_constellations"] = []
         input_data["exclude_signals"] = _split_csv(self.exclude_signals_edit.text())
@@ -900,11 +993,15 @@ class ReflectometryConfigDialog(QDialog):
         ekf["q_rh"] = self.ekf_q_rh_spin.value()
         ekf["q_amplitude"] = self.ekf_q_amplitude_spin.value()
         ekf["measurement_variance"] = self.ekf_measurement_variance_spin.value()
-        ekf["initial_rh_m"] = self.ekf_initial_rh_spin.value() if self.ekf_initial_rh_spin.value() > 0.0 else None
+        ekf["initial_rh_m"] = (
+            self.ekf_initial_rh_spin.value() if self.ekf_initial_rh_spin.value() > 0.0 else None
+        )
         ekf["initial_rh_variance"] = self.ekf_initial_rh_variance_spin.value()
         ekf["local_state_variance"] = self.ekf_local_state_variance_spin.value()
         ekf["init_min_samples"] = int(self.ekf_init_min_samples_spin.value())
-        ekf["init_max_samples"] = max(int(self.ekf_init_max_samples_spin.value()), ekf["init_min_samples"])
+        ekf["init_max_samples"] = max(
+            int(self.ekf_init_max_samples_spin.value()), ekf["init_min_samples"]
+        )
         rh_init_min_height = self.ekf_rh_init_min_height_spin.value()
         rh_init_max_height = self.ekf_rh_init_max_height_spin.value()
         ekf["rh_init_min_height_m"] = rh_init_min_height if rh_init_min_height > 0.0 else None
@@ -948,11 +1045,15 @@ class ReflectometryConfigDialog(QDialog):
         products["dynamic_sea_level_tolerance"] = self.dynamic_tolerance_spin.value()
         products["dynamic_sea_level_igg3_k0"] = self.dynamic_igg3_k0_spin.value()
         products["dynamic_sea_level_igg3_k1"] = self.dynamic_igg3_k1_spin.value()
-        products["dynamic_sea_level_min_weight"] = float(products.get("dynamic_sea_level_min_weight", 1e-12))
+        products["dynamic_sea_level_min_weight"] = float(
+            products.get("dynamic_sea_level_min_weight", 1e-12)
+        )
         products["dynamic_sea_level_regularization"] = float(
             products.get("dynamic_sea_level_regularization", 1e-12)
         )
-        products["dynamic_sea_level_normalize_design"] = self.dynamic_normalize_design_chk.isChecked()
+        products["dynamic_sea_level_normalize_design"] = (
+            self.dynamic_normalize_design_chk.isChecked()
+        )
         products["snow_depth_reference_height"] = (
             self.snow_ref_spin.value() if self.enable_snow_depth_chk.isChecked() else None
         )
@@ -972,7 +1073,11 @@ class ReflectometryConfigDialog(QDialog):
     def _apply_environment_policy(self, sync_yaml: bool) -> None:
         environment_mode = classify_environment(self.environment_combo.currentText())
         suggested_surface = {
-            "water": "sea" if self.environment_combo.currentText().strip().lower() == "coastal" else "river",
+            "water": (
+                "sea"
+                if self.environment_combo.currentText().strip().lower() == "coastal"
+                else "river"
+            ),
             "snow": "snow",
             "height_only": "soil",
         }.get(environment_mode)
@@ -987,7 +1092,9 @@ class ReflectometryConfigDialog(QDialog):
                     _set_combo_value(self.surface_combo, suggested_surface)
 
             if environment_mode == "water":
-                self.product_policy_label.setText("Water-facing environment: reflector height and sea-level style products are kept.")
+                self.product_policy_label.setText(
+                    "Water-facing environment: reflector height and sea-level style products are kept."
+                )
                 self.enable_sea_level_chk.setChecked(True)
                 self.enable_snow_depth_chk.setChecked(False)
                 self.enable_sea_level_chk.setEnabled(False)
@@ -997,7 +1104,9 @@ class ReflectometryConfigDialog(QDialog):
                 self.snow_ref_spin.setVisible(False)
                 self.snow_ref_label.setVisible(False)
             elif environment_mode == "snow":
-                self.product_policy_label.setText("Snow environment: reflector height and snow-depth products are kept.")
+                self.product_policy_label.setText(
+                    "Snow environment: reflector height and snow-depth products are kept."
+                )
                 self.enable_sea_level_chk.setChecked(False)
                 self.enable_snow_depth_chk.setChecked(True)
                 self.enable_sea_level_chk.setEnabled(False)
@@ -1007,7 +1116,9 @@ class ReflectometryConfigDialog(QDialog):
                 self.snow_ref_spin.setVisible(True)
                 self.snow_ref_label.setVisible(True)
             elif environment_mode == "height_only":
-                self.product_policy_label.setText("Land environment: reflector height stays enabled, optional sea/snow products are hidden.")
+                self.product_policy_label.setText(
+                    "Land environment: reflector height stays enabled, optional sea/snow products are hidden."
+                )
                 self.enable_sea_level_chk.setChecked(False)
                 self.enable_snow_depth_chk.setChecked(False)
                 self.enable_sea_level_chk.setEnabled(False)
@@ -1017,7 +1128,9 @@ class ReflectometryConfigDialog(QDialog):
                 self.snow_ref_spin.setVisible(False)
                 self.snow_ref_label.setVisible(False)
             else:
-                self.product_policy_label.setText("Custom or unknown environment: product switches remain manually editable.")
+                self.product_policy_label.setText(
+                    "Custom or unknown environment: product switches remain manually editable."
+                )
                 self.enable_sea_level_chk.setEnabled(True)
                 self.enable_snow_depth_chk.setEnabled(True)
                 self.sea_level_ref_spin.setVisible(True)
@@ -1165,7 +1278,9 @@ class ReflectometryConfigDialog(QDialog):
     def _load_config_from_text(self, text: str):
         temp_path: str | None = None
         try:
-            with tempfile.NamedTemporaryFile("w", suffix=".yaml", delete=False, encoding="utf-8") as handle:
+            with tempfile.NamedTemporaryFile(
+                "w", suffix=".yaml", delete=False, encoding="utf-8"
+            ) as handle:
                 handle.write(text)
                 temp_path = handle.name
             return load_config(temp_path)
@@ -1193,8 +1308,7 @@ class ReflectometryConfigDialog(QDialog):
             muted = "#64748B"
             accent = "#2563EB"
 
-        self.setStyleSheet(
-            f"""
+        self.setStyleSheet(f"""
             QDialog#reflectometryConfigDialog {{
                 background-color: {card_bg};
             }}
@@ -1315,8 +1429,7 @@ class ReflectometryConfigDialog(QDialog):
                 padding: 8px 10px;
                 font-weight: 600;
             }}
-            """
-        )
+            """)
 
 
 def _float_spin(minimum: float, maximum: float, decimals: int) -> QDoubleSpinBox:

@@ -21,7 +21,7 @@ obs_settings:
   host: 8.140.235.117
   mountpoint: BUAA01
   parity: None
-  password: hao20030801
+  password: ''
   port: '2101'
   serial_port: COM8
   source_type: NTRIP Server

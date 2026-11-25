@@ -50,12 +50,16 @@ def detect_peaks(
 ) -> SpectrumAnalysisResult:
     """Detect and rank spectral peaks."""
     if len(power) == 0:
-        return SpectrumAnalysisResult(frequencies=frequencies, power=power, noise_floor=0.0, candidates=[])
+        return SpectrumAnalysisResult(
+            frequencies=frequencies, power=power, noise_floor=0.0, candidates=[]
+        )
 
     noise_floor = float(np.mean(power))
     peak_indices, properties = find_peaks(power, prominence=min_prominence)
     if len(peak_indices) == 0:
-        return SpectrumAnalysisResult(frequencies=frequencies, power=power, noise_floor=noise_floor, candidates=[])
+        return SpectrumAnalysisResult(
+            frequencies=frequencies, power=power, noise_floor=noise_floor, candidates=[]
+        )
 
     widths = peak_widths(power, peak_indices, rel_height=0.5)[0]
     candidates: list[PeakCandidate] = []
@@ -143,9 +147,14 @@ class SpectrumAnalyzer:
 
     def _frequency_range(self, wavelength_m: float) -> tuple[float, float]:
         if self.config.frequency_search_mode == "explicit_frequency":
-            if self.config.explicit_frequency_min is None or self.config.explicit_frequency_max is None:
+            if (
+                self.config.explicit_frequency_min is None
+                or self.config.explicit_frequency_max is None
+            ):
                 raise ValueError("Explicit frequency mode requires ir.explicit_frequency_min/max")
-            return float(self.config.explicit_frequency_min), float(self.config.explicit_frequency_max)
+            return float(self.config.explicit_frequency_min), float(
+                self.config.explicit_frequency_max
+            )
 
         frequency_min = 2.0 * self.config.min_reflector_height / wavelength_m
         frequency_max = 2.0 * self.config.max_reflector_height / wavelength_m

@@ -4,10 +4,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.data_models import EpochObservation, SatelliteState, SignalData
-from core.rt_ntrip_rinex import RTNtripRinexStation, _normalize_ntrip_user_agent, load_rt_rinex_config
+from core.rt_ntrip_rinex import (
+    RTNtripRinexStation,
+    _normalize_ntrip_user_agent,
+    load_rt_rinex_config,
+)
 
 
-def _signal(signal_id: str, pseudorange: float, phase: float, snr: float, doppler: float = 0.0) -> SignalData:
+def _signal(
+    signal_id: str, pseudorange: float, phase: float, snr: float, doppler: float = 0.0
+) -> SignalData:
     return SignalData(
         signal_id=signal_id,
         pseudorange=pseudorange,
@@ -19,7 +25,9 @@ def _signal(signal_id: str, pseudorange: float, phase: float, snr: float, dopple
     )
 
 
-def _epoch(epoch_time: datetime, satellite_defs: dict[str, dict[str, SignalData]]) -> EpochObservation:
+def _epoch(
+    epoch_time: datetime, satellite_defs: dict[str, dict[str, SignalData]]
+) -> EpochObservation:
     epoch = EpochObservation(gps_time=0.0, utc_datetime=epoch_time)
     for sat_id, signals in satellite_defs.items():
         sat_state = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))

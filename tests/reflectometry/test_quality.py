@@ -31,5 +31,8 @@ def test_cycle_slip_flags_do_not_fail_snr_ir(example_config):
     result = processor.run()
 
     assert all("cycle_slip_suspect" not in solution.qc_flags for solution in result.arc_solutions)
-    assert all("cycle_slip_suspect" not in (solution.fail_reason or "") for solution in result.arc_solutions)
+    assert all(
+        "cycle_slip_suspect" not in (solution.fail_reason or "")
+        for solution in result.arc_solutions
+    )
     assert any(solution.success for solution in result.arc_solutions)

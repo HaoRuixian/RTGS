@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 from copy import deepcopy
-from datetime import datetime, timedelta
-import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from core.reflectometry.providers import ListObservationProvider
 from core.reflectometry.config import ReflectorConfig, minimum_required_arc_samples
 from core.reflectometry.models import ArcSolution, ObservationRecord, ProcessingRunResult, SnrSeries
+from core.reflectometry.providers import ListObservationProvider
 from core.reflectometry.services.batch import BatchProcessor
 from core.reflectometry.services.ekf import EkfReflectometryProcessor
 from core.reflectometry.services.geometry import GeometryResolver
@@ -31,7 +31,9 @@ class RealtimeProcessor:
             provider=ListObservationProvider([]),
             logger=logger,
         )
-        self.geometry_resolver = GeometryResolver(config.geometry, processing_config=config.processing)
+        self.geometry_resolver = GeometryResolver(
+            config.geometry, processing_config=config.processing
+        )
         self.ekf_processor = (
             EkfReflectometryProcessor(
                 config.ir,
@@ -83,7 +85,7 @@ class RealtimeProcessor:
                 buffer.append(observation)
 
         if latest_timestamp is None:
-            latest_timestamp = reference_time or datetime.utcnow()
+            latest_timestamp = reference_time or datetime.now(timezone.utc).replace(tzinfo=None)
 
         self._trim_open_buffers(latest_timestamp, window_seconds)
         completed_records.extend(self._collect_stale_buffers(latest_timestamp))
@@ -112,7 +114,7 @@ class RealtimeProcessor:
         if self.ekf_processor is not None:
             return self._snapshot_ekf(reference_time=reference_time)
 
-        snapshot_time = reference_time or datetime.utcnow()
+        snapshot_time = reference_time or datetime.now(timezone.utc).replace(tzinfo=None)
         self._trim_open_buffers(snapshot_time, window_seconds)
         stale_records = self._collect_stale_buffers(snapshot_time)
         if stale_records:
@@ -135,17 +137,25 @@ class RealtimeProcessor:
                 for item in buffer
             ]
             if preview_observations:
-                preview_result, preview_series, preview_spectra = self._run_records(preview_observations)
-                preview_solutions = {solution.arc_id: solution for solution in preview_result.arc_solutions}
+                preview_result, preview_series, preview_spectra = self._run_records(
+                    preview_observations
+                )
+                preview_solutions = {
+                    solution.arc_id: solution for solution in preview_result.arc_solutions
+                }
 
         final_solutions = self._windowed_final_solutions(window_start)
         merged_solutions = dict(preview_solutions)
         merged_solutions.update(final_solutions)
 
         self._series_by_arc = dict(preview_series)
-        self._series_by_arc.update(self._windowed_mapping(self.final_series_by_arc, final_solutions))
+        self._series_by_arc.update(
+            self._windowed_mapping(self.final_series_by_arc, final_solutions)
+        )
         self._spectra_by_arc = dict(preview_spectra)
-        self._spectra_by_arc.update(self._windowed_mapping(self.final_spectra_by_arc, final_solutions))
+        self._spectra_by_arc.update(
+            self._windowed_mapping(self.final_spectra_by_arc, final_solutions)
+        )
 
         solutions = sorted(merged_solutions.values(), key=lambda item: item.timestamp_end)
         if solutions:
@@ -156,7 +166,9 @@ class RealtimeProcessor:
             end_time = snapshot_time
 
         products = self.batch_processor.product_converter.convert(solutions)
-        aggregates = self.batch_processor.product_converter.aggregate(products, start_time, end_time)
+        aggregates = self.batch_processor.product_converter.aggregate(
+            products, start_time, end_time
+        )
         self.last_result = ProcessingRunResult(
             station_id=self.config.station.station_id,
             arc_solutions=solutions,
@@ -183,14 +195,18 @@ class RealtimeProcessor:
     def _snapshot_ekf(self, *, reference_time: datetime | None = None) -> ProcessingRunResult:
         assert self.ekf_processor is not None
         products = self.ekf_processor.build_products()
-        snapshot_time = reference_time or (products[-1].timestamp if products else datetime.utcnow())
+        snapshot_time = reference_time or (
+            products[-1].timestamp if products else datetime.now(timezone.utc).replace(tzinfo=None)
+        )
         if products:
             start_time = products[0].timestamp
             end_time = products[-1].timestamp
         else:
             start_time = snapshot_time
             end_time = snapshot_time
-        aggregates = self.batch_processor.product_converter.aggregate(products, start_time, end_time)
+        aggregates = self.batch_processor.product_converter.aggregate(
+            products, start_time, end_time
+        )
         self.last_result = ProcessingRunResult(
             station_id=self.config.station.station_id,
             arc_solutions=[],
@@ -274,7 +290,8 @@ class RealtimeProcessor:
             key
             for key, buffer in self.buffers.items()
             if buffer
-            and (reference_time - buffer[-1].timestamp).total_seconds() > self.config.processing.max_time_gap_seconds
+            and (reference_time - buffer[-1].timestamp).total_seconds()
+            > self.config.processing.max_time_gap_seconds
         ]
         for key in stale_keys:
             stale_records.extend(self.buffers.pop(key))
@@ -321,7 +338,9 @@ class RealtimeProcessor:
     def _run_records(
         self,
         observations: list[ObservationRecord],
-    ) -> tuple[ProcessingRunResult, dict[str, SnrSeries], dict[str, tuple[list[float], list[float]]]]:
+    ) -> tuple[
+        ProcessingRunResult, dict[str, SnrSeries], dict[str, tuple[list[float], list[float]]]
+    ]:
         if not observations:
             empty = ProcessingRunResult(
                 station_id=self.config.station.station_id,
@@ -332,7 +351,9 @@ class RealtimeProcessor:
             return empty, {}, {}
 
         original_provider = self.batch_processor.provider
-        self.batch_processor.provider = ListObservationProvider(sorted(observations, key=lambda item: item.timestamp))
+        self.batch_processor.provider = ListObservationProvider(
+            sorted(observations, key=lambda item: item.timestamp)
+        )
         try:
             result = self.batch_processor.run()
             series = self.batch_processor.get_intermediate_series()

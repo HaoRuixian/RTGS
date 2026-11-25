@@ -6,6 +6,7 @@ import argparse
 import signal
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 
 from .config_store import ConfigStore
@@ -23,9 +24,15 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=str(Path(__file__).resolve().parent / "examples" / "rt_multi_ntrip_rinex.yaml"),
         help="YAML config path.",
     )
-    parser.add_argument("--station", action="append", default=[], help="Only run the named station. Repeatable.")
-    parser.add_argument("--poll-seconds", type=int, default=60, help="Config polling interval in seconds.")
-    parser.add_argument("--merge-poll-seconds", type=int, default=300, help="Daily merge scan interval in seconds.")
+    parser.add_argument(
+        "--station", action="append", default=[], help="Only run the named station. Repeatable."
+    )
+    parser.add_argument(
+        "--poll-seconds", type=int, default=60, help="Config polling interval in seconds."
+    )
+    parser.add_argument(
+        "--merge-poll-seconds", type=int, default=300, help="Daily merge scan interval in seconds."
+    )
     parser.add_argument("--web-host", default="127.0.0.1", help="Web UI bind host.")
     parser.add_argument("--web-port", type=int, default=8088, help="Web UI bind port.")
     parser.add_argument("--no-web", action="store_true", help="Run workers without the Web UI.")
@@ -51,16 +58,16 @@ def main(argv: list[str] | None = None) -> int:
     for sig_name in ("SIGINT", "SIGTERM"):
         sig = getattr(signal, sig_name, None)
         if sig is not None:
-            try:
+            with suppress(ValueError):
                 signal.signal(sig, request_stop)
-            except ValueError:
-                pass
 
     manager.start()
     if not args.no_web:
         server = build_server(manager, args.web_host, args.web_port)
         manager.logs.write(f"Web UI listening on http://{args.web_host}:{args.web_port}")
-        server_thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True)
+        server_thread = threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.5}, daemon=True
+        )
         server_thread.start()
         try:
             while not stop_event.is_set():

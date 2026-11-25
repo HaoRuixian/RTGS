@@ -2,23 +2,27 @@
 
 from __future__ import annotations
 
-from bisect import bisect_left
-from collections import defaultdict
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
 import gzip
 import math
+from bisect import bisect_left
+from collections import defaultdict
+from collections.abc import Iterable
+from contextlib import suppress
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING, TextIO
 
 try:
     import numpy as np
-except Exception:  # pragma: no cover - depends on environment
+except ImportError:  # pragma: no cover - depends on environment
     np = None
 
 from core.data_models import EpochObservation, SatelliteState, SignalData
 from core.gnss_time import GNSSTime
 
+if TYPE_CHECKING:
+    from core.broadcast_ephemeris import BroadcastEphemeris
 
 SECONDS_PER_WEEK = 7 * 24 * 3600.0
 LIGHT_SPEED = 299792458.0
@@ -26,7 +30,7 @@ GPS_LIKE_TIME_SYSTEMS = {"GPS", "GAL", "GST", "QZS", "QZSS", "IRN", "IRNSS"}
 SATELLITE_SYSTEM_CODES = {"G", "R", "E", "J", "C", "I", "S"}
 
 
-def _open_text(path: str | Path):
+def _open_text(path: str | Path) -> TextIO:
     source_path = Path(path)
     if source_path.suffix.lower() == ".gz":
         return gzip.open(source_path, "rt", encoding="utf-8", errors="ignore")
@@ -165,10 +169,8 @@ def _parse_obs_header(handle) -> RinexObservationMetadata:
                 current_system = line[0].strip().upper()
                 parts = content.split()
                 if len(parts) >= 2:
-                    try:
+                    with suppress(ValueError):
                         expected_obs_counts[current_system] = int(parts[1])
-                    except ValueError:
-                        pass
                 metadata.sys_obs_types.setdefault(current_system, []).extend(parts[2:])
             elif current_system is not None:
                 metadata.sys_obs_types.setdefault(current_system, []).extend(content.split())
@@ -281,7 +283,9 @@ def _has_nonzero_position(values: Iterable[float] | None) -> bool:
     return any(abs(float(value)) > 1e-6 for value in coords[:3])
 
 
-def _build_satellite_state(satellite_id: str, obs_types: list[str], raw_fields: str) -> SatelliteState | None:
+def _build_satellite_state(
+    satellite_id: str, obs_types: list[str], raw_fields: str
+) -> SatelliteState | None:
     if len(satellite_id) < 2:
         return None
 
@@ -435,7 +439,7 @@ def _compute_broadcast_clock(eph: dict, transmit_time: float) -> float:
     if sqrt_a and ecc is not None and m0 is not None and delta_n is not None and toe is not None:
         try:
             semi_major_axis = float(sqrt_a) ** 2
-            mean_motion = math.sqrt(3.986005e14 / (semi_major_axis ** 3)) + float(delta_n)
+            mean_motion = math.sqrt(3.986005e14 / (semi_major_axis**3)) + float(delta_n)
             tk = _wrapped_time_difference(transmit_time, float(toe))
             mean_anomaly = float(m0) + mean_motion * tk
             eccentric_anomaly = mean_anomaly
@@ -462,6 +466,221 @@ def _parse_nav_values(line: str, line_index: int = 0) -> list[float | None]:
     return values
 
 
+@dataclass(slots=True)
+class _NavigationRecordContext:
+    satellite_id: str
+    prn: int
+    toc_week: int
+    toc_sow: float
+    values: list[list[float | None]]
+
+
+def _parse_navigation_context(
+    satellite_id: str,
+    record_lines: list[str],
+) -> _NavigationRecordContext | None:
+    if not record_lines:
+        return None
+    system = satellite_id[0]
+    try:
+        first_line = record_lines[0]
+        toc_datetime = _build_datetime(
+            int(first_line[4:8]),
+            int(first_line[9:11]),
+            int(first_line[12:14]),
+            int(first_line[15:17]),
+            int(first_line[18:20]),
+            float(first_line[21:23].strip() or "0"),
+        )
+        prn = int(satellite_id[1:])
+    except (IndexError, ValueError):
+        return None
+
+    time_scale = {
+        "G": "GPS",
+        "J": "GPS",
+        "E": "GAL",
+        "C": "BDT",
+        "I": "GPS",
+        "R": "UTC",
+    }.get(system, "GPS")
+    _, toc_week, toc_sow = _timescale_to_utc_and_gps(toc_datetime, time_scale)
+    values = [_parse_nav_values(line, index) for index, line in enumerate(record_lines)]
+    return _NavigationRecordContext(
+        satellite_id=satellite_id,
+        prn=prn,
+        toc_week=toc_week,
+        toc_sow=toc_sow,
+        values=values,
+    )
+
+
+def _keplerian_navigation_fields(context: _NavigationRecordContext) -> dict[str, object]:
+    line0 = context.values[0]
+    line2, line3, line4, line5, line6 = context.values[1:6]
+    return {
+        "a": float(line3[3] or 0.0) ** 2,
+        "sqrt_a": float(line3[3] or 0.0),
+        "e": float(line3[1] or 0.0),
+        "M0": float(line2[3] or 0.0),
+        "omega": float(line5[2] or 0.0),
+        "Omega0": float(line4[2] or 0.0),
+        "i0": float(line5[0] or 0.0),
+        "delta_n": float(line2[2] or 0.0),
+        "Omega_dot": float(line5[3] or 0.0),
+        "idot": float(line6[0] or 0.0),
+        "Crs": float(line2[1] or 0.0),
+        "Crc": float(line5[1] or 0.0),
+        "Cus": float(line3[2] or 0.0),
+        "Cuc": float(line3[0] or 0.0),
+        "Cis": float(line4[3] or 0.0),
+        "Cic": float(line4[1] or 0.0),
+        "af0": float(line0[0] or 0.0),
+        "af1": float(line0[1] or 0.0),
+        "af2": float(line0[2] or 0.0),
+    }
+
+
+def _parse_gps_qzss_navigation(context: _NavigationRecordContext) -> dict[str, object]:
+    system = context.satellite_id[0]
+    line2, _line3, line4, _line5, line6, line7, line8 = context.values[1:8]
+    record: dict[str, object] = {
+        "system": "GPS" if system == "G" else "QZSS",
+        "satellite_id": context.satellite_id,
+        "PRN": context.prn if system == "G" else context.prn + 192,
+        "slot_number": context.prn if system == "J" else None,
+        "week": int(round(line6[2] or context.toc_week)),
+        "toe": float(line4[0] or 0.0),
+        "toc": float(context.toc_sow),
+        "iode": int(round(line2[0] or 0.0)),
+        "iodc": int(round(line7[3] or line2[0] or 0.0)),
+    }
+    record.update(_keplerian_navigation_fields(context))
+    record.update(
+        {
+            "TGD": float(line7[2] or 0.0),
+            "ura": int(round(line7[0] or 0.0)),
+            "health": int(round(line7[1] or 0.0)),
+            "fit_interval": float(line8[1] or 0.0),
+        }
+    )
+    return record
+
+
+def _parse_galileo_navigation(context: _NavigationRecordContext) -> dict[str, object]:
+    line2, _line3, line4, _line5, line6, line7, _line8 = context.values[1:8]
+    record: dict[str, object] = {
+        "system": "Galileo",
+        "satellite_id": context.satellite_id,
+        "PRN": context.prn,
+        "week": int(round(line6[2] or context.toc_week)),
+        "toe": float(line4[0] or 0.0),
+        "toc": float(context.toc_sow),
+        "iod_nav": int(round(line2[0] or 0.0)),
+    }
+    record.update(_keplerian_navigation_fields(context))
+    record.update(
+        {
+            "SISA": int(round(line7[0] or 0.0)),
+            "health": int(round(line7[1] or 0.0)),
+            "BGD_E5aE1": float(line7[2] or 0.0),
+            "BGD_E5bE1": float(line7[3] or 0.0),
+        }
+    )
+    return record
+
+
+def _parse_beidou_navigation(context: _NavigationRecordContext) -> dict[str, object]:
+    line2, _line3, line4, _line5, line6, line7, line8 = context.values[1:8]
+    bds_week = int(round(line6[2] or 0.0))
+    bds_toe = float(line4[0] or 0.0)
+    gps_week, gps_toe = _normalize_gps_sow(bds_week + 1356, bds_toe + 14.0)
+    record: dict[str, object] = {
+        "system": "BeiDou",
+        "satellite_id": context.satellite_id,
+        "PRN": context.prn,
+        "week": gps_week,
+        "bds_week": bds_week,
+        "toe": gps_toe,
+        "toc": float(context.toc_sow),
+        "toe_week": gps_week,
+        "toc_week": context.toc_week,
+        "bds_toe": bds_toe,
+        "aode": int(round(line2[0] or 0.0)),
+        "aodc": int(round(line7[0] or 0.0)),
+    }
+    record.update(_keplerian_navigation_fields(context))
+    record.update(
+        {
+            "TGD1": float(line7[2] or 0.0),
+            "TGD2": float(line7[3] or 0.0),
+            "ura": int(round(line7[0] or 0.0)),
+            "health": int(round(line7[1] or 0.0)),
+            "transmission_time": float(line8[0] or 0.0),
+        }
+    )
+    return record
+
+
+def _parse_irnss_navigation(context: _NavigationRecordContext) -> dict[str, object]:
+    line2, _line3, line4, _line5, line6, line7, _line8 = context.values[1:8]
+    record: dict[str, object] = {
+        "system": "IRNSS",
+        "satellite_id": context.satellite_id,
+        "PRN": context.prn,
+        "week": int(round(line6[2] or context.toc_week)),
+        "toe": float(line4[0] or 0.0),
+        "toc": float(context.toc_sow),
+        "iode": int(round(line2[0] or 0.0)),
+    }
+    record.update(_keplerian_navigation_fields(context))
+    record.update(
+        {
+            "TGD": float(line7[2] or 0.0),
+            "ura": int(round(line7[0] or 0.0)),
+            "health": int(round(line7[1] or 0.0)),
+        }
+    )
+    return record
+
+
+def _parse_glonass_navigation(context: _NavigationRecordContext) -> dict[str, object]:
+    line0 = context.values[0]
+    line2, line3, line4 = context.values[1:4]
+    return {
+        "system": "GLONASS",
+        "satellite_id": context.satellite_id,
+        "PRN": context.prn,
+        "slot_number": context.prn,
+        "frequency_channel": int(round(line3[3] or 0.0)),
+        "tb": float(context.toc_sow),
+        "tk": float(context.toc_sow),
+        "tb_seconds": float(context.toc_sow % (24 * 3600)),
+        "X": float(line2[0] or 0.0),
+        "Y": float(line3[0] or 0.0),
+        "Z": float(line4[0] or 0.0),
+        "Vx": float(line2[1] or 0.0),
+        "Vy": float(line3[1] or 0.0),
+        "Vz": float(line4[1] or 0.0),
+        "Ax": float(line2[2] or 0.0),
+        "Ay": float(line3[2] or 0.0),
+        "Az": float(line4[2] or 0.0),
+        "tau_n": float(line0[0] or 0.0),
+        "gamma_n": float(line0[1] or 0.0),
+        "health": int(round(line2[3] or 0.0)),
+    }
+
+
+_NAVIGATION_PARSERS = {
+    "G": _parse_gps_qzss_navigation,
+    "J": _parse_gps_qzss_navigation,
+    "E": _parse_galileo_navigation,
+    "C": _parse_beidou_navigation,
+    "I": _parse_irnss_navigation,
+    "R": _parse_glonass_navigation,
+}
+
+
 class FileEphemerisProvider:
     """Broadcast-nav and SP3 provider for file replay mode."""
 
@@ -469,7 +688,7 @@ class FileEphemerisProvider:
         self,
         kind: str,
         source_path: str,
-        broadcast_ephemeris: "BroadcastEphemeris | None" = None,
+        broadcast_ephemeris: BroadcastEphemeris | None = None,
         precise_records: dict[str, list[tuple[float, np.ndarray, float | None]]] | None = None,
     ) -> None:
         self.kind = kind
@@ -490,8 +709,8 @@ class FileEphemerisProvider:
         cls,
         path: str | Path,
         file_type: str = "auto",
-        broadcast_ephemeris: "BroadcastEphemeris | None" = None,
-    ) -> "FileEphemerisProvider":
+        broadcast_ephemeris: BroadcastEphemeris | None = None,
+    ) -> FileEphemerisProvider:
         source_path = str(path)
         resolved_type = cls._resolve_file_type(source_path, file_type)
 
@@ -527,7 +746,7 @@ class FileEphemerisProvider:
         return "broadcast"
 
     @staticmethod
-    def _load_broadcast_nav(path: str, eph_cache: "BroadcastEphemeris") -> None:
+    def _load_broadcast_nav(path: str, eph_cache: BroadcastEphemeris) -> None:
         with Path(path).open("r", encoding="utf-8", errors="ignore") as handle:
             while True:
                 line = handle.readline()
@@ -560,212 +779,11 @@ class FileEphemerisProvider:
 
     @staticmethod
     def _parse_nav_record(satellite_id: str, record_lines: list[str]) -> dict | None:
-        system = satellite_id[0]
-        try:
-            year = int(record_lines[0][4:8])
-            month = int(record_lines[0][9:11])
-            day = int(record_lines[0][12:14])
-            hour = int(record_lines[0][15:17])
-            minute = int(record_lines[0][18:20])
-            second = float(record_lines[0][21:23].strip() or "0")
-        except ValueError:
+        context = _parse_navigation_context(satellite_id, record_lines)
+        if context is None:
             return None
-
-        toc_dt = _build_datetime(year, month, day, hour, minute, second)
-        time_scale = {
-            "G": "GPS",
-            "J": "GPS",
-            "E": "GAL",
-            "C": "BDT",
-            "I": "GPS",
-            "R": "UTC",
-        }.get(system, "GPS")
-        _, toc_week, toc_sow = _timescale_to_utc_and_gps(toc_dt, time_scale)
-        values = [_parse_nav_values(line, idx) for idx, line in enumerate(record_lines)]
-        line0 = values[0]
-
-        try:
-            prn = int(satellite_id[1:])
-        except ValueError:
-            return None
-
-        if system in {"G", "J"}:
-            line2, line3, line4, line5, line6, line7, line8 = values[1:8]
-            return {
-                "system": "GPS" if system == "G" else "QZSS",
-                "satellite_id": satellite_id,
-                "PRN": prn if system == "G" else prn + 192,
-                "slot_number": prn if system == "J" else None,
-                "week": int(round(line6[2] or toc_week)),
-                "toe": float(line4[0] or 0.0),
-                "toc": float(toc_sow),
-                "iode": int(round(line2[0] or 0.0)),
-                "iodc": int(round(line7[3] or line2[0] or 0.0)),
-                "a": float(line3[3] or 0.0) ** 2,
-                "sqrt_a": float(line3[3] or 0.0),
-                "e": float(line3[1] or 0.0),
-                "M0": float(line2[3] or 0.0),
-                "omega": float(line5[2] or 0.0),
-                "Omega0": float(line4[2] or 0.0),
-                "i0": float(line5[0] or 0.0),
-                "delta_n": float(line2[2] or 0.0),
-                "Omega_dot": float(line5[3] or 0.0),
-                "idot": float(line6[0] or 0.0),
-                "Crs": float(line2[1] or 0.0),
-                "Crc": float(line5[1] or 0.0),
-                "Cus": float(line3[2] or 0.0),
-                "Cuc": float(line3[0] or 0.0),
-                "Cis": float(line4[3] or 0.0),
-                "Cic": float(line4[1] or 0.0),
-                "af0": float(line0[0] or 0.0),
-                "af1": float(line0[1] or 0.0),
-                "af2": float(line0[2] or 0.0),
-                "TGD": float(line7[2] or 0.0),
-                "ura": int(round(line7[0] or 0.0)),
-                "health": int(round(line7[1] or 0.0)),
-                "fit_interval": float(line8[1] or 0.0),
-            }
-
-        if system == "E":
-            line2, line3, line4, line5, line6, line7, _line8 = values[1:8]
-            return {
-                "system": "Galileo",
-                "satellite_id": satellite_id,
-                "PRN": prn,
-                "week": int(round(line6[2] or toc_week)),
-                "toe": float(line4[0] or 0.0),
-                "toc": float(toc_sow),
-                "iod_nav": int(round(line2[0] or 0.0)),
-                "a": float(line3[3] or 0.0) ** 2,
-                "sqrt_a": float(line3[3] or 0.0),
-                "e": float(line3[1] or 0.0),
-                "M0": float(line2[3] or 0.0),
-                "omega": float(line5[2] or 0.0),
-                "Omega0": float(line4[2] or 0.0),
-                "i0": float(line5[0] or 0.0),
-                "delta_n": float(line2[2] or 0.0),
-                "Omega_dot": float(line5[3] or 0.0),
-                "idot": float(line6[0] or 0.0),
-                "Crs": float(line2[1] or 0.0),
-                "Crc": float(line5[1] or 0.0),
-                "Cus": float(line3[2] or 0.0),
-                "Cuc": float(line3[0] or 0.0),
-                "Cis": float(line4[3] or 0.0),
-                "Cic": float(line4[1] or 0.0),
-                "af0": float(line0[0] or 0.0),
-                "af1": float(line0[1] or 0.0),
-                "af2": float(line0[2] or 0.0),
-                "SISA": int(round(line7[0] or 0.0)),
-                "health": int(round(line7[1] or 0.0)),
-                "BGD_E5aE1": float(line7[2] or 0.0),
-                "BGD_E5bE1": float(line7[3] or 0.0),
-            }
-
-        if system == "C":
-            line2, line3, line4, line5, line6, line7, line8 = values[1:8]
-            bds_week = int(round(line6[2] or 0.0))
-            gps_week = bds_week + 1356
-            bds_toe = float(line4[0] or 0.0)
-            gps_toe_week, gps_toe = _normalize_gps_sow(gps_week, bds_toe + 14.0)
-            return {
-                "system": "BeiDou",
-                "satellite_id": satellite_id,
-                "PRN": prn,
-                "week": gps_toe_week,
-                "bds_week": bds_week,
-                "toe": gps_toe,
-                "toc": float(toc_sow),
-                "toe_week": gps_toe_week,
-                "toc_week": toc_week,
-                "bds_toe": bds_toe,
-                "aode": int(round(line2[0] or 0.0)),
-                "aodc": int(round(line7[0] or 0.0)),
-                "a": float(line3[3] or 0.0) ** 2,
-                "sqrt_a": float(line3[3] or 0.0),
-                "e": float(line3[1] or 0.0),
-                "M0": float(line2[3] or 0.0),
-                "omega": float(line5[2] or 0.0),
-                "Omega0": float(line4[2] or 0.0),
-                "i0": float(line5[0] or 0.0),
-                "delta_n": float(line2[2] or 0.0),
-                "Omega_dot": float(line5[3] or 0.0),
-                "idot": float(line6[0] or 0.0),
-                "Crs": float(line2[1] or 0.0),
-                "Crc": float(line5[1] or 0.0),
-                "Cus": float(line3[2] or 0.0),
-                "Cuc": float(line3[0] or 0.0),
-                "Cis": float(line4[3] or 0.0),
-                "Cic": float(line4[1] or 0.0),
-                "af0": float(line0[0] or 0.0),
-                "af1": float(line0[1] or 0.0),
-                "af2": float(line0[2] or 0.0),
-                "TGD1": float(line7[2] or 0.0),
-                "TGD2": float(line7[3] or 0.0),
-                "ura": int(round(line7[0] or 0.0)),
-                "health": int(round(line7[1] or 0.0)),
-                "transmission_time": float(line8[0] or 0.0),
-            }
-
-        if system == "I":
-            line2, line3, line4, line5, line6, line7, _line8 = values[1:8]
-            return {
-                "system": "IRNSS",
-                "satellite_id": satellite_id,
-                "PRN": prn,
-                "week": int(round(line6[2] or toc_week)),
-                "toe": float(line4[0] or 0.0),
-                "toc": float(toc_sow),
-                "iode": int(round(line2[0] or 0.0)),
-                "a": float(line3[3] or 0.0) ** 2,
-                "sqrt_a": float(line3[3] or 0.0),
-                "e": float(line3[1] or 0.0),
-                "M0": float(line2[3] or 0.0),
-                "omega": float(line5[2] or 0.0),
-                "Omega0": float(line4[2] or 0.0),
-                "i0": float(line5[0] or 0.0),
-                "delta_n": float(line2[2] or 0.0),
-                "Omega_dot": float(line5[3] or 0.0),
-                "idot": float(line6[0] or 0.0),
-                "Crs": float(line2[1] or 0.0),
-                "Crc": float(line5[1] or 0.0),
-                "Cus": float(line3[2] or 0.0),
-                "Cuc": float(line3[0] or 0.0),
-                "Cis": float(line4[3] or 0.0),
-                "Cic": float(line4[1] or 0.0),
-                "af0": float(line0[0] or 0.0),
-                "af1": float(line0[1] or 0.0),
-                "af2": float(line0[2] or 0.0),
-                "TGD": float(line7[2] or 0.0),
-                "ura": int(round(line7[0] or 0.0)),
-                "health": int(round(line7[1] or 0.0)),
-            }
-
-        if system == "R":
-            line2, line3, line4 = values[1:4]
-            return {
-                "system": "GLONASS",
-                "satellite_id": satellite_id,
-                "PRN": prn,
-                "slot_number": prn,
-                "frequency_channel": int(round(line3[3] or 0.0)),
-                "tb": float(toc_sow),
-                "tk": float(toc_sow),
-                "tb_seconds": float(toc_sow % (24 * 3600)),
-                "X": float(line2[0] or 0.0),
-                "Y": float(line3[0] or 0.0),
-                "Z": float(line4[0] or 0.0),
-                "Vx": float(line2[1] or 0.0),
-                "Vy": float(line3[1] or 0.0),
-                "Vz": float(line4[1] or 0.0),
-                "Ax": float(line2[2] or 0.0),
-                "Ay": float(line3[2] or 0.0),
-                "Az": float(line4[2] or 0.0),
-                "tau_n": float(line0[0] or 0.0),
-                "gamma_n": float(line0[1] or 0.0),
-                "health": int(round(line2[3] or 0.0)),
-            }
-
-        return None
+        parser = _NAVIGATION_PARSERS.get(satellite_id[0])
+        return parser(context) if parser is not None else None
 
     @staticmethod
     def _load_sp3(path: str) -> dict[str, list[tuple[float, np.ndarray, float | None]]]:
@@ -864,7 +882,9 @@ class FileEphemerisProvider:
             target_time -= float(pseudorange_m) / LIGHT_SPEED
         return self._interpolate_precise_state(satellite_id, target_time)
 
-    def _interpolate_precise_state(self, satellite_id: str, target_time: float) -> SatelliteEphemerisState | None:
+    def _interpolate_precise_state(
+        self, satellite_id: str, target_time: float
+    ) -> SatelliteEphemerisState | None:
         records = self.precise_records.get(satellite_id)
         times = self._precise_times.get(satellite_id)
         if not records or not times:
@@ -890,8 +910,13 @@ class FileEphemerisProvider:
             return None
 
         weight = (target_time - left_time) / span
-        position = np.asarray(left_position, dtype=float) * (1.0 - weight) + np.asarray(right_position, dtype=float) * weight
-        velocity = (np.asarray(right_position, dtype=float) - np.asarray(left_position, dtype=float)) / span
+        position = (
+            np.asarray(left_position, dtype=float) * (1.0 - weight)
+            + np.asarray(right_position, dtype=float) * weight
+        )
+        velocity = (
+            np.asarray(right_position, dtype=float) - np.asarray(left_position, dtype=float)
+        ) / span
 
         if left_clock is None or right_clock is None:
             clock_value = left_clock if left_clock is not None else right_clock
@@ -918,7 +943,9 @@ class FileEphemerisProvider:
         span = float(right_time - left_time)
         if span <= 0.0:
             return None
-        return (np.asarray(right_position, dtype=float) - np.asarray(left_position, dtype=float)) / span
+        return (
+            np.asarray(right_position, dtype=float) - np.asarray(left_position, dtype=float)
+        ) / span
 
 
 class RinexObservationReader:
@@ -958,7 +985,9 @@ class RinexObservationReader:
                     continue
 
                 epoch_dt, flag, satellite_count = epoch_header
-                utc_dt, gps_week, gps_sow = _timescale_to_utc_and_gps(epoch_dt, self.metadata.time_system)
+                utc_dt, gps_week, gps_sow = _timescale_to_utc_and_gps(
+                    epoch_dt, self.metadata.time_system
+                )
                 epoch = EpochObservation(gps_time=gps_sow, utc_datetime=utc_dt)
                 skip_epoch = flag not in (0, 1)
 
@@ -968,7 +997,9 @@ class RinexObservationReader:
                         break
                     satellite_id = observation_line[:3].strip().upper()
                     obs_types = self.metadata.sys_obs_types.get(satellite_id[:1], [])
-                    raw_fields = _read_observation_record_payload(handle, observation_line, len(obs_types))
+                    raw_fields = _read_observation_record_payload(
+                        handle, observation_line, len(obs_types)
+                    )
 
                     if skip_epoch or not satellite_id or not obs_types:
                         continue
@@ -1002,7 +1033,9 @@ class RinexObservationReader:
                             if receiver_position is not None:
                                 from core.geo_utils import calculate_az_el
 
-                                azimuth, elevation = calculate_az_el(state.position_ecef_m, receiver_position)
+                                azimuth, elevation = calculate_az_el(
+                                    state.position_ecef_m, receiver_position
+                                )
                                 sat_state.azimuth = float(azimuth)
                                 sat_state.elevation = float(elevation)
 

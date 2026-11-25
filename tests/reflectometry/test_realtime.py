@@ -73,7 +73,11 @@ def test_realtime_processor_discards_open_arc_samples_outside_window(example_con
     key = observations[-1].satellite_system_key
     assert key in processor.buffers
     kept_timestamps = [item.timestamp for item in processor.buffers[key]]
-    assert kept_timestamps == [observations[1].timestamp, observations[2].timestamp, observations[3].timestamp]
+    assert kept_timestamps == [
+        observations[1].timestamp,
+        observations[2].timestamp,
+        observations[3].timestamp,
+    ]
 
 
 def test_realtime_preview_waits_for_realtime_window(example_config):

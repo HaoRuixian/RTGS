@@ -14,11 +14,11 @@ Key Features:
 The client is designed to work with GNSS receivers that output RTCM data via RS232.
 """
 
-import logging
-
 import serial
 
-LOGGER = logging.getLogger(__name__)
+from rtgs.infrastructure import get_logger
+
+LOGGER = get_logger(__name__)
 
 PARITY_MAP = {
     "None": serial.PARITY_NONE,
@@ -43,11 +43,11 @@ STOPBITS_MAP = {
 class SerialClient:
     """
     Serial port client for receiving GNSS RTCM data.
-    
+
     Implements serial port communication for receiving RTCM differential correction
     data from local GNSS receivers. Handles port configuration, connection management,
     and data streaming with proper error handling.
-    
+
     Attributes:
         port (str): Serial port name (e.g., 'COM3', '/dev/ttyUSB0')
         baudrate (int): Baud rate for serial communication (e.g., 115200)
@@ -58,7 +58,7 @@ class SerialClient:
         timeout (float): Read timeout in seconds
         ser (serial.Serial): Active serial port connection
     """
-    
+
     def __init__(
         self,
         port: str,
@@ -71,7 +71,7 @@ class SerialClient:
     ) -> None:
         """
         Initialize serial client with port parameters.
-        
+
         Args:
             port (str): Serial port name (e.g., 'COM3' on Windows, '/dev/ttyUSB0' on Linux)
             baudrate (int): Baud rate (default: 115200)
@@ -94,10 +94,10 @@ class SerialClient:
     def from_config(cls, stream_type: str = "OBS") -> "SerialClient":
         """
         Create a SerialClient instance from global configuration settings.
-        
+
         Args:
             stream_type: Either 'OBS' for observation stream or 'EPH' for ephemeris stream
-            
+
         Returns:
             SerialClient instance initialized with configuration values
         """
@@ -105,7 +105,9 @@ class SerialClient:
 
         settings = get_connection_settings(stream_type)
         if settings.source_type != "Serial Port":
-            raise ValueError(f"Cannot create SerialClient from {stream_type} settings: source type is not Serial Port")
+            raise ValueError(
+                f"Cannot create SerialClient from {stream_type} settings: source type is not Serial Port"
+            )
 
         return cls(
             settings.serial_port,
@@ -120,13 +122,13 @@ class SerialClient:
     def connect(self) -> serial.Serial:
         """
         Establish serial port connection.
-        
+
         Opens the serial port with configured parameters and verifies connection.
         Raises exception if port cannot be opened or is invalid.
-        
+
         Returns:
             serial.Serial: Connected serial port object ready for data reception
-            
+
         Raises:
             serial.SerialException: When port cannot be opened or is invalid
         """
@@ -163,7 +165,7 @@ class SerialClient:
     def close(self) -> None:
         """
         Close the serial port connection.
-        
+
         Safely closes the open serial port. Safe to call even if port is already closed.
         """
         if self.ser and self.ser.is_open:
@@ -176,13 +178,13 @@ class SerialClient:
     def read(self, size: int = 1) -> bytes:
         """
         Read data from serial port.
-        
+
         Args:
             size (int): Number of bytes to read (default: 1)
-            
+
         Returns:
             bytes: Data read from serial port (may be less than requested if timeout occurs)
-            
+
         Raises:
             Exception: If serial port is not open
         """
@@ -194,26 +196,27 @@ class SerialClient:
     def write(self, data: bytes) -> int:
         """
         Write data to serial port.
-        
+
         Args:
             data (bytes): Data to write
-            
+
         Returns:
             int: Number of bytes written
-            
+
         Raises:
             Exception: If serial port is not open
         """
         if not self.ser or not self.ser.is_open:
             raise ConnectionError("Serial port is not open")
 
-        return self.ser.write(data)
+        bytes_written = self.ser.write(data)
+        return 0 if bytes_written is None else bytes_written
 
     @staticmethod
     def list_available_ports() -> list[str]:
         """
         List all available serial ports on the system.
-        
+
         Returns:
             list: List of available serial port names
         """

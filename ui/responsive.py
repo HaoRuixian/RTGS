@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Tuple
 
 from PySide6.QtCore import QRect
 from PySide6.QtGui import QGuiApplication
@@ -69,8 +68,8 @@ def window_ui_scale(window) -> float:
 
 def adaptive_window_size(
     window,
-    target: Tuple[int, int],
-    minimum: Tuple[int, int],
+    target: tuple[int, int],
+    minimum: tuple[int, int],
     max_fill_w: float = 0.92,
     max_fill_h: float = 0.90,
 ) -> None:

@@ -6,10 +6,11 @@ import base64
 import socket
 import threading
 import time
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import TYPE_CHECKING
 
 import yaml
 
@@ -17,6 +18,9 @@ from core.data_models import EpochObservation
 from core.gnss_time import GNSSTime
 from core.mixed_gnss_reader import MixedGNSSReader
 from core.rinex3_writer import RINEX3Writer
+
+if TYPE_CHECKING:
+    from core.rtcm_handler import RTCMHandler
 
 try:
     from core.pyrtcm_compat import patch_pyrtcm_glonass_g3
@@ -70,15 +74,15 @@ class RinexStationConfig:
     antenna_model: str = ""
     antenna_number: str = ""
     datatype: str = "MO"
-    filename_template: Optional[str] = None
-    sample_interval_seconds: Optional[int] = None
+    filename_template: str | None = None
+    sample_interval_seconds: int | None = None
     split_enabled: bool = True
-    split_period_seconds: Optional[int] = 3600
+    split_period_seconds: int | None = 3600
     daily_merge_min_interval_seconds: int = 15
     time_system: str = "GPS"
-    approx_position: Optional[List[float]] = None
+    approx_position: list[float] | None = None
     auto_detect_obs_types: bool = True
-    sys_obs_types: Dict[str, List[str]] = field(default_factory=dict)
+    sys_obs_types: dict[str, list[str]] = field(default_factory=dict)
     align_tolerance_seconds: float = 0.001
 
 
@@ -93,10 +97,10 @@ class RTStationConfig:
 @dataclass(slots=True)
 class MultiStationRTRinexConfig:
     config_path: Path
-    stations: List[RTStationConfig]
+    stations: list[RTStationConfig]
 
 
-def _copy_default_sys_obs_types() -> Dict[str, List[str]]:
+def _copy_default_sys_obs_types() -> dict[str, list[str]]:
     return {system: list(obs_types) for system, obs_types in DEFAULT_SYS_OBS_TYPES.items()}
 
 
@@ -111,13 +115,13 @@ def _deep_merge(base: dict, overrides: dict) -> dict:
     return result
 
 
-def _normalize_sys_obs_types(raw: Optional[dict]) -> Dict[str, List[str]]:
-    cleaned: Dict[str, List[str]] = {}
+def _normalize_sys_obs_types(raw: dict | None) -> dict[str, list[str]]:
+    cleaned: dict[str, list[str]] = {}
     for system, codes in (raw or {}).items():
         if not system:
             continue
         key = str(system)[0].upper()
-        normalized_codes: List[str] = []
+        normalized_codes: list[str] = []
         for code in codes or []:
             obs_code = str(code).strip().upper()
             if obs_code:
@@ -127,8 +131,8 @@ def _normalize_sys_obs_types(raw: Optional[dict]) -> Dict[str, List[str]]:
     return cleaned
 
 
-def _detect_sys_obs_types_from_satellites(satellites: Optional[dict]) -> Dict[str, List[str]]:
-    observation_codes_by_system: Dict[str, set[str]] = {}
+def _detect_sys_obs_types_from_satellites(satellites: dict | None) -> dict[str, list[str]]:
+    observation_codes_by_system: dict[str, set[str]] = {}
     for sat_id, sat_state in (satellites or {}).items():
         if not sat_id:
             continue
@@ -149,10 +153,10 @@ def _detect_sys_obs_types_from_satellites(satellites: Optional[dict]) -> Dict[st
     if not observation_codes_by_system:
         return _copy_default_sys_obs_types()
 
-    sys_obs_types: Dict[str, List[str]] = {}
+    sys_obs_types: dict[str, list[str]] = {}
     for system in sorted(observation_codes_by_system.keys()):
         known_codes = observation_codes_by_system[system]
-        obs_codes: List[str] = []
+        obs_codes: list[str] = []
         signal_ids = sorted({code[1:] for code in known_codes if len(code) > 1})
         for signal_id in signal_ids:
             for prefix in ("C", "L", "D", "S"):
@@ -165,12 +169,14 @@ def _detect_sys_obs_types_from_satellites(satellites: Optional[dict]) -> Dict[st
     return sys_obs_types or _copy_default_sys_obs_types()
 
 
-def _merge_sys_obs_types(primary: Dict[str, List[str]], secondary: Dict[str, List[str]]) -> Dict[str, List[str]]:
-    merged: Dict[str, List[str]] = {}
+def _merge_sys_obs_types(
+    primary: dict[str, list[str]], secondary: dict[str, list[str]]
+) -> dict[str, list[str]]:
+    merged: dict[str, list[str]] = {}
     systems = sorted(set(primary.keys()) | set(secondary.keys()))
     for system in systems:
         seen: set[str] = set()
-        ordered_codes: List[str] = []
+        ordered_codes: list[str] = []
         for source in (primary.get(system, []), secondary.get(system, [])):
             for code in source:
                 normalized = str(code).strip().upper()
@@ -198,7 +204,7 @@ def _parse_optional_int(
     field_name: str,
     min_value: int = 1,
     auto_tokens: Iterable[str] = ("", "auto", "detect", "none", "off"),
-) -> Optional[int]:
+) -> int | None:
     if value is None:
         return None
 
@@ -220,7 +226,7 @@ def _parse_float(value: object, *, field_name: str, min_value: float = 0.0) -> f
     return parsed
 
 
-def _parse_position(value: object, *, field_name: str) -> Optional[List[float]]:
+def _parse_position(value: object, *, field_name: str) -> list[float] | None:
     if value is None:
         return None
     if not isinstance(value, (list, tuple)) or len(value) < 3:
@@ -252,8 +258,8 @@ def _normalize_ntrip_user_agent(user_agent: object) -> str:
     return f"NTRIP {text}"
 
 
-def _detect_sys_obs_types_from_epochs(epochs: Iterable[EpochObservation]) -> Dict[str, List[str]]:
-    detected: Dict[str, List[str]] = {}
+def _detect_sys_obs_types_from_epochs(epochs: Iterable[EpochObservation]) -> dict[str, list[str]]:
+    detected: dict[str, list[str]] = {}
     for epoch in epochs:
         satellites = getattr(epoch, "satellites", {}) or {}
         epoch_detected = _detect_sys_obs_types_from_satellites(satellites)
@@ -327,15 +333,17 @@ def _build_station_config(raw_station: dict, *, config_dir: Path) -> RTStationCo
         ),
         marker_name=str(rinex_block.get("marker_name") or name).strip() or name,
         marker_number=str(rinex_block.get("marker_number", "0") or "0"),
-        station_code=str(rinex_block.get("station_code") or name[:4] or "RTGS").strip().upper() or "RTGS",
-        receiver_number=str(rinex_block.get("receiver_number", "00") or "00").strip().upper() or "00",
+        station_code=str(rinex_block.get("station_code") or name[:4] or "RTGS").strip().upper()
+        or "RTGS",
+        receiver_number=str(rinex_block.get("receiver_number", "00") or "00").strip().upper()
+        or "00",
         country_code=str(rinex_block.get("country_code", "CHN") or "CHN").strip().upper() or "CHN",
-        receiver_type=str(rinex_block.get("receiver_type", "UNKNOWN") or "UNKNOWN").strip() or "UNKNOWN",
-        antenna_type=str(rinex_block.get("antenna_type", "UNKNOWN") or "UNKNOWN").strip() or "UNKNOWN",
+        receiver_type=str(rinex_block.get("receiver_type", "UNKNOWN") or "UNKNOWN").strip()
+        or "UNKNOWN",
+        antenna_type=str(rinex_block.get("antenna_type", "UNKNOWN") or "UNKNOWN").strip()
+        or "UNKNOWN",
         antenna_model=str(
-            rinex_block.get("antenna_model")
-            or rinex_block.get("antenna_number")
-            or ""
+            rinex_block.get("antenna_model") or rinex_block.get("antenna_number") or ""
         ).strip(),
         antenna_number=str(rinex_block.get("antenna_number") or "").strip(),
         datatype=str(rinex_block.get("datatype", "MO") or "MO").strip().upper() or "MO",
@@ -373,7 +381,9 @@ def _build_station_config(raw_station: dict, *, config_dir: Path) -> RTStationCo
     )
 
     if rinex.split_enabled and rinex.split_period_seconds is None:
-        raise ValueError(f"Station {name}: rinex.split_period_seconds is required when split_enabled is true")
+        raise ValueError(
+            f"Station {name}: rinex.split_period_seconds is required when split_enabled is true"
+        )
 
     if (
         rinex.split_enabled
@@ -390,7 +400,7 @@ def _build_station_config(raw_station: dict, *, config_dir: Path) -> RTStationCo
 
 def load_rt_rinex_config(path: str | Path) -> MultiStationRTRinexConfig:
     config_path = Path(path).resolve()
-    with open(config_path, "r", encoding="utf-8") as handle:
+    with open(config_path, encoding="utf-8") as handle:
         raw = yaml.safe_load(handle) or {}
 
     if not isinstance(raw, dict):
@@ -404,7 +414,7 @@ def load_rt_rinex_config(path: str | Path) -> MultiStationRTRinexConfig:
     if not isinstance(stations_raw, list) or not stations_raw:
         raise ValueError("stations must be a non-empty list")
 
-    stations: List[RTStationConfig] = []
+    stations: list[RTStationConfig] = []
     for raw_station in stations_raw:
         merged_station = _deep_merge(defaults, raw_station or {})
         stations.append(_build_station_config(merged_station, config_dir=config_path.parent))
@@ -502,7 +512,7 @@ class PrefetchedSocketStream:
 
     def read(self, size: int = -1) -> bytes:
         if size is None or size < 0:
-            chunks: List[bytes] = []
+            chunks: list[bytes] = []
             if self._prefetched:
                 chunks.append(bytes(self._prefetched))
                 self._prefetched.clear()
@@ -513,7 +523,7 @@ class PrefetchedSocketStream:
                 chunks.append(chunk)
             return b"".join(chunks)
 
-        chunks: List[bytes] = []
+        chunks: list[bytes] = []
         remaining = size
         prefetched = self._read_from_prefetched(remaining)
         if prefetched:
@@ -562,10 +572,10 @@ class RTNtripRinexStation(threading.Thread):
         self,
         station: RTStationConfig,
         *,
-        log_fn: Optional[Callable[[str], None]] = None,
-        reader_factory: Optional[Callable[[object], Iterable[tuple[bytes | None, object]]]] = None,
-        handler_factory: Optional[Callable[[], RTCMHandler]] = None,
-        stream_connector: Optional[Callable[[NtripSourceConfig], object]] = None,
+        log_fn: Callable[[str], None] | None = None,
+        reader_factory: Callable[[object], Iterable[tuple[bytes | None, object]]] | None = None,
+        handler_factory: Callable[[], RTCMHandler] | None = None,
+        stream_connector: Callable[[NtripSourceConfig], object] | None = None,
         sleep_fn: Callable[[float], None] = time.sleep,
     ):
         super().__init__(name=f"RTNtripRinex-{station.name}", daemon=True)
@@ -577,24 +587,21 @@ class RTNtripRinexStation(threading.Thread):
         self.sleep_fn = sleep_fn
         self.stop_event = threading.Event()
         self._stream = None
-        self._epoch_buffer: Dict[int, EpochObservation] = {}
-        self._latest_epoch_key: Optional[int] = None
-        self._last_written_epoch_key: Optional[int] = None
-        self._last_written_epoch_time: Optional[datetime] = None
-        self._active_writer: Optional[RINEX3Writer] = None
-        self._active_file_start_time: Optional[datetime] = None
-        self._resolved_sample_interval_seconds: Optional[int] = self.station.rinex.sample_interval_seconds
-        self._last_epoch_time_for_detection: Optional[datetime] = None
-        self._primed_sys_obs_types: Optional[Dict[str, List[str]]] = None
+        self._epoch_buffer: dict[int, EpochObservation] = {}
+        self._latest_epoch_key: int | None = None
+        self._last_written_epoch_key: int | None = None
+        self._last_written_epoch_time: datetime | None = None
+        self._active_writer: RINEX3Writer | None = None
+        self._active_file_start_time: datetime | None = None
+        self._resolved_sample_interval_seconds: int | None = (
+            self.station.rinex.sample_interval_seconds
+        )
+        self._last_epoch_time_for_detection: datetime | None = None
+        self._primed_sys_obs_types: dict[str, list[str]] | None = None
 
     def stop(self) -> None:
         self.stop_event.set()
-        stream = self._stream
-        if stream is not None:
-            try:
-                stream.close()
-            except Exception:
-                pass
+        self._close_stream()
 
     def run(self) -> None:
         self.log(f"Worker started for mountpoint {self.station.ntrip.mountpoint}")
@@ -611,9 +618,7 @@ class RTNtripRinexStation(threading.Thread):
                 if self.stop_event.is_set():
                     break
 
-                self.log(
-                    f"Reconnect in {self.station.ntrip.reconnect_delay_seconds:.1f}s"
-                )
+                self.log(f"Reconnect in {self.station.ntrip.reconnect_delay_seconds:.1f}s")
                 self.sleep_fn(self.station.ntrip.reconnect_delay_seconds)
         finally:
             self._close_writer()
@@ -725,8 +730,13 @@ class RTNtripRinexStation(threading.Thread):
         epoch_time = getattr(epoch_data, "utc_datetime", None)
         if is_new_epoch and epoch_time is not None:
             self._update_detected_sample_interval(epoch_time)
-            if self._resolved_sample_interval_seconds is not None and self._primed_sys_obs_types is None:
-                self._primed_sys_obs_types = _detect_sys_obs_types_from_epochs(self._epoch_buffer.values())
+            if (
+                self._resolved_sample_interval_seconds is not None
+                and self._primed_sys_obs_types is None
+            ):
+                self._primed_sys_obs_types = _detect_sys_obs_types_from_epochs(
+                    self._epoch_buffer.values()
+                )
 
     def _drain_epoch_buffer(self, *, force: bool) -> None:
         if not self._epoch_buffer:
@@ -736,20 +746,32 @@ class RTNtripRinexStation(threading.Thread):
             if not force:
                 return
             self._resolved_sample_interval_seconds = 1
-            self._primed_sys_obs_types = _detect_sys_obs_types_from_epochs(self._epoch_buffer.values())
+            self._primed_sys_obs_types = _detect_sys_obs_types_from_epochs(
+                self._epoch_buffer.values()
+            )
             self.log("Using fallback sample interval: 1s")
 
         if self._active_writer is None and self.station.rinex.auto_detect_obs_types:
-            self._primed_sys_obs_types = _detect_sys_obs_types_from_epochs(self._epoch_buffer.values())
+            self._primed_sys_obs_types = _detect_sys_obs_types_from_epochs(
+                self._epoch_buffer.values()
+            )
 
         sorted_keys = sorted(self._epoch_buffer)
         if force:
             ready_keys = sorted_keys
         else:
-            latest_key = self._latest_epoch_key if self._latest_epoch_key is not None else sorted_keys[-1]
+            latest_key = (
+                self._latest_epoch_key if self._latest_epoch_key is not None else sorted_keys[-1]
+            )
             delay_ms = max(
                 0,
-                int(round(float(self._resolved_sample_interval_seconds) * EPOCH_COMMIT_DELAY_EPOCHS * 1000.0)),
+                int(
+                    round(
+                        float(self._resolved_sample_interval_seconds)
+                        * EPOCH_COMMIT_DELAY_EPOCHS
+                        * 1000.0
+                    )
+                ),
             )
             ready_keys = [key for key in sorted_keys if latest_key - key >= delay_ms]
 
@@ -828,7 +850,7 @@ class RTNtripRinexStation(threading.Thread):
 
         self._last_written_epoch_time = aligned_epoch_time
 
-    def _align_epoch_time(self, epoch_time: datetime) -> Optional[datetime]:
+    def _align_epoch_time(self, epoch_time: datetime) -> datetime | None:
         sample_interval_seconds = self._resolved_sample_interval_seconds
         if sample_interval_seconds is None:
             return None
@@ -844,16 +866,21 @@ class RTNtripRinexStation(threading.Thread):
         return aligned_time
 
     def _ensure_writer(self, aligned_epoch_time: datetime, satellites: dict) -> None:
-        bucket_start_time = _bucket_start_time(aligned_epoch_time, self._resolve_file_period_seconds())
+        bucket_start_time = _bucket_start_time(
+            aligned_epoch_time, self._resolve_file_period_seconds()
+        )
 
-        if self._active_writer is not None and self._active_file_start_time is not None:
-            if bucket_start_time != self._active_file_start_time:
-                self._close_writer()
+        if (
+            self._active_writer is not None
+            and self._active_file_start_time is not None
+            and bucket_start_time != self._active_file_start_time
+        ):
+            self._close_writer()
 
         if self._active_writer is None:
             self._open_writer(bucket_start_time, satellites)
 
-    def _build_sys_obs_types(self, satellites: dict) -> Dict[str, List[str]]:
+    def _build_sys_obs_types(self, satellites: dict) -> dict[str, list[str]]:
         if not self.station.rinex.auto_detect_obs_types:
             configured = _normalize_sys_obs_types(self.station.rinex.sys_obs_types)
             return configured or _copy_default_sys_obs_types()
@@ -867,7 +894,9 @@ class RTNtripRinexStation(threading.Thread):
         if self._active_writer is None or not self.station.rinex.auto_detect_obs_types:
             return False
 
-        current_sys_obs_types = _normalize_sys_obs_types(getattr(self._active_writer, "sys_obs_types", {}))
+        current_sys_obs_types = _normalize_sys_obs_types(
+            getattr(self._active_writer, "sys_obs_types", {})
+        )
         epoch_sys_obs_types = _detect_sys_obs_types_from_satellites(satellites)
         for system, codes in epoch_sys_obs_types.items():
             current_codes = set(current_sys_obs_types.get(system, []))
@@ -875,7 +904,7 @@ class RTNtripRinexStation(threading.Thread):
                 return True
         return False
 
-    def _resolve_approx_position(self) -> Optional[List[float]]:
+    def _resolve_approx_position(self) -> list[float] | None:
         position = getattr(self.handler, "last_station_coords", None)
         if position:
             parsed = _parse_position(position, field_name="handler.last_station_coords")
@@ -962,7 +991,7 @@ class RTNtripRinexStation(threading.Thread):
         self.log(f"Closed {filename}")
         self._maybe_merge_daily_file(file_path, file_start_time)
 
-    def _maybe_merge_daily_file(self, file_path: Path, file_start_time: Optional[datetime]) -> None:
+    def _maybe_merge_daily_file(self, file_path: Path, file_start_time: datetime | None) -> None:
         rinex_cfg = self.station.rinex
         if not (
             rinex_cfg.split_enabled
@@ -976,10 +1005,13 @@ class RTNtripRinexStation(threading.Thread):
         if not day_dir.exists():
             return
 
-        expected_count = max(1, (86400 + int(rinex_cfg.split_period_seconds) - 1) // int(rinex_cfg.split_period_seconds))
+        expected_count = max(
+            1,
+            (86400 + int(rinex_cfg.split_period_seconds) - 1)
+            // int(rinex_cfg.split_period_seconds),
+        )
         source_files = sorted(
-            path for path in day_dir.iterdir()
-            if path.is_file() and path.suffix.lower() == ".rnx"
+            path for path in day_dir.iterdir() if path.is_file() and path.suffix.lower() == ".rnx"
         )
         if len(source_files) < expected_count:
             return
@@ -1024,8 +1056,8 @@ class RTNtripRinexStation(threading.Thread):
             return
         try:
             stream.close()
-        except Exception:
-            pass
+        except (AttributeError, OSError, RuntimeError) as exc:
+            self.log(f"Stream close failed: {exc}")
 
     @staticmethod
     def _connect_ntrip_stream(ntrip: NtripSourceConfig):
@@ -1037,7 +1069,7 @@ class RTNtripRinexStation(threading.Thread):
         try:
             auth = ""
             if ntrip.user or ntrip.password:
-                token = base64.b64encode(f"{ntrip.user}:{ntrip.password}".encode("utf-8")).decode("ascii")
+                token = base64.b64encode(f"{ntrip.user}:{ntrip.password}".encode()).decode("ascii")
                 auth = f"Authorization: Basic {token}\r\n"
 
             request = (
@@ -1062,7 +1094,9 @@ class RTNtripRinexStation(threading.Thread):
             status_line, remainder = header_buffer.split(b"\n", 1)
             status_line = status_line.strip()
             if b"200" not in status_line:
-                raise ConnectionError(status_line.decode("utf-8", errors="ignore") or "NTRIP authorization failed")
+                raise ConnectionError(
+                    status_line.decode("utf-8", errors="ignore") or "NTRIP authorization failed"
+                )
 
             while True:
                 stripped = remainder.lstrip(b"\r\n")
@@ -1104,9 +1138,9 @@ class MultiStationRTRinexService:
         self,
         config: MultiStationRTRinexConfig,
         *,
-        log_fn: Optional[Callable[[str], None]] = None,
-        station_names: Optional[Iterable[str]] = None,
-        worker_factory: Optional[Callable[[RTStationConfig], RTNtripRinexStation]] = None,
+        log_fn: Callable[[str], None] | None = None,
+        station_names: Iterable[str] | None = None,
+        worker_factory: Callable[[RTStationConfig], RTNtripRinexStation] | None = None,
     ):
         selected_names = {str(name).strip() for name in (station_names or []) if str(name).strip()}
         stations = [
@@ -1120,10 +1154,7 @@ class MultiStationRTRinexService:
         self.config = config
         self.log_fn = log_fn or (lambda message: print(message, flush=True))
         self._worker_factory = worker_factory
-        self.workers = [
-            self._build_worker(station)
-            for station in stations
-        ]
+        self.workers = [self._build_worker(station) for station in stations]
 
     def _build_worker(self, station: RTStationConfig) -> RTNtripRinexStation:
         if self._worker_factory is not None:
@@ -1138,7 +1169,7 @@ class MultiStationRTRinexService:
         for worker in self.workers:
             worker.stop()
 
-    def join(self, timeout: Optional[float] = None) -> None:
+    def join(self, timeout: float | None = None) -> None:
         deadline = None if timeout is None else time.time() + timeout
         for worker in self.workers:
             remaining = None

@@ -27,11 +27,51 @@ def _write_sample_rinex(path: Path) -> Path:
     )
     assert writer.write_observation(
         datetime(2026, 3, 24, 0, 59, 59),
-        {"G01": type("Sat", (), {"signals": {"1C": type("Sig", (), {"pseudorange": 1.0, "phase": 2.0, "doppler": 3.0, "snr": 4.0, "half_cycle": 0})()}})()},
+        {
+            "G01": type(
+                "Sat",
+                (),
+                {
+                    "signals": {
+                        "1C": type(
+                            "Sig",
+                            (),
+                            {
+                                "pseudorange": 1.0,
+                                "phase": 2.0,
+                                "doppler": 3.0,
+                                "snr": 4.0,
+                                "half_cycle": 0,
+                            },
+                        )()
+                    }
+                },
+            )()
+        },
     )
     assert writer.write_observation(
         datetime(2026, 3, 24, 1, 0, 0),
-        {"G01": type("Sat", (), {"signals": {"1C": type("Sig", (), {"pseudorange": 5.0, "phase": 6.0, "doppler": 7.0, "snr": 8.0, "half_cycle": 0})()}})()},
+        {
+            "G01": type(
+                "Sat",
+                (),
+                {
+                    "signals": {
+                        "1C": type(
+                            "Sig",
+                            (),
+                            {
+                                "pseudorange": 5.0,
+                                "phase": 6.0,
+                                "doppler": 7.0,
+                                "snr": 8.0,
+                                "half_cycle": 0,
+                            },
+                        )()
+                    }
+                },
+            )()
+        },
     )
     writer.close()
     return path

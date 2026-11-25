@@ -14,7 +14,6 @@ from ui.positioning.module import PositioningModule
 from ui.reflectometry.module import ReflectometryModule
 from ui.refractometry.module import RefractometryModule
 
-
 APP_FONT_FAMILY = "Microsoft YaHei"
 APP_FONT_POINT_SIZE = 9
 MODULE_WINDOW_ATTRS = (

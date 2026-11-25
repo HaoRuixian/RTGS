@@ -10,52 +10,72 @@ Architecture:
 - Real-time visualization of position, accuracy, and diagnostics
 """
 
+import contextlib
 import threading
 import time
-from datetime import datetime
 from collections import deque
+from datetime import datetime, timezone
 
-from PySide6.QtWidgets import (
-    QAbstractItemView, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QTableWidget, QTableWidgetItem, QHeaderView, QTabWidget, QFrame, 
-    QSplitter, QStyle, QComboBox, QDialog, QPlainTextEdit
-)
-from PySide6.QtCore import Qt, Slot, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QColor, QFont
-
-from ui.positioning.workers import PositioningThread, PositioningSignals, RTKEngineThread
-from ui.positioning.widgets import (
-    PositionMapWidget, PositionInfoWidget, AccuracyWidget, AtmosphereWidget, ResidualWidget,
-    format_solution_status,
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QComboBox,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMainWindow,
+    QPlainTextEdit,
+    QPushButton,
+    QSplitter,
+    QStyle,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
-from ui.monitoring.workers import IOThread, DataProcessingThread, RinexReplayThread, StreamSignals
-from ui.shared.config_dialog import ConfigDialog
-from ui.positioning.positioning_config_dialog import PositioningConfigDialog
-from ui.style import get_app_stylesheet
-from ui.responsive import adaptive_window_size, window_ui_scale
-from core.ring_buffer import RingBuffer
-from core.rtcm_handler import RTCMHandler, get_shared_handler
-from core.positioning_models import PositioningMode, SolutionStatus
+
 from core.global_config import get_global_config
-from core.stream_settings import is_realtime_stream_configured, stream_source
+from core.positioning_models import PositioningMode, SolutionStatus
 from core.replay_ui_policy import (
     THROTTLED_GUI_INTERVAL_SECONDS,
     choose_gui_refresh_interval,
     estimate_effective_replay_period_seconds,
 )
+from core.ring_buffer import RingBuffer
+from core.rtcm_handler import get_shared_handler
+from core.stream_settings import is_realtime_stream_configured, stream_source
+from ui.monitoring.workers import DataProcessingThread, IOThread, RinexReplayThread, StreamSignals
+from ui.positioning.positioning_config_dialog import PositioningConfigDialog
+from ui.positioning.widgets import (
+    AccuracyWidget,
+    AtmosphereWidget,
+    PositionInfoWidget,
+    PositionMapWidget,
+    ResidualWidget,
+    format_solution_status,
+)
+from ui.positioning.workers import PositioningSignals, PositioningThread, RTKEngineThread
+from ui.responsive import adaptive_window_size, window_ui_scale
+from ui.shared.config_dialog import ConfigDialog
+from ui.style import get_app_stylesheet
 
 
 class PositioningModule(QMainWindow):
     """
     Main positioning module window.
-    
+
     Responsibilities:
     - Manage data streams (NTRIP/Serial) via shared IOThread and DataProcessingThread
     - Compute positions via PositioningThread
     - Display real-time position, accuracy, and diagnostics
     """
+
     back_to_launcher = Signal()
-    
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("RTGS - Positioning Module")
@@ -81,10 +101,10 @@ class PositioningModule(QMainWindow):
         self.positioning_signals.log_signal.connect(self.append_log)
         self.positioning_signals.status_signal.connect(self.update_positioning_status)
         self.positioning_signals.stream_status_signal.connect(self.update_stream_status)
-        
+
         # Ring buffer for positioning epochs
         self.positioning_ring_buffer = RingBuffer(maxsize=200)
-        
+
         self.positioning_thread = PositioningThread(
             "POS", self.positioning_signals, self.positioning_ring_buffer, self.rtcm_handler
         )
@@ -92,68 +112,68 @@ class PositioningModule(QMainWindow):
         self._compact_scale = None
         self.display_mode = "LLH"
         self.solution_history = deque(maxlen=100)
-        
+
         # ======================================================================
         # Stream configuration
         # ======================================================================
         self.settings = {
-            'OBS': {
-                'source': 'NTRIP Server',
-                'host': '',
-                'port': 2101,
-                'mountpoint': '',
-                'user': '',
-                'password': '',
-                'baudrate': 115200,
-                'file_path': '',
-                'replay_speed': 1.0,
-                'file_type': 'Auto Detect',
+            "OBS": {
+                "source": "NTRIP Server",
+                "host": "",
+                "port": 2101,
+                "mountpoint": "",
+                "user": "",
+                "password": "",
+                "baudrate": 115200,
+                "file_path": "",
+                "replay_speed": 1.0,
+                "file_type": "Auto Detect",
             },
-            'EPH_ENABLED': False,
-            'EPH': {
-                'source': 'NTRIP Server',
-                'host': '',
-                'port': 2101,
-                'mountpoint': '',
-                'user': '',
-                'password': '',
-                'baudrate': 115200,
-                'file_path': '',
-                'replay_speed': 1.0,
-                'file_type': 'Auto Detect',
+            "EPH_ENABLED": False,
+            "EPH": {
+                "source": "NTRIP Server",
+                "host": "",
+                "port": 2101,
+                "mountpoint": "",
+                "user": "",
+                "password": "",
+                "baudrate": 115200,
+                "file_path": "",
+                "replay_speed": 1.0,
+                "file_type": "Auto Detect",
             },
-            'SSR_ENABLED': False,
-            'SSR': {
-                'source': 'NTRIP Server',
-                'host': '',
-                'port': 2101,
-                'mountpoint': '',
-                'user': '',
-                'password': '',
-                'baudrate': 115200,
-                'file_path': '',
-                'replay_speed': 1.0,
-                'file_type': 'Auto Detect',
+            "SSR_ENABLED": False,
+            "SSR": {
+                "source": "NTRIP Server",
+                "host": "",
+                "port": 2101,
+                "mountpoint": "",
+                "user": "",
+                "password": "",
+                "baudrate": 115200,
+                "file_path": "",
+                "replay_speed": 1.0,
+                "file_type": "Auto Detect",
             },
-            'BASE_ENABLED': False,
-            'BASE': {
-                'source': 'NTRIP Server',
-                'host': '',
-                'port': 2101,
-                'mountpoint': '',
-                'user': '',
-                'password': '',
-                'baudrate': 115200,
-                'data_format': 'RTCM3',
+            "BASE_ENABLED": False,
+            "BASE": {
+                "source": "NTRIP Server",
+                "host": "",
+                "port": 2101,
+                "mountpoint": "",
+                "user": "",
+                "password": "",
+                "baudrate": 115200,
+                "data_format": "RTCM3",
             },
         }
-        
+
         # ======================================================================
         # UI components
         # ======================================================================
         self.setup_ui()
         self.apply_stylesheet()
-        
+
         # ======================================================================
         # Status and logging
         # ======================================================================
@@ -165,6 +185,8 @@ class PositioningModule(QMainWindow):
         self.is_stopping = False
         self._stopping_threads = []
         self._stop_deadline = 0.0
+        self._pending_restart = None
+        self._restart_wait_logged = False
         self._stop_poll_timer = QTimer(self)
         self._stop_poll_timer.setInterval(100)
         self._stop_poll_timer.timeout.connect(self._poll_stop_completion)
@@ -176,7 +198,7 @@ class PositioningModule(QMainWindow):
         self.update_timer.timeout.connect(self.update_ui)
         self.update_timer.start(100)
         self._apply_replay_ui_policy(announce=False)
-        
+
         self.append_log("=== RTGS Positioning Module Initialized ===")
 
     def setup_ui(self):
@@ -186,7 +208,7 @@ class PositioningModule(QMainWindow):
         main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(8, 8, 8, 8)
         main_layout.setSpacing(8)
-        
+
         # ======================================================================
         # Top control bar
         # ======================================================================
@@ -201,13 +223,13 @@ class PositioningModule(QMainWindow):
         self.btn_back.setToolTip("Back to launcher")
         self.btn_back.clicked.connect(self.on_back_to_launcher)
         top_bar.addWidget(self.btn_back)
-        
+
         # Separator
         line = QFrame()
         line.setFrameShape(QFrame.Shape.VLine)
         line.setFrameShadow(QFrame.Shadow.Sunken)
         top_bar.addWidget(line)
-        
+
         # Mode selector
         self.lbl_mode = QLabel("Mode")
         top_bar.addWidget(self.lbl_mode)
@@ -221,15 +243,21 @@ class PositioningModule(QMainWindow):
         self.combo_mode.setMinimumWidth(90)
         self.combo_mode.setMaximumWidth(140)
         top_bar.addWidget(self.combo_mode)
-        
+
         # Config button
         self.btn_config = QPushButton("Streams")
+        self.btn_config.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DriveNetIcon)
+        )
         self.btn_config.setToolTip("Configure observation, ephemeris and SSR streams")
         self.btn_config.clicked.connect(self.open_config_dialog)
         top_bar.addWidget(self.btn_config)
 
         # Positioning settings button
         self.btn_pos_settings = QPushButton("Solver")
+        self.btn_pos_settings.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
+        )
         self.btn_pos_settings.setToolTip("Configure positioning engine")
         self.btn_pos_settings.clicked.connect(self.open_positioning_settings_dialog)
         top_bar.addWidget(self.btn_pos_settings)
@@ -242,14 +270,15 @@ class PositioningModule(QMainWindow):
         self.combo_coord_mode.setMaximumWidth(150)
         self.combo_coord_mode.currentIndexChanged.connect(self.on_coordinate_mode_changed)
         top_bar.addWidget(self.combo_coord_mode)
-        
+
         # Start/Stop button
         self.btn_start = QPushButton("Start")
+        self.btn_start.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
         self.btn_start.setMinimumWidth(90)
         self.btn_start.setObjectName("PrimaryButton")
         self.btn_start.clicked.connect(self.toggle_positioning)
         top_bar.addWidget(self.btn_start)
-        
+
         # Status indicators
         self.lbl_obs_status = QLabel("OBS: OFF")
         self.lbl_obs_status.setProperty("class", "status")
@@ -265,15 +294,15 @@ class PositioningModule(QMainWindow):
         self.lbl_ssr_status.setProperty("class", "status")
         self._set_status_badge(self.lbl_ssr_status, "SSR: OFF", "#6D2F2B")
         top_bar.addWidget(self.lbl_ssr_status)
-        
+
         self.lbl_pos_status = QLabel("POS: IDLE")
         self.lbl_pos_status.setProperty("class", "status")
         self._set_status_badge(self.lbl_pos_status, "POS: IDLE", "#4B5563")
         top_bar.addWidget(self.lbl_pos_status)
-        
+
         top_bar.addStretch()
         main_layout.addWidget(control_bar)
-        
+
         # ======================================================================
         # Main content area
         # ======================================================================
@@ -309,6 +338,7 @@ class PositioningModule(QMainWindow):
         self.detail_tabs = QTabWidget()
         self.right_tabs = self.detail_tabs
         self.info_widget = PositionInfoWidget()
+        self.info_widget.set_positioning_mode(PositioningMode.SPP)
         self.detail_tabs.addTab(self.info_widget, "Current solution")
 
         self.residual_widget = ResidualWidget()
@@ -331,15 +361,21 @@ class PositioningModule(QMainWindow):
         log_layout.setSpacing(6)
         log_controls = QHBoxLayout()
         self.btn_pause_log = QPushButton("Pause")
+        self.btn_pause_log.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPause)
+        )
         self.btn_pause_log.setCheckable(True)
         self.btn_pause_log.setToolTip("Pause visual log updates while keeping messages buffered")
         self.btn_pause_log.toggled.connect(self._on_log_pause_toggled)
-        btn_clear_log = QPushButton("Clear")
-        btn_clear_log.clicked.connect(self.clear_log)
+        self.btn_clear_log = QPushButton("Clear")
+        self.btn_clear_log.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogDiscardButton)
+        )
+        self.btn_clear_log.clicked.connect(self.clear_log)
         self.lbl_log_state = QLabel("Live")
         self.lbl_log_state.setProperty("class", "muted")
         log_controls.addWidget(self.btn_pause_log)
-        log_controls.addWidget(btn_clear_log)
+        log_controls.addWidget(self.btn_clear_log)
         log_controls.addWidget(self.lbl_log_state)
         log_controls.addStretch()
         log_layout.addLayout(log_controls)
@@ -382,10 +418,19 @@ class PositioningModule(QMainWindow):
     def _refresh_start_button_text(self):
         if getattr(self, "is_running", False):
             self.btn_start.setText("Stop")
+            self.btn_start.setIcon(
+                self.style().standardIcon(QStyle.StandardPixmap.SP_MediaStop)
+            )
         else:
             self.btn_start.setText("Start")
+            self.btn_start.setIcon(
+                self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+            )
 
     def _set_status_badge(self, label: QLabel, text: str, color: str) -> None:
+        if label.text() == text and label.property("badgeColor") == color:
+            return
+        label.setProperty("badgeColor", color)
         label.setText(text)
         label.setStyleSheet(
             f"background-color: {color}; color: white; padding: 4px 8px; "
@@ -413,24 +458,38 @@ class PositioningModule(QMainWindow):
 
     def _history_values(self, timestamp, solution):
         if self.display_mode == "XYZ":
-            coordinates = [f"{solution.ecef_x:.3f}", f"{solution.ecef_y:.3f}", f"{solution.ecef_z:.3f}"]
+            coordinates = [
+                f"{solution.ecef_x:.3f}",
+                f"{solution.ecef_y:.3f}",
+                f"{solution.ecef_z:.3f}",
+            ]
         else:
-            coordinates = [f"{solution.latitude:.8f}", f"{solution.longitude:.8f}", f"{solution.height:.3f}"]
+            coordinates = [
+                f"{solution.latitude:.8f}",
+                f"{solution.longitude:.8f}",
+                f"{solution.height:.3f}",
+            ]
         metric = (
             f"{solution.ambiguity_ratio:.2f}"
             if getattr(solution, "mode", None) == PositioningMode.RTK
             else f"{solution.hdop:.2f}"
         )
         return [
-            timestamp, *coordinates, metric,
-            str(solution.num_satellites), format_solution_status(solution.status),
+            timestamp,
+            *coordinates,
+            metric,
+            str(solution.num_satellites),
+            format_solution_status(solution.status, getattr(solution, "mode", None)),
         ]
 
     def _populate_history_row(self, row, timestamp, solution):
         for col, value in enumerate(self._history_values(timestamp, solution)):
             item = QTableWidgetItem(value)
             item.setFont(QFont("Consolas", 9))
-            item.setTextAlignment(Qt.AlignmentFlag.AlignVCenter | (Qt.AlignmentFlag.AlignLeft if col in (0, 6) else Qt.AlignmentFlag.AlignRight))
+            item.setTextAlignment(
+                Qt.AlignmentFlag.AlignVCenter
+                | (Qt.AlignmentFlag.AlignLeft if col in (0, 6) else Qt.AlignmentFlag.AlignRight)
+            )
             if col == 6:
                 self._style_status_item(item, solution.status)
             self.history_table.setItem(row, col, item)
@@ -447,7 +506,7 @@ class PositioningModule(QMainWindow):
         text = format_solution_status(status)
         if text == "Fixed":
             item.setForeground(QColor("#2A692D"))
-        elif text == "Unfixed":
+        elif status == SolutionStatus.UNCERTAIN:
             item.setForeground(QColor("#B7791F"))
         else:
             item.setForeground(QColor("#6D2F2B"))
@@ -456,12 +515,19 @@ class PositioningModule(QMainWindow):
         item.setFont(status_font)
 
     def _update_solution_badge(self, status: SolutionStatus) -> None:
+        ppp = self.combo_mode.currentIndex() == 1
         if status == SolutionStatus.FIXED:
             self._set_status_badge(self.lbl_pos_status, "POS: FIXED", "#2A692D")
         elif status == SolutionStatus.UNCERTAIN:
-            self._set_status_badge(self.lbl_pos_status, "POS: UNFIXED", "#B7791F")
+            text = "POS: CONVERGING" if ppp else "POS: UNFIXED"
+            self._set_status_badge(self.lbl_pos_status, text, "#B7791F")
         else:
             self._set_status_badge(self.lbl_pos_status, "POS: NO FIX", "#6D2F2B")
+        self.lbl_pos_status.setToolTip(
+            "PPP coordinate stability. See Current solution for ambiguity resolution."
+            if ppp
+            else ""
+        )
 
     def _reset_solution_views(self) -> None:
         self.pending_solution = None
@@ -478,33 +544,59 @@ class PositioningModule(QMainWindow):
     def open_config_dialog(self):
         """Open stream configuration dialog."""
         # Create a simple config dialog (same as monitoring module)
-        from ui.shared.config_dialog import ConfigDialog
         dlg = ConfigDialog(self, self.settings)
         if dlg.exec() == QDialog.DialogCode.Accepted:
+            positioning_was_running = self.is_running
+            streams_were_running = bool(
+                self.io_threads or self.processing_threads or self.ring_buffers
+            )
             self.settings = dlg.get_settings()
-            self.positioning_thread.refresh_runtime_config()
+            if not positioning_was_running:
+                self.positioning_thread.refresh_runtime_config()
             self._apply_replay_ui_policy(announce=True)
             self.append_log("Settings updated")
-            if getattr(dlg, 'disconnect_requested', False):
+            if getattr(dlg, "disconnect_requested", False):
                 self.append_log("Disconnect requested: stopping positioning and data streams")
+                self._pending_restart = None
                 self.stop_positioning()
                 return
             # If user requested Connect from the dialog, start streams only (do not start positioning)
-            if getattr(dlg, 'auto_connect', False):
+            if getattr(dlg, "auto_connect", False):
                 if self.combo_mode.currentIndex() == 2:
-                    self.append_log("RTK streams are ready and will connect when RTK positioning starts")
+                    if positioning_was_running:
+                        self._restart_with_current_settings("positioning")
+                        return
+                    self.append_log(
+                        "RTK streams are ready and will connect when RTK positioning starts"
+                    )
                     return
-                self.append_log("Auto-connect requested: starting data streams (positioning not started)")
+                if positioning_was_running:
+                    self._restart_with_current_settings("positioning")
+                    return
+                if streams_were_running:
+                    self._restart_with_current_settings("streams")
+                    return
+                self.append_log(
+                    "Auto-connect requested: starting data streams (positioning not started)"
+                )
                 try:
                     self.start_streams()
                 except Exception as e:
                     self.append_log(f"Error starting streams: {e}")
+
+    def _restart_with_current_settings(self, target: str) -> None:
+        """Stop old workers before reconnecting them with the accepted settings."""
+        self._pending_restart = target
+        self._restart_wait_logged = False
+        self.append_log("Stream settings changed: reconnecting with the new configuration")
+        self.stop_positioning()
 
     def on_mode_changed(self, index):
         """Handle positioning mode change."""
         modes = [PositioningMode.SPP, PositioningMode.PPP, PositioningMode.RTK]
         if index < len(modes):
             self.positioning_thread.set_mode(modes[index])
+            self.info_widget.set_positioning_mode(modes[index])
             self.append_log(f"Positioning mode changed to {modes[index].value}")
             if modes[index] == PositioningMode.RTK:
                 self._set_status_badge(self.lbl_ssr_status, "BASE: OFF", "#6D2F2B")
@@ -532,19 +624,31 @@ class PositioningModule(QMainWindow):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             params = dlg.get_settings()
             self.positioning_thread.update_positioning_settings(params)
-            self._ensure_stream_target_systems_for_positioning(params.get("gnss_systems", []), announce=True)
+            self._ensure_stream_target_systems_for_positioning(
+                params.get("gnss_systems", []), announce=True
+            )
             active_systems = ",".join(params.get("gnss_systems", []))
             gps_only = "ON" if params.get("prefer_gps_only") else "OFF"
-            self.append_log(f"Positioning settings updated: systems={active_systems}, prefer GPS-only={gps_only}")
+            self.append_log(
+                f"Positioning settings updated: systems={active_systems}, prefer GPS-only={gps_only}"
+            )
 
-    def _ensure_stream_target_systems_for_positioning(self, gnss_systems=None, announce: bool = False) -> None:
+    def _ensure_stream_target_systems_for_positioning(
+        self, gnss_systems=None, announce: bool = False
+    ) -> None:
         """Keep the RTCM/RINEX stream filter wide enough for selected positioning systems."""
-        selected = list(gnss_systems or getattr(self.positioning_thread.positioner, "gnss_systems", []) or [])
+        selected = list(
+            gnss_systems or getattr(self.positioning_thread.positioner, "gnss_systems", []) or []
+        )
         if not selected:
             return
 
         config = get_global_config()
-        current = [str(item).strip().upper()[:1] for item in (config.target_systems or []) if str(item).strip()]
+        current = [
+            str(item).strip().upper()[:1]
+            for item in (config.target_systems or [])
+            if str(item).strip()
+        ]
         expanded = list(current)
         for system in selected:
             normalized = str(system).strip().upper()[:1]
@@ -554,7 +658,9 @@ class PositioningModule(QMainWindow):
         if expanded != current:
             config.update_general_settings({"target_systems": expanded})
             if announce:
-                self.append_log(f"Stream target systems expanded for positioning: {','.join(expanded)}")
+                self.append_log(
+                    f"Stream target systems expanded for positioning: {','.join(expanded)}"
+                )
 
     def toggle_positioning(self):
         """Start/stop positioning."""
@@ -578,7 +684,9 @@ class PositioningModule(QMainWindow):
             if mode == PositioningMode.RTK:
                 config = get_global_config()
                 if not config.base_settings.enabled:
-                    raise RuntimeError("Enable and configure the RTK base/network stream in Streams")
+                    raise RuntimeError(
+                        "Enable and configure the RTK base/network stream in Streams"
+                    )
                 self.rtk_thread = RTKEngineThread("RTK", self.positioning_signals)
                 self.is_running = True
                 self.rtk_thread.start()
@@ -597,9 +705,9 @@ class PositioningModule(QMainWindow):
 
             # Create fresh positioning ring buffer
             self.positioning_ring_buffer = RingBuffer(maxsize=200)
-            if (
-                self.positioning_thread is None
-                or (not self.positioning_thread.is_alive() and getattr(self.positioning_thread, "ident", None) is not None)
+            if self.positioning_thread is None or (
+                not self.positioning_thread.is_alive()
+                and getattr(self.positioning_thread, "ident", None) is not None
             ):
                 self.positioning_thread = PositioningThread(
                     "POS", self.positioning_signals, self.positioning_ring_buffer, self.rtcm_handler
@@ -614,7 +722,7 @@ class PositioningModule(QMainWindow):
             self.positioning_thread.refresh_runtime_config()
 
             # Start positioning thread if not already running
-            if not getattr(self.positioning_thread, 'is_alive', lambda: False)():
+            if not getattr(self.positioning_thread, "is_alive", lambda: False)():
                 self.positioning_thread.start()
 
             self.is_running = True
@@ -622,7 +730,7 @@ class PositioningModule(QMainWindow):
             self.btn_start.setStyleSheet("background-color: #B05E5E; color: white;")
             self._set_status_badge(self.lbl_pos_status, "POS: ACTIVE", "#2563EB")
             self.append_log("Positioning started")
-            
+
         except Exception as e:
             self.append_log(f"Error starting positioning: {str(e)}")
             self.is_running = False
@@ -632,86 +740,87 @@ class PositioningModule(QMainWindow):
         self._apply_replay_ui_policy(announce=False)
         self._ensure_stream_target_systems_for_positioning()
         # Validate configuration minimal requirements
-        obs_source = stream_source(self.settings.get('OBS', {}))
-        if not self.settings.get('OBS', {}).get('host') and obs_source == 'NTRIP Server':
+        obs_source = stream_source(self.settings.get("OBS", {}))
+        if not self.settings.get("OBS", {}).get("host") and obs_source == "NTRIP Server":
             raise RuntimeError("Missing OBS NTRIP host configuration")
-        if not self.settings.get('OBS', {}).get('port') and obs_source == 'Serial Port':
+        if not self.settings.get("OBS", {}).get("port") and obs_source == "Serial Port":
             raise RuntimeError("Missing OBS serial port configuration")
-        if not self.settings.get('OBS', {}).get('file_path') and obs_source == 'RINEX File':
+        if not self.settings.get("OBS", {}).get("file_path") and obs_source == "RINEX File":
             raise RuntimeError("Missing OBS RINEX observation file")
 
         # Initialize buffers only if not already present
-        if 'OBS' not in self.ring_buffers and obs_source != 'RINEX File':
-            self.ring_buffers['OBS'] = RingBuffer(maxsize=1000)
+        if "OBS" not in self.ring_buffers and obs_source != "RINEX File":
+            self.ring_buffers["OBS"] = RingBuffer(maxsize=1000)
 
             io_thread_obs = IOThread(
-                'OBS', self.settings['OBS'],
-                self.ring_buffers['OBS'],
-                self.observer_signals
+                "OBS", self.settings["OBS"], self.ring_buffers["OBS"], self.observer_signals
             )
             io_thread_obs.start()
             self.io_threads.append(io_thread_obs)
 
             proc_thread_obs = DataProcessingThread(
-                'OBS', self.ring_buffers['OBS'],
-                self.rtcm_handler, self.observer_signals
+                "OBS", self.ring_buffers["OBS"], self.rtcm_handler, self.observer_signals
             )
             proc_thread_obs.start()
             self.processing_threads.append(proc_thread_obs)
-        elif obs_source == 'RINEX File' and not self.io_threads:
+        elif obs_source == "RINEX File" and not self.io_threads:
             replay_thread = RinexReplayThread(
-                'OBS',
-                self.settings['OBS'],
+                "OBS",
+                self.settings["OBS"],
                 self.observer_signals,
                 handler=self.rtcm_handler,
-                eph_settings=self.settings.get('EPH', {}),
+                eph_settings=self.settings.get("EPH", {}),
                 target_systems=get_global_config().target_systems,
             )
             replay_thread.start()
             self.io_threads.append(replay_thread)
 
         # EPH stream
-        if self.settings.get('EPH_ENABLED') and obs_source != 'RINEX File' and 'EPH' not in self.ring_buffers:
-            eph_source = stream_source(self.settings['EPH'])
-            if eph_source == 'File':
-                self.append_log("EPH file source is supported through RINEX observation replay mode")
-            elif not is_realtime_stream_configured(self.settings['EPH']):
+        if (
+            self.settings.get("EPH_ENABLED")
+            and obs_source != "RINEX File"
+            and "EPH" not in self.ring_buffers
+        ):
+            eph_source = stream_source(self.settings["EPH"])
+            if eph_source == "File":
+                self.append_log(
+                    "EPH file source is supported through RINEX observation replay mode"
+                )
+            elif not is_realtime_stream_configured(self.settings["EPH"]):
                 self.append_log("EPH stream enabled but not configured")
             else:
-                self.ring_buffers['EPH'] = RingBuffer(maxsize=500)
+                self.ring_buffers["EPH"] = RingBuffer(maxsize=500)
 
                 io_thread_eph = IOThread(
-                    'EPH', self.settings['EPH'],
-                    self.ring_buffers['EPH'],
-                    self.observer_signals
+                    "EPH", self.settings["EPH"], self.ring_buffers["EPH"], self.observer_signals
                 )
                 io_thread_eph.start()
                 self.io_threads.append(io_thread_eph)
 
                 proc_thread_eph = DataProcessingThread(
-                    'EPH', self.ring_buffers['EPH'],
-                    self.rtcm_handler, self.observer_signals
+                    "EPH", self.ring_buffers["EPH"], self.rtcm_handler, self.observer_signals
                 )
                 proc_thread_eph.start()
                 self.processing_threads.append(proc_thread_eph)
 
-        if self.settings.get('SSR_ENABLED') and obs_source != 'RINEX File' and 'SSR' not in self.ring_buffers:
-            if not is_realtime_stream_configured(self.settings.get('SSR', {})):
+        if (
+            self.settings.get("SSR_ENABLED")
+            and obs_source != "RINEX File"
+            and "SSR" not in self.ring_buffers
+        ):
+            if not is_realtime_stream_configured(self.settings.get("SSR", {})):
                 self.append_log("SSR stream enabled but not configured")
             else:
-                self.ring_buffers['SSR'] = RingBuffer(maxsize=500)
+                self.ring_buffers["SSR"] = RingBuffer(maxsize=500)
 
                 io_thread_ssr = IOThread(
-                    'SSR', self.settings['SSR'],
-                    self.ring_buffers['SSR'],
-                    self.observer_signals
+                    "SSR", self.settings["SSR"], self.ring_buffers["SSR"], self.observer_signals
                 )
                 io_thread_ssr.start()
                 self.io_threads.append(io_thread_ssr)
 
                 proc_thread_ssr = DataProcessingThread(
-                    'SSR', self.ring_buffers['SSR'],
-                    self.rtcm_handler, self.observer_signals
+                    "SSR", self.ring_buffers["SSR"], self.rtcm_handler, self.observer_signals
                 )
                 proc_thread_ssr.start()
                 self.processing_threads.append(proc_thread_ssr)
@@ -728,50 +837,43 @@ class PositioningModule(QMainWindow):
             self.btn_start.setEnabled(False)
             self.btn_start.setText("Stopping...")
 
-            threads = [self.positioning_thread, self.rtk_thread, *self.processing_threads, *self.io_threads]
+            threads = [
+                self.positioning_thread,
+                self.rtk_thread,
+                *self.processing_threads,
+                *self.io_threads,
+            ]
             if self.positioning_thread.is_alive():
-                try:
+                with contextlib.suppress(Exception):
                     self.positioning_thread.stop()
-                except Exception:
-                    pass
             if self.rtk_thread is not None:
-                try:
+                with contextlib.suppress(Exception):
                     self.rtk_thread.stop()
-                except Exception:
-                    pass
 
             for thread in list(self.processing_threads):
-                try:
+                with contextlib.suppress(Exception):
                     thread.stop()
-                except Exception:
-                    pass
 
             for thread in list(self.io_threads):
-                try:
+                with contextlib.suppress(Exception):
                     thread.stop()
-                except Exception:
-                    pass
 
             for buf in self.ring_buffers.values():
-                try:
+                with contextlib.suppress(Exception):
                     buf.close()
-                except Exception:
-                    pass
-            
+
             # Close positioning ring buffer
-            try:
+            with contextlib.suppress(Exception):
                 self.positioning_ring_buffer.close()
-            except Exception:
-                pass
 
             self.io_threads.clear()
             self.processing_threads.clear()
             self.ring_buffers.clear()
             self.pending_solution = None
-            self.update_stream_status('OBS', False)
-            self.update_stream_status('EPH', False)
-            self.update_stream_status('SSR', False)
-            self.update_stream_status('BASE', False)
+            self.update_stream_status("OBS", False)
+            self.update_stream_status("EPH", False)
+            self.update_stream_status("SSR", False)
+            self.update_stream_status("BASE", False)
 
             self.btn_start.setStyleSheet("")
             self._reset_solution_views()
@@ -781,7 +883,7 @@ class PositioningModule(QMainWindow):
             self._stop_deadline = time.monotonic() + 3.0
             self._stop_poll_timer.start()
             self._poll_stop_completion()
-            
+
         except Exception as e:
             self.append_log(f"Error stopping positioning: {str(e)}")
             self._finish_stop_ui()
@@ -790,6 +892,12 @@ class PositioningModule(QMainWindow):
         alive = [thread for thread in self._stopping_threads if thread.is_alive()]
         self._stopping_threads = alive
         if alive and time.monotonic() < self._stop_deadline:
+            return
+        if alive and self._pending_restart:
+            if not self._restart_wait_logged:
+                names = ", ".join(thread.name for thread in alive)
+                self.append_log(f"Waiting for old streams to close before reconnecting: {names}")
+                self._restart_wait_logged = True
             return
         if alive:
             names = ", ".join(thread.name for thread in alive)
@@ -800,10 +908,8 @@ class PositioningModule(QMainWindow):
     @staticmethod
     def _reap_threads(threads):
         for thread in threads:
-            try:
+            with contextlib.suppress(Exception):
                 thread.join(timeout=10.0)
-            except Exception:
-                pass
 
     def _finish_stop_ui(self):
         self._stop_poll_timer.stop()
@@ -814,6 +920,13 @@ class PositioningModule(QMainWindow):
         self.btn_start.setEnabled(True)
         self._refresh_start_button_text()
         self.append_log("Positioning stopped")
+        pending_restart = self._pending_restart
+        self._pending_restart = None
+        self._restart_wait_logged = False
+        if pending_restart == "positioning":
+            QTimer.singleShot(0, self.start_positioning)
+        elif pending_restart == "streams":
+            QTimer.singleShot(0, self.start_streams)
 
     @Slot(object)
     def on_observation_epoch(self, epoch_obs):
@@ -838,7 +951,10 @@ class PositioningModule(QMainWindow):
             return
         self.pending_solution = solution
         now = time.time()
-        if self.solution_ui_interval <= 0.0 or now - self.last_solution_ui_time >= self.solution_ui_interval:
+        if (
+            self.solution_ui_interval <= 0.0
+            or now - self.last_solution_ui_time >= self.solution_ui_interval
+        ):
             self._flush_pending_solution(now)
 
     def _apply_solution_to_ui(self, solution):
@@ -853,9 +969,9 @@ class PositioningModule(QMainWindow):
 
         epoch_time = getattr(solution, "epoch_time", None)
         if isinstance(epoch_time, datetime):
-            timestamp = epoch_time.strftime('%H:%M:%S')
+            timestamp = epoch_time.strftime("%H:%M:%S")
         else:
-            timestamp = datetime.utcnow().strftime('%H:%M:%S')
+            timestamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
         self.solution_history.appendleft((timestamp, solution))
         timestamp, _ = self.solution_history[0]
         self._prepend_history_row(timestamp, solution)
@@ -872,18 +988,18 @@ class PositioningModule(QMainWindow):
     def update_stream_status(self, stream_name: str, connected: bool):
         """Update stream status indicator."""
         display_name = {
-            'EPH_DATA': 'EPH',
-            'SSR_DATA': 'SSR',
+            "EPH_DATA": "EPH",
+            "SSR_DATA": "SSR",
         }.get(stream_name, stream_name)
-        if display_name == 'BASE' and self.combo_mode.currentIndex() != 2:
+        if display_name == "BASE" and self.combo_mode.currentIndex() != 2:
             return
-        if display_name == 'SSR' and self.combo_mode.currentIndex() == 2:
+        if display_name == "SSR" and self.combo_mode.currentIndex() == 2:
             return
         label_map = {
-            'OBS': self.lbl_obs_status,
-            'EPH': self.lbl_eph_status,
-            'SSR': self.lbl_ssr_status,
-            'BASE': self.lbl_ssr_status,
+            "OBS": self.lbl_obs_status,
+            "EPH": self.lbl_eph_status,
+            "SSR": self.lbl_ssr_status,
+            "BASE": self.lbl_ssr_status,
         }
         label = label_map.get(display_name)
         if label is None:
@@ -910,14 +1026,16 @@ class PositioningModule(QMainWindow):
         """Update UI elements (timer-based)."""
         self._flush_log_display()
         now = time.time()
-        if self.pending_solution is not None:
-            if self.solution_ui_interval <= 0.0 or now - self.last_solution_ui_time >= self.solution_ui_interval:
-                self._flush_pending_solution(now)
+        if self.pending_solution is not None and (
+            self.solution_ui_interval <= 0.0
+            or now - self.last_solution_ui_time >= self.solution_ui_interval
+        ):
+            self._flush_pending_solution(now)
 
     @Slot(str)
     def append_log(self, message: str):
         """Append message to log."""
-        timestamp = datetime.now().strftime('%H:%M:%S')
+        timestamp = datetime.now().strftime("%H:%M:%S")
         log_msg = f"[{timestamp}] {message}"
         self.log_queue.append(log_msg)
         self._pending_log_lines.append(log_msg)
@@ -932,7 +1050,8 @@ class PositioningModule(QMainWindow):
         if self._log_paused or browsing:
             self.lbl_log_state.setText(
                 f"Paused - {len(self._pending_log_lines)} buffered"
-                if self._log_paused else f"Browsing - {len(self._pending_log_lines)} buffered"
+                if self._log_paused
+                else f"Browsing - {len(self._pending_log_lines)} buffered"
             )
             return
 
@@ -946,6 +1065,13 @@ class PositioningModule(QMainWindow):
     def _on_log_pause_toggled(self, paused):
         self._log_paused = bool(paused)
         self.btn_pause_log.setText("Resume" if paused else "Pause")
+        self.btn_pause_log.setIcon(
+            self.style().standardIcon(
+                QStyle.StandardPixmap.SP_MediaPlay
+                if paused
+                else QStyle.StandardPixmap.SP_MediaPause
+            )
+        )
         self.lbl_log_state.setText("Paused" if paused else "Live")
 
     def clear_log(self):
@@ -977,7 +1103,9 @@ class PositioningModule(QMainWindow):
             return
 
         if self.solution_ui_interval >= THROTTLED_GUI_INTERVAL_SECONDS:
-            effective_period = estimate_effective_replay_period_seconds(self.settings.get("OBS", {}))
+            effective_period = estimate_effective_replay_period_seconds(
+                self.settings.get("OBS", {})
+            )
             if effective_period and effective_period > 0.0:
                 self.append_log(
                     f"High-rate RINEX replay detected, positioning GUI refresh capped at "
@@ -1001,6 +1129,7 @@ class PositioningModule(QMainWindow):
 
     def closeEvent(self, event):
         """Clean up on window close."""
+        self._pending_restart = None
         self.stop_positioning()
         self.update_timer.stop()
         event.accept()

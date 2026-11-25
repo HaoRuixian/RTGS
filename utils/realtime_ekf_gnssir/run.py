@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
 import sys
-
+from pathlib import Path
 
 PACKAGE_NAME = "realtime_ekf_gnssir"
 

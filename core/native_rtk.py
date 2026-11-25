@@ -17,9 +17,11 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Mapping
+from contextlib import suppress
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 import numpy as np
 
@@ -172,7 +174,9 @@ def stream_to_rtk_engine(
 ) -> tuple[str, str, str]:
     """Convert one RTGS stream to native ``type/path/format`` values."""
     values = _as_mapping(settings)
-    source = _text(values.get("source_type") or values.get("source") or "NTRIP Server", f"{label} source")
+    source = _text(
+        values.get("source_type") or values.get("source") or "NTRIP Server", f"{label} source"
+    )
     if source == "NTRIP Server":
         return "ntripcli", _ntrip_path(values, label), _rtk_input_format(values, default_format)
     if source == "Serial Port":
@@ -182,7 +186,9 @@ def stream_to_rtk_engine(
         if not path:
             raise RTKConfigurationError(f"{label} input file is required")
         path = str(Path(path).expanduser().resolve())
-        file_default = "sp3" if str(values.get("file_type", "")).lower().startswith("precise") else "rinex"
+        file_default = (
+            "sp3" if str(values.get("file_type", "")).lower().startswith("precise") else "rinex"
+        )
         file_values = dict(values)
         if str(file_values.get("data_format", "")).lower() in {"", "rtcm3", "rtcm 3"}:
             file_values["data_format"] = file_default
@@ -195,7 +201,9 @@ def stream_to_rtk_engine(
     raise RTKConfigurationError(f"Unsupported {label} source '{source}'")
 
 
-def _ecef_from_llh(latitude_deg: float, longitude_deg: float, height_m: float) -> tuple[float, float, float]:
+def _ecef_from_llh(
+    latitude_deg: float, longitude_deg: float, height_m: float
+) -> tuple[float, float, float]:
     lat = math.radians(latitude_deg)
     lon = math.radians(longitude_deg)
     a = 6378137.0
@@ -259,7 +267,9 @@ def build_rtk_engine_config(
 
     eph_enabled = bool(eph.get("enabled", False))
     if eph_enabled:
-        eph_type, eph_path, eph_format = stream_to_rtk_engine(eph, "ephemeris", default_format="rtcm3")
+        eph_type, eph_path, eph_format = stream_to_rtk_engine(
+            eph, "ephemeris", default_format="rtcm3"
+        )
     else:
         eph_type, eph_path, eph_format = "off", "", "rtcm3"
 
@@ -342,7 +352,9 @@ def build_rtk_engine_config(
     if base_source in {"llh", "xyz"}:
         if base_source == "llh":
             base_position = _valid_llh(base_position)
-        if base_position is None or (base_source == "xyz" and np.linalg.norm(base_position) < 3_000_000.0):
+        if base_position is None or (
+            base_source == "xyz" and np.linalg.norm(base_position) < 3_000_000.0
+        ):
             raise RTKConfigurationError("Configured RTK base position requires three coordinates")
         lines.extend(
             [
@@ -358,7 +370,11 @@ def build_rtk_engine_config(
     gga_mode = str(settings.get("rtk_gga_mode", "auto")).strip().lower()
     if rtk_type == "network" and gga_mode != "off":
         gga_position = _valid_llh(settings.get("rtk_gga_position"))
-        if gga_mode == "auto" and gga_position is not None and not any(abs(value) > 1e-9 for value in gga_position):
+        if (
+            gga_mode == "auto"
+            and gga_position is not None
+            and not any(abs(value) > 1e-9 for value in gga_position)
+        ):
             gga_position = None
         if gga_position is None:
             approximate = _valid_triplet(approx_rec_pos)
@@ -384,7 +400,9 @@ def build_rtk_engine_config(
     return "\n".join(lines) + "\n"
 
 
-def parse_rtk_engine_solution(line: str, *, reference_ecef: Any = None) -> PositioningSolution | None:
+def parse_rtk_engine_solution(
+    line: str, *, reference_ecef: Any = None
+) -> PositioningSolution | None:
     """Parse one comma-separated RTK LLH solution line."""
     stripped = line.strip()
     if not stripped or stripped.startswith("%"):
@@ -545,10 +563,8 @@ class NativeRTKRunner:
                     except (queue.Empty, queue.Full):
                         pass
         finally:
-            try:
+            with suppress(OSError):
                 pipe.close()
-            except OSError:
-                pass
 
     def _emit_process_lines(self, callback: Callable[[str], None] | None) -> None:
         if callback is None:
@@ -559,7 +575,9 @@ class NativeRTKRunner:
             except queue.Empty:
                 return
 
-    def _connect_solution_stream(self, port: int, log_callback: Callable[[str], None] | None) -> socket.socket:
+    def _connect_solution_stream(
+        self, port: int, log_callback: Callable[[str], None] | None
+    ) -> socket.socket:
         deadline = time.monotonic() + self.startup_timeout
         last_error: OSError | None = None
         while not self.stop_event.is_set() and time.monotonic() < deadline:
@@ -638,11 +656,13 @@ class NativeRTKRunner:
                     if process.poll() is not None:
                         self._emit_process_lines(log_callback)
                         if not self.stop_event.is_set():
-                            raise RuntimeError(f"rtkrcv stopped unexpectedly with code {process.returncode}")
+                            raise RuntimeError(
+                                f"rtkrcv stopped unexpectedly with code {process.returncode}"
+                            )
                         break
                     try:
                         chunk = sock.recv(8192)
-                    except socket.timeout:
+                    except TimeoutError:
                         self._emit_process_lines(log_callback)
                         continue
                     except OSError:
@@ -688,14 +708,10 @@ class NativeRTKRunner:
             self.solution_socket = None
             process = self.process
         if sock is not None:
-            try:
+            with suppress(OSError):
                 sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
+            with suppress(OSError):
                 sock.close()
-            except OSError:
-                pass
         if process is None or process.poll() is not None:
             return
         try:
@@ -714,10 +730,8 @@ class NativeRTKRunner:
                 os.killpg(process.pid, signal.SIGKILL)
             except (OSError, ProcessLookupError):
                 process.kill()
-            try:
+            with suppress(subprocess.TimeoutExpired):
                 process.wait(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                pass
 
     def stop(self) -> None:
         """Interrupt socket reads and request subprocess termination immediately."""

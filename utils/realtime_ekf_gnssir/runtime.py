@@ -2,24 +2,23 @@
 
 from __future__ import annotations
 
+import json
+import math
 from collections import deque
+from collections.abc import Iterable
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
-import json
-import math
 from pathlib import Path
 from threading import Event, RLock, Thread
-import time
-from typing import Any, Iterable
+from typing import Any
 from uuid import uuid4
 
 import yaml
 
 from ._vendor.core.geo_utils import ecef2lla
 from ._vendor.core.reflectometry.config import config_to_dict, load_config
-
-from .config import AppConfig, AppConfigStore, REFLECTOMETRY_CONFIG_WRITE_LOCK, StationConfig
+from .config import REFLECTOMETRY_CONFIG_WRITE_LOCK, AppConfig, AppConfigStore, StationConfig
 from .station_worker import RealtimeEkfStationWorker
 
 
@@ -88,7 +87,9 @@ class RealtimeEkfRuntimeManager:
             self.reload_config(force=True)
             if self.auto_start:
                 self._start_auto_workers_locked()
-            self._monitor_thread = Thread(target=self._monitor_loop, name="RealtimeEkfGNSSIR-Monitor", daemon=True)
+            self._monitor_thread = Thread(
+                target=self._monitor_loop, name="RealtimeEkfGNSSIR-Monitor", daemon=True
+            )
             self._monitor_thread.start()
             self.logs.write("system", "Runtime manager started")
 
@@ -121,7 +122,9 @@ class RealtimeEkfRuntimeManager:
     def status(self) -> dict[str, Any]:
         with self._lock:
             config = self._config or self.store.load()
-            configured = {station.name: station for station in self._filtered_stations(config.stations)}
+            configured = {
+                station.name: station for station in self._filtered_stations(config.stations)
+            }
             names = sorted(set(configured.keys()) | set(self._workers.keys()))
             stations = []
             for name in names:
@@ -130,7 +133,11 @@ class RealtimeEkfRuntimeManager:
                     snapshot = worker.snapshot()
                 else:
                     station = configured.get(name)
-                    snapshot = self._station_idle_snapshot(station) if station is not None else {"name": name}
+                    snapshot = (
+                        self._station_idle_snapshot(station)
+                        if station is not None
+                        else {"name": name}
+                    )
                 stations.append(snapshot)
             return {
                 "started_at": self._started_at.isoformat() if self._started_at else None,
@@ -144,7 +151,10 @@ class RealtimeEkfRuntimeManager:
     def stations_config(self) -> list[dict[str, Any]]:
         with self._lock:
             config = self._config or self.store.load()
-            return [_station_config_to_dict(station) for station in self._filtered_stations(config.stations)]
+            return [
+                _station_config_to_dict(station)
+                for station in self._filtered_stations(config.stations)
+            ]
 
     def start_station(self, name: str) -> dict[str, Any]:
         config = self.reload_config(force=True)
@@ -199,7 +209,9 @@ class RealtimeEkfRuntimeManager:
             memory_limit = max(1_000_000, int(limit or 0)) if limit is not None else 1_000_000
             rows = _merge_product_rows(rows, worker.products(memory_limit))
         rows = _filter_product_rows(rows, start=start, end=end)
-        rows.sort(key=lambda item: _product_timestamp(item) or datetime.min.replace(tzinfo=timezone.utc))
+        rows.sort(
+            key=lambda item: _product_timestamp(item) or datetime.min.replace(tzinfo=timezone.utc)
+        )
         if limit is not None:
             rows = rows[-max(1, int(limit)) :]
         return rows
@@ -244,7 +256,9 @@ class RealtimeEkfRuntimeManager:
             load_config(path)
         worker = self._workers.get(name)
         if worker is not None and worker.is_alive():
-            self.logs.write(name, "Reflectometry config saved; restart the station to apply changes")
+            self.logs.write(
+                name, "Reflectometry config saved; restart the station to apply changes"
+            )
         else:
             self.logs.write(name, "Reflectometry config saved")
         return self.reflectometry_config(name)
@@ -267,18 +281,26 @@ class RealtimeEkfRuntimeManager:
         if ephemeris_file is None or not ephemeris_file[1]:
             raise ValueError("RINEX/SP3 ephemeris file is required for GNSS-IR geometry")
 
-        from ._vendor.core.rinex_loader import FileEphemerisProvider, RinexObservationReader, read_rinex_observation_header
         from ._vendor.core.reflectometry.outputs import ResultSerializer
         from ._vendor.core.reflectometry.providers import ListObservationProvider
         from ._vendor.core.reflectometry.rinex_batch import build_observation_records_from_epoch
         from ._vendor.core.reflectometry.services.batch import BatchProcessor
+        from ._vendor.core.rinex_loader import (
+            FileEphemerisProvider,
+            RinexObservationReader,
+            read_rinex_observation_header,
+        )
 
         job_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex[:8]
         job_dir = config.storage.output_dir / station.name / "postprocess" / job_id
         upload_dir = job_dir / "uploads"
         upload_dir.mkdir(parents=True, exist_ok=True)
-        obs_path = _write_upload(upload_dir, observation_file[0], observation_file[1], fallback="observation.rnx")
-        eph_path = _write_upload(upload_dir, ephemeris_file[0], ephemeris_file[1], fallback="ephemeris.rnx")
+        obs_path = _write_upload(
+            upload_dir, observation_file[0], observation_file[1], fallback="observation.rnx"
+        )
+        eph_path = _write_upload(
+            upload_dir, ephemeris_file[0], ephemeris_file[1], fallback="ephemeris.rnx"
+        )
         self.logs.write(name, f"RINEX postprocess started: {job_id}")
 
         runtime_config = deepcopy(load_config(station.reflectometry_config))
@@ -299,9 +321,13 @@ class RealtimeEkfRuntimeManager:
             _apply_receiver_xyz(runtime_config, receiver_xyz)
             used_rinex_position = True
         if receiver_xyz is None:
-            raise ValueError("Receiver ECEF XYZ is required in station config or RINEX APPROX POSITION XYZ")
+            raise ValueError(
+                "Receiver ECEF XYZ is required in station config or RINEX APPROX POSITION XYZ"
+            )
 
-        ephemeris_provider = FileEphemerisProvider.from_file(eph_path, file_type=ephemeris_file_type)
+        ephemeris_provider = FileEphemerisProvider.from_file(
+            eph_path, file_type=ephemeris_file_type
+        )
         self.logs.write(name, f"Ephemeris loaded for postprocess: {ephemeris_provider.kind}")
         active_systems = set(_active_systems_for_reflectometry(runtime_config))
         reader = RinexObservationReader(obs_path)
@@ -324,10 +350,17 @@ class RealtimeEkfRuntimeManager:
             )
 
         if not observations:
-            raise ValueError("No reflectometry observations were extracted from the uploaded RINEX files")
+            raise ValueError(
+                "No reflectometry observations were extracted from the uploaded RINEX files"
+            )
 
-        self.logs.write(name, f"RINEX extracted {len(observations)} reflectometry observations from {epoch_count} epochs")
-        processor = BatchProcessor(config=runtime_config, provider=ListObservationProvider(observations))
+        self.logs.write(
+            name,
+            f"RINEX extracted {len(observations)} reflectometry observations from {epoch_count} epochs",
+        )
+        processor = BatchProcessor(
+            config=runtime_config, provider=ListObservationProvider(observations)
+        )
         result = processor.run()
         if not result.products:
             raise ValueError(
@@ -362,7 +395,9 @@ class RealtimeEkfRuntimeManager:
             json.dumps(payload, ensure_ascii=False, indent=2, default=str),
             encoding="utf-8",
         )
-        self.logs.write(name, f"RINEX postprocess completed: {job_id}, {len(result.products)} products")
+        self.logs.write(
+            name, f"RINEX postprocess completed: {job_id}, {len(result.products)} products"
+        )
         return payload
 
     def _monitor_loop(self) -> None:
@@ -403,7 +438,9 @@ class RealtimeEkfRuntimeManager:
         config = self._config
         if config is None:
             return
-        allowed = {station.name for station in self._filtered_stations(config.stations) if station.enabled}
+        allowed = {
+            station.name for station in self._filtered_stations(config.stations) if station.enabled
+        }
         for name, worker in list(self._workers.items()):
             if name in allowed:
                 continue
@@ -487,7 +524,11 @@ class RealtimeEkfRuntimeManager:
             "initialization": {
                 "mode": "waiting_coordinate" if waiting_for_coordinate else "ekf",
                 "rh_initialized": False,
-                "waiting_reason": "测站坐标为空，启动后将等待 RTCM 1005/1006" if waiting_for_coordinate else "Station is idle",
+                "waiting_reason": (
+                    "测站坐标为空，启动后将等待 RTCM 1005/1006"
+                    if waiting_for_coordinate
+                    else "Station is idle"
+                ),
                 "progress": 0.0,
                 "arcs": [],
             },
@@ -556,7 +597,9 @@ def _idle_reflection_zones(path: Path) -> list[dict[str, Any]]:
                 "name": zone.name,
                 "min_elevation_deg": float(zone.min_elevation_deg),
                 "max_elevation_deg": float(zone.max_elevation_deg),
-                "azimuth_windows": [[float(item[0]), float(item[1])] for item in zone.azimuth_windows],
+                "azimuth_windows": [
+                    [float(item[0]), float(item[1])] for item in zone.azimuth_windows
+                ],
             }
         )
     return zones
@@ -571,7 +614,7 @@ def _idle_receiver_position(path: Path) -> dict[str, Any]:
     position = config.station.receiver_position
     values = position.as_dict()
     ready = _receiver_xyz_from_config(config) is not None
-    raw_position = ((raw.get("station") or {}).get("receiver_position") or {})
+    raw_position = (raw.get("station") or {}).get("receiver_position") or {}
     return {
         **values,
         "status": "ready" if ready else "waiting_rtcm",
@@ -650,7 +693,9 @@ def _normalize_product_arc_metadata(row: dict[str, Any]) -> None:
         metadata = {}
         row["metadata"] = metadata
     if "active_satellite_arc_count" not in metadata:
-        metadata["active_satellite_arc_count"] = metadata.get("active_arc_count", row.get("source_arc_count"))
+        metadata["active_satellite_arc_count"] = metadata.get(
+            "active_arc_count", row.get("source_arc_count")
+        )
 
 
 def _sanitize_upload_filename(filename: str, fallback: str) -> str:
@@ -677,7 +722,11 @@ def _receiver_xyz_from_config(config: Any) -> list[float] | None:
     position = getattr(getattr(config, "station", None), "receiver_position", None)
     if position is None:
         return None
-    xyz = [getattr(position, "x_m", None), getattr(position, "y_m", None), getattr(position, "z_m", None)]
+    xyz = [
+        getattr(position, "x_m", None),
+        getattr(position, "y_m", None),
+        getattr(position, "z_m", None),
+    ]
     if any(value is None for value in xyz):
         return None
     try:
@@ -720,7 +769,9 @@ def _normalize_receiver_position_payload(raw: dict[str, Any]) -> None:
         position.pop("updated_at", None)
         return
     if configured_count != 3:
-        raise ValueError("station.receiver_position x_m/y_m/z_m must all three be blank or all three be set")
+        raise ValueError(
+            "station.receiver_position x_m/y_m/z_m must all three be blank or all three be set"
+        )
 
     coordinates = [float(value) for value in xyz if value is not None]
     radius = math.sqrt(sum(value * value for value in coordinates))
@@ -735,7 +786,9 @@ def _normalize_receiver_position_payload(raw: dict[str, Any]) -> None:
 
 
 def _coordinate_number(value: Any) -> float | None:
-    if value is None or (isinstance(value, str) and value.strip().lower() in {"", "auto", "none", "null"}):
+    if value is None or (
+        isinstance(value, str) and value.strip().lower() in {"", "auto", "none", "null"}
+    ):
         return None
     try:
         number = float(value)

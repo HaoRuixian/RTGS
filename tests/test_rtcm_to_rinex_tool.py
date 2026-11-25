@@ -19,7 +19,9 @@ from utils import rtcm_to_rinex
 from utils.rtcm_to_rinex import ScanSummary
 
 
-def _signal(signal_id: str, pseudorange: float, phase: float, snr: float, doppler: float = 0.0) -> SignalData:
+def _signal(
+    signal_id: str, pseudorange: float, phase: float, snr: float, doppler: float = 0.0
+) -> SignalData:
     return SignalData(
         signal_id=signal_id,
         pseudorange=pseudorange,
@@ -31,7 +33,9 @@ def _signal(signal_id: str, pseudorange: float, phase: float, snr: float, dopple
     )
 
 
-def _epoch(epoch_time: datetime, satellite_defs: dict[str, dict[str, SignalData]]) -> EpochObservation:
+def _epoch(
+    epoch_time: datetime, satellite_defs: dict[str, dict[str, SignalData]]
+) -> EpochObservation:
     epoch = EpochObservation(gps_time=0.0, utc_datetime=epoch_time)
     for sat_id, signals in satellite_defs.items():
         sat_state = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))
@@ -166,7 +170,9 @@ def test_main_converts_rtcm_file_to_rinex_with_fake_pipeline(tmp_path, monkeypat
     messages = [(b"", "g0"), (b"", "r0"), (b"", "g1")]
 
     monkeypatch.setattr(rtcm_to_rinex, "MixedGNSSReader", _reader_factory(messages))
-    monkeypatch.setattr(rtcm_to_rinex, "RTCMHandler", _handler_factory(mapping, approx_position=[11.0, 22.0, 33.0]))
+    monkeypatch.setattr(
+        rtcm_to_rinex, "RTCMHandler", _handler_factory(mapping, approx_position=[11.0, 22.0, 33.0])
+    )
 
     exit_code = rtcm_to_rinex.main(
         [
@@ -217,10 +223,7 @@ def test_infer_reference_utc_from_bridge_style_filename():
 
 
 def test_mixed_gnss_reader_ignores_truncated_tail_frame():
-    stream = (
-        b"#HEADER\r\n"
-        + bytes([0xD3, 0x00, 0x03, 0x01, 0x02])
-    )
+    stream = b"#HEADER\r\n" + bytes([0xD3, 0x00, 0x03, 0x01, 0x02])
 
     reader = MixedGNSSReader(__import__("io").BytesIO(stream))
 
@@ -310,7 +313,7 @@ def test_unicore_ascii_obsvm_decodes_main_antenna_observation():
     assert sig.snr == pytest.approx(42.70)
     assert sig.doppler == pytest.approx(-2263.222)
     assert sig.lock_time == 6262
-    assert getattr(sig, "receiver_antenna") == "master"
+    assert sig.receiver_antenna == "master"
 
 
 def test_unicore_ascii_obsvh_zero_epoch_decodes_slave_metadata():
@@ -322,7 +325,7 @@ def test_unicore_ascii_obsvh_zero_epoch_decodes_slave_metadata():
     assert msg.identity == "OBSVH"
     assert msg.antenna == "slave"
     assert epoch.satellites == {}
-    assert getattr(epoch, "receiver_antenna") == "slave"
+    assert epoch.receiver_antenna == "slave"
 
 
 def test_unicore_binary_obsvbase_decodes_base_observation_through_reader():
@@ -357,7 +360,7 @@ def test_unicore_binary_obsvbase_decodes_base_observation_through_reader():
     assert sig.pseudorange == pytest.approx(24393288.815)
     assert sig.phase == pytest.approx(-128187597.395405)
     assert sig.snr == pytest.approx(31.0)
-    assert getattr(sig, "receiver_antenna") == "base"
+    assert sig.receiver_antenna == "base"
 
 
 def test_unicore_compressed_ascii_decodes_main_and_slave_observations():
@@ -390,8 +393,12 @@ def test_unicore_compressed_ascii_decodes_main_and_slave_observations():
         f"OBSVHCMPA,97,GPS,FINE,2244,271111000,0,0,18,14;1,{slave_record.hex()}"
     )
 
-    main_epoch = RTCMHandler(compute_geometry=False).process_message(UnicoreMessage.parse_ascii(main_raw))
-    slave_epoch = RTCMHandler(compute_geometry=False).process_message(UnicoreMessage.parse_ascii(slave_raw))
+    main_epoch = RTCMHandler(compute_geometry=False).process_message(
+        UnicoreMessage.parse_ascii(main_raw)
+    )
+    slave_epoch = RTCMHandler(compute_geometry=False).process_message(
+        UnicoreMessage.parse_ascii(slave_raw)
+    )
 
     main_sig = main_epoch.satellites["G25"].signals["1C"]
     slave_sig = slave_epoch.satellites["G02"].signals["1C"]
@@ -399,10 +406,10 @@ def test_unicore_compressed_ascii_decodes_main_and_slave_observations():
     assert main_sig.phase == pytest.approx(22038311.921875 * 1575.42e6 / 299792458.0, abs=0.001)
     assert main_sig.snr == 43.0
     assert main_sig.doppler == pytest.approx(-2251.60546875)
-    assert getattr(main_sig, "receiver_antenna") == "master"
+    assert main_sig.receiver_antenna == "master"
     assert slave_sig.pseudorange == pytest.approx(21000000.0)
     assert slave_sig.lock_time == 12
-    assert getattr(slave_sig, "receiver_antenna") == "slave"
+    assert slave_sig.receiver_antenna == "slave"
 
 
 def test_convert_unicore_file_to_rinex(tmp_path):
@@ -472,7 +479,9 @@ def test_rtcm_handler_prefers_latest_non_glonass_day_anchor():
     handler.last_utc_by_system["R"] = datetime(2025, 10, 26, 0, 0, 12, tzinfo=timezone.utc)
     handler.last_utc_by_system["G"] = datetime(2025, 10, 25, 23, 59, 42, tzinfo=timezone.utc)
 
-    assert handler._reference_utc_for_glonass_day() == datetime(2025, 10, 25, 23, 59, 42, tzinfo=timezone.utc)
+    assert handler._reference_utc_for_glonass_day() == datetime(
+        2025, 10, 25, 23, 59, 42, tzinfo=timezone.utc
+    )
 
 
 def test_rtcm_handler_glonass_uses_utc_day_index_near_gps_midnight():
@@ -655,11 +664,14 @@ def test_convert_rtcm_file_to_rinex_decimates_to_requested_interval(tmp_path):
 
     epoch0 = datetime(2026, 3, 26, 0, 0, 0, tzinfo=timezone.utc)
     epochs = [
-        _epoch(epoch0 + timedelta(seconds=offset), {"G01": {"1C": _signal("1C", 21000000.0 + offset, 110000.0, 45.0)}})
+        _epoch(
+            epoch0 + timedelta(seconds=offset),
+            {"G01": {"1C": _signal("1C", 21000000.0 + offset, 110000.0, 45.0)}},
+        )
         for offset in (12, 17, 27, 32)
     ]
     mapping = {f"m{idx}": epoch for idx, epoch in enumerate(epochs)}
-    messages = [(b"", key) for key in mapping.keys()]
+    messages = [(b"", key) for key in mapping]
 
     summary = ScanSummary(
         input_path=input_path,

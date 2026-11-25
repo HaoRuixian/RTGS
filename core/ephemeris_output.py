@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import math
+from collections.abc import Iterable, Mapping, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Iterable, Mapping, Sequence
 
 import numpy as np
 
@@ -37,7 +37,7 @@ def _gps_utc_datetime(week: object, seconds: object) -> datetime:
         gps_week = int(week)
         gps_seconds = float(seconds)
     except (TypeError, ValueError):
-        return datetime.utcnow()
+        return datetime.now(timezone.utc).replace(tzinfo=None)
     return _normalize_datetime(GNSSTime.gps_to_utc_datetime(gps_week, gps_seconds))
 
 
@@ -153,15 +153,17 @@ def build_sp3_states(
     epoch_time: datetime,
     *,
     ssr_store=None,
-) -> Dict[str, tuple[Sequence[float], float, bool]]:
+) -> dict[str, tuple[Sequence[float], float, bool]]:
     """Build SP3-ready satellite states from broadcast ephemerides and optional SSR."""
     if isinstance(ephemerides, Mapping):
         items = ephemerides.items()
     else:
         items = ((str(eph.get("satellite_id", "")), eph) for eph in ephemerides)
 
-    _, gps_sow = GNSSTime.utc_to_gps(epoch_time if epoch_time.tzinfo else epoch_time.replace(tzinfo=timezone.utc))
-    states: Dict[str, tuple[Sequence[float], float, bool]] = {}
+    _, gps_sow = GNSSTime.utc_to_gps(
+        epoch_time if epoch_time.tzinfo else epoch_time.replace(tzinfo=timezone.utc)
+    )
+    states: dict[str, tuple[Sequence[float], float, bool]] = {}
     for sat_id, eph in items:
         if not sat_id:
             continue
@@ -226,9 +228,15 @@ class BroadcastNavWriter:
     def _write_header(self) -> None:
         if self._handle is None:
             return
-        self._handle.write(_header_line(f"{self.rinex_version:>9}           NAVIGATION DATA     M", "RINEX VERSION / TYPE"))
-        now = datetime.utcnow().strftime("%Y%m%d %H%M%S UTC")
-        self._handle.write(_header_line(f"{'RTGS':<20}{'GNSS_ToolBox':<20}{now}", "PGM / RUN BY / DATE"))
+        self._handle.write(
+            _header_line(
+                f"{self.rinex_version:>9}           NAVIGATION DATA     M", "RINEX VERSION / TYPE"
+            )
+        )
+        now = datetime.now(timezone.utc).strftime("%Y%m%d %H%M%S UTC")
+        self._handle.write(
+            _header_line(f"{'RTGS':<20}{'GNSS_ToolBox':<20}{now}", "PGM / RUN BY / DATE")
+        )
         self._handle.write(_header_line("", "END OF HEADER"))
 
     def write_ephemeris(self, eph: Mapping[str, object]) -> bool:
@@ -236,7 +244,11 @@ class BroadcastNavWriter:
         if len(sat_id) < 3:
             return False
 
-        key = (sat_id, eph.get("toe") or eph.get("tb") or eph.get("t0"), eph.get("iode") or eph.get("iod_nav") or eph.get("aode"))
+        key = (
+            sat_id,
+            eph.get("toe") or eph.get("tb") or eph.get("t0"),
+            eph.get("iode") or eph.get("iod_nav") or eph.get("aode"),
+        )
         if key in self._written_keys:
             return False
 
@@ -268,7 +280,7 @@ class BroadcastNavWriter:
             return _gps_utc_datetime(eph.get("toc_week"), eph.get("toc"))
         if "week" in eph:
             return _gps_utc_datetime(eph.get("week"), eph.get("toc", eph.get("toe", 0.0)))
-        return datetime.utcnow()
+        return datetime.now(timezone.utc).replace(tzinfo=None)
 
     def _format_kepler_record(self, sat_id: str, eph: Mapping[str, object]) -> list[str]:
         toc = self._record_time(eph)
@@ -278,12 +290,27 @@ class BroadcastNavWriter:
             f"{_format_float(eph.get('af0'))}{_format_float(eph.get('af1'))}{_format_float(eph.get('af2'))}\n"
         )
         rows = [
-            [eph.get("iode", eph.get("iod_nav", eph.get("aode", 0))), eph.get("Crs"), eph.get("delta_n"), eph.get("M0")],
+            [
+                eph.get("iode", eph.get("iod_nav", eph.get("aode", 0))),
+                eph.get("Crs"),
+                eph.get("delta_n"),
+                eph.get("M0"),
+            ],
             [eph.get("Cuc"), eph.get("e"), eph.get("Cus"), eph.get("sqrt_a")],
             [eph.get("toe"), eph.get("Cic"), eph.get("Omega0"), eph.get("Cis")],
             [eph.get("i0"), eph.get("Crc"), eph.get("omega"), eph.get("Omega_dot")],
-            [eph.get("idot"), eph.get("code_on_l2", 0), eph.get("week"), eph.get("l2_p_data_flag", 0)],
-            [eph.get("ura", eph.get("SISA", 0)), eph.get("health", 0), eph.get("TGD", eph.get("BGD_E5aE1", eph.get("TGD1", 0))), eph.get("iodc", eph.get("aodc", 0))],
+            [
+                eph.get("idot"),
+                eph.get("code_on_l2", 0),
+                eph.get("week"),
+                eph.get("l2_p_data_flag", 0),
+            ],
+            [
+                eph.get("ura", eph.get("SISA", 0)),
+                eph.get("health", 0),
+                eph.get("TGD", eph.get("BGD_E5aE1", eph.get("TGD1", 0))),
+                eph.get("iodc", eph.get("aodc", 0)),
+            ],
             [eph.get("transmission_time", 0), eph.get("fit_interval", 0), 0, 0],
         ]
         return [first] + [self._format_nav_row(row) for row in rows]
@@ -374,7 +401,9 @@ class PreciseSp3Writer:
             f"{first_epoch.hour:02d} {first_epoch.minute:02d} {first_epoch.second:02d}."
             f"{first_epoch.microsecond:06d}00      96 ORBIT IGb14 RTGS\n"
         )
-        self._handle.write(f"## {gps_week:4d} {gps_sow:15.8f} {self.epoch_interval_seconds:14.8f}    0 0.0000000000000\n")
+        self._handle.write(
+            f"## {gps_week:4d} {gps_sow:15.8f} {self.epoch_interval_seconds:14.8f}    0 0.0000000000000\n"
+        )
         self._write_satellite_header(satellites)
         self._handle.write("%c cc cc ccc ccc cccc cccc cccc cccc ccccc ccccc ccccc ccccc\n")
         self._handle.write("%f  0.0000000  0.000000000  0.00000000000  0.000000000000000\n")

@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QStyle,
@@ -24,7 +25,6 @@ from PySide6.QtWidgets import (
 )
 
 from core.global_config import get_positioning_settings, update_positioning_settings
-
 
 DEFAULTS = {
     "cutoff_elevation_deg": 10.0,
@@ -122,8 +122,8 @@ class PositioningConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Positioning Settings")
-        self.setMinimumSize(820, 650)
-        self.resize(900, 700)
+        self.setMinimumSize(980, 760)
+        self.resize(1080, 820)
         self.settings = {**DEFAULTS, **get_positioning_settings()}
 
         root = QVBoxLayout(self)
@@ -137,10 +137,17 @@ class PositioningConfigDialog(QDialog):
         root.addWidget(title)
         root.addWidget(subtitle)
 
+        hint = QLabel(
+            "Recommended GR01 workflow: SPP for immediate quality checks, PPP only when OBS/EPH/SSR are all stable."
+        )
+        hint.setProperty("class", "muted")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
         self.tabs = QTabWidget()
         self.tabs.addTab(self._build_general_tab(), "General")
         self.tabs.addTab(self._build_systems_tab(), "Constellations")
-        self.tabs.addTab(self._build_corrections_tab(), "Corrections / PPP")
+        self.tabs.addTab(self._scroll_tab(self._build_corrections_tab()), "Corrections / PPP")
         self.tabs.addTab(self._build_rtk_tab(), "RTK / Network")
         self.tabs.addTab(self._build_quality_tab(), "Quality")
         root.addWidget(self.tabs, 1)
@@ -153,6 +160,14 @@ class PositioningConfigDialog(QDialog):
         form.setHorizontalSpacing(16)
         form.setVerticalSpacing(10)
         return form
+
+    @staticmethod
+    def _scroll_tab(content: QWidget) -> QScrollArea:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(content)
+        return scroll
 
     def _page(self) -> tuple[QWidget, QVBoxLayout]:
         page = QWidget()
@@ -192,7 +207,9 @@ class PositioningConfigDialog(QDialog):
         self.weight_mode.addItem("Elevation angle", "elevation")
         self.weight_mode.addItem("Signal-to-noise ratio", "snr")
         self.weight_mode.addItem("Equal weight", "equal")
-        self.weight_mode.setCurrentIndex(max(0, self.weight_mode.findData(self.settings["weight_mode"])))
+        self.weight_mode.setCurrentIndex(
+            max(0, self.weight_mode.findData(self.settings["weight_mode"]))
+        )
         self.use_smoothing = QCheckBox("Enable position smoothing")
         self.use_smoothing.setChecked(bool(self.settings["use_smoothing"]))
         self.smoothing_window = QSpinBox()
@@ -216,8 +233,12 @@ class PositioningConfigDialog(QDialog):
         grid.setVerticalSpacing(12)
         enabled = set(self.settings["gnss_systems"])
         definitions = [
-            ("G", "GPS"), ("R", "GLONASS"), ("E", "Galileo"),
-            ("C", "BeiDou"), ("J", "QZSS"), ("I", "NavIC"),
+            ("G", "GPS"),
+            ("R", "GLONASS"),
+            ("E", "Galileo"),
+            ("C", "BeiDou"),
+            ("J", "QZSS"),
+            ("I", "NavIC"),
         ]
         self.system_checks = {}
         for index, (code, label) in enumerate(definitions):
@@ -256,12 +277,16 @@ class PositioningConfigDialog(QDialog):
         self.iono_option = QComboBox()
         self.iono_option.addItem("Dual-frequency ionosphere-free", "IFLC")
         self.iono_option.addItem("Single-frequency with TGD", "SINGLE")
-        self.iono_option.setCurrentIndex(max(0, self.iono_option.findData(self.settings["ionosphere_option"])))
+        self.iono_option.setCurrentIndex(
+            max(0, self.iono_option.findData(self.settings["ionosphere_option"]))
+        )
         self.tropo_model = QComboBox()
         self.tropo_model.addItem("Saastamoinen", "Sastamoinen")
         self.tropo_model.addItem("Height-based HMSL", "HMSL")
         self.tropo_model.addItem("No correction", "None")
-        self.tropo_model.setCurrentIndex(max(0, self.tropo_model.findData(self.settings["troposphere_model"])))
+        self.tropo_model.setCurrentIndex(
+            max(0, self.tropo_model.findData(self.settings["troposphere_model"]))
+        )
         self.require_ssr_corrections = QCheckBox("Require SSR orbit and clock corrections")
         self.require_ssr_corrections.setChecked(bool(self.settings["require_ssr_corrections"]))
         models.addRow("Ionosphere", self.iono_option)
@@ -272,9 +297,7 @@ class PositioningConfigDialog(QDialog):
 
         ppp_group = QGroupBox("PPP filter initialization")
         ppp = self._form()
-        self.ppp_use_station_apriori = QCheckBox(
-            "Use RTCM station coordinates"
-        )
+        self.ppp_use_station_apriori = QCheckBox("Use RTCM station coordinates")
         self.ppp_use_station_apriori.setChecked(bool(self.settings["ppp_use_station_apriori"]))
         self.ppp_use_config_initial_position = QCheckBox(
             "Use configured coordinate as initial state"
@@ -282,14 +305,20 @@ class PositioningConfigDialog(QDialog):
         self.ppp_use_config_initial_position.setChecked(
             bool(self.settings["ppp_use_config_initial_position"])
         )
-        self.ppp_station_sigma = self._double_spin("ppp_station_apriori_sigma_m", 0.001, 100.0, 0.01, " m", 3)
+        self.ppp_station_sigma = self._double_spin(
+            "ppp_station_apriori_sigma_m", 0.001, 100.0, 0.01, " m", 3
+        )
         self.ppp_initial_position_sigma = self._double_spin(
             "ppp_initial_position_sigma_m", 0.001, 1000.0, 0.01, " m", 3
         )
         self.ppp_station_sigma.setEnabled(self.ppp_use_station_apriori.isChecked())
         self.ppp_use_station_apriori.toggled.connect(self.ppp_station_sigma.setEnabled)
-        self.ppp_clock_sigma = self._double_spin("ppp_initial_clock_sigma_m", 1.0, 100000.0, 10.0, " m", 1)
-        self.ppp_ambiguity_sigma = self._double_spin("ppp_initial_ambiguity_sigma_m", 1.0, 100000.0, 10.0, " m", 1)
+        self.ppp_clock_sigma = self._double_spin(
+            "ppp_initial_clock_sigma_m", 1.0, 100000.0, 10.0, " m", 1
+        )
+        self.ppp_ambiguity_sigma = self._double_spin(
+            "ppp_initial_ambiguity_sigma_m", 1.0, 100000.0, 10.0, " m", 1
+        )
         ppp.addRow("", self.ppp_use_station_apriori)
         ppp.addRow("Station sigma", self.ppp_station_sigma)
         ppp.addRow("", self.ppp_use_config_initial_position)
@@ -310,7 +339,9 @@ class PositioningConfigDialog(QDialog):
         self.ppp_ar_min_satellites.setRange(4, 30)
         self.ppp_ar_min_satellites.setValue(int(self.settings["ppp_ar_min_satellites"]))
         self.ppp_ar_ratio = self._double_spin("ppp_ar_ratio_threshold", 1.0, 20.0, 0.1, "", 2)
-        self.ppp_ar_nl_fraction = self._double_spin("ppp_ar_max_nl_fraction", 0.001, 0.49, 0.01, " cycle", 3)
+        self.ppp_ar_nl_fraction = self._double_spin(
+            "ppp_ar_max_nl_fraction", 0.001, 0.49, 0.01, " cycle", 3
+        )
         ar.addRow("", self.ppp_ar_enabled)
         ar.addRow("Minimum epochs", self.ppp_ar_min_epochs)
         ar.addRow("Minimum satellites", self.ppp_ar_min_satellites)
@@ -354,13 +385,15 @@ class PositioningConfigDialog(QDialog):
         antex_editor, self.ppp_antex_file, self.ppp_antex_browse = self._file_editor(
             self.settings["ppp_antex_file"],
             "Select ANTEX calibration",
-            "ANTEX files (*.atx *.antex);;All files (*)",
+            "ANTEX files (*.atx *.antex *.atx.gz);;All files (*)",
         )
         blq_editor, self.ppp_blq_file, self.ppp_blq_browse = self._file_editor(
             self.settings["ppp_blq_file"],
             "Select BLQ ocean loading file",
             "BLQ files (*.blq);;All files (*)",
         )
+        self.ppp_antex_file.setPlaceholderText("Built-in IGS20 catalog (automatic)")
+        self.ppp_blq_file.setPlaceholderText("Built-in multi-station BLQ catalog (automatic)")
         self.ppp_receiver_antenna = QLineEdit(str(self.settings["ppp_receiver_antenna"]))
         self.ppp_station_id = QLineEdit(str(self.settings["ppp_station_id"]))
         eccentricity_editor, self.ppp_antenna_eccentricity = self._coordinate_editor(
@@ -421,9 +454,7 @@ class PositioningConfigDialog(QDialog):
         self.ppp_ssr_apc_reference.setEnabled(
             enabled and not self.ppp_auto_ssr_apc_reference.isChecked()
         )
-        self.ppp_use_ssr_yaw.setEnabled(
-            enabled and self.ppp_apply_phase_windup.isChecked()
-        )
+        self.ppp_use_ssr_yaw.setEnabled(enabled and self.ppp_apply_phase_windup.isChecked())
         for widget in (
             self.ppp_antex_file,
             self.ppp_antex_browse,
@@ -448,7 +479,9 @@ class PositioningConfigDialog(QDialog):
 
         process_group = QGroupBox("PPP process noise")
         process = self._form()
-        self.ppp_position_noise = self._double_spin("ppp_position_process_noise_mps", 0.0, 10.0, 0.001, " m/s", 6)
+        self.ppp_position_noise = self._double_spin(
+            "ppp_position_process_noise_mps", 0.0, 10.0, 0.001, " m/s", 6
+        )
         self.ppp_trop_noise = self._double_spin(
             "ppp_trop_process_noise_mps", 0.0, 1.0, 0.000001, " m/sqrt(s)", 8
         )
@@ -524,13 +557,17 @@ class PositioningConfigDialog(QDialog):
         self.rtk_rover_mode.addItem("Kinematic", "kinematic")
         self.rtk_rover_mode.addItem("Static", "static")
         self.rtk_rover_mode.addItem("Static start", "static-start")
-        self.rtk_rover_mode.setCurrentIndex(max(0, self.rtk_rover_mode.findData(self.settings["rtk_rover_mode"])))
+        self.rtk_rover_mode.setCurrentIndex(
+            max(0, self.rtk_rover_mode.findData(self.settings["rtk_rover_mode"]))
+        )
         self.rtk_frequency = QComboBox()
         self.rtk_frequency.addItem("L1", "l1")
         self.rtk_frequency.addItem("L1 + L2", "l1+l2")
         self.rtk_frequency.addItem("L1 + L2 + L5", "l1+l2+l5")
         self.rtk_frequency.addItem("Four frequencies", "l1+l2+l5+l6")
-        self.rtk_frequency.setCurrentIndex(max(0, self.rtk_frequency.findData(self.settings["rtk_frequency"])))
+        self.rtk_frequency.setCurrentIndex(
+            max(0, self.rtk_frequency.findData(self.settings["rtk_frequency"]))
+        )
         self.rtk_dynamics = QCheckBox("Enable rover dynamics model")
         self.rtk_dynamics.setChecked(bool(self.settings["rtk_dynamics"]))
         engine.addRow("Architecture", self.rtk_type)
@@ -574,7 +611,9 @@ class PositioningConfigDialog(QDialog):
         self.rtk_ar_mode.addItem("Fix and hold", "fix-and-hold")
         self.rtk_ar_mode.addItem("Instantaneous", "instantaneous")
         self.rtk_ar_mode.addItem("Disabled", "off")
-        self.rtk_ar_mode.setCurrentIndex(max(0, self.rtk_ar_mode.findData(self.settings["rtk_ar_mode"])))
+        self.rtk_ar_mode.setCurrentIndex(
+            max(0, self.rtk_ar_mode.findData(self.settings["rtk_ar_mode"]))
+        )
         self.rtk_glonass_ar = QComboBox()
         self.rtk_glonass_ar.addItem("Auto-calibrate", "autocal")
         self.rtk_glonass_ar.addItem("On", "on")
@@ -608,16 +647,24 @@ class PositioningConfigDialog(QDialog):
         self.rtk_base_position_source.addItem("Configured LLH", "llh")
         self.rtk_base_position_source.addItem("Configured ECEF XYZ", "xyz")
         self.rtk_base_position_source.setCurrentIndex(
-            max(0, self.rtk_base_position_source.findData(self.settings["rtk_base_position_source"]))
+            max(
+                0, self.rtk_base_position_source.findData(self.settings["rtk_base_position_source"])
+            )
         )
-        base_editor, self.rtk_base_position = self._coordinate_editor(self.settings["rtk_base_position"])
+        base_editor, self.rtk_base_position = self._coordinate_editor(
+            self.settings["rtk_base_position"]
+        )
         self.rtk_gga_mode = QComboBox()
         self.rtk_gga_mode.addItem("Automatic", "auto")
         self.rtk_gga_mode.addItem("Configured LLH", "configured")
         self.rtk_gga_mode.addItem("Rover single solution", "single")
         self.rtk_gga_mode.addItem("Disabled", "off")
-        self.rtk_gga_mode.setCurrentIndex(max(0, self.rtk_gga_mode.findData(self.settings["rtk_gga_mode"])))
-        gga_editor, self.rtk_gga_position = self._coordinate_editor(self.settings["rtk_gga_position"])
+        self.rtk_gga_mode.setCurrentIndex(
+            max(0, self.rtk_gga_mode.findData(self.settings["rtk_gga_mode"]))
+        )
+        gga_editor, self.rtk_gga_position = self._coordinate_editor(
+            self.settings["rtk_gga_position"]
+        )
         self.rtk_gga_cycle = QSpinBox()
         self.rtk_gga_cycle.setRange(1000, 60000)
         self.rtk_gga_cycle.setSingleStep(1000)
@@ -698,13 +745,9 @@ class PositioningConfigDialog(QDialog):
         self.uncertain_std.setValue(DEFAULTS["uncertain_std_pos"])
         self.fixed_std.setValue(DEFAULTS["fixed_std_pos"])
         self.ppp_use_station_apriori.setChecked(DEFAULTS["ppp_use_station_apriori"])
-        self.ppp_use_config_initial_position.setChecked(
-            DEFAULTS["ppp_use_config_initial_position"]
-        )
+        self.ppp_use_config_initial_position.setChecked(DEFAULTS["ppp_use_config_initial_position"])
         self.ppp_station_sigma.setValue(DEFAULTS["ppp_station_apriori_sigma_m"])
-        self.ppp_initial_position_sigma.setValue(
-            DEFAULTS["ppp_initial_position_sigma_m"]
-        )
+        self.ppp_initial_position_sigma.setValue(DEFAULTS["ppp_initial_position_sigma_m"])
         self.ppp_clock_sigma.setValue(DEFAULTS["ppp_initial_clock_sigma_m"])
         self.ppp_ambiguity_sigma.setValue(DEFAULTS["ppp_initial_ambiguity_sigma_m"])
         self.ppp_position_noise.setValue(DEFAULTS["ppp_position_process_noise_mps"])
@@ -725,6 +768,7 @@ class PositioningConfigDialog(QDialog):
         for editor, value in zip(
             self.ppp_antenna_eccentricity,
             DEFAULTS["ppp_antenna_eccentricity_neu_m"],
+            strict=False,
         ):
             editor.setText(str(value))
         self.ppp_postfit_enabled.setChecked(DEFAULTS["ppp_postfit_enabled"])
@@ -736,14 +780,24 @@ class PositioningConfigDialog(QDialog):
         self.ppp_ar_ratio.setValue(DEFAULTS["ppp_ar_ratio_threshold"])
         self.ppp_ar_nl_fraction.setValue(DEFAULTS["ppp_ar_max_nl_fraction"])
         self.rtk_type.setCurrentIndex(self.rtk_type.findData(DEFAULTS["rtk_type"]))
-        self.rtk_network_protocol.setCurrentIndex(self.rtk_network_protocol.findData(DEFAULTS["rtk_network_protocol"]))
-        self.rtk_rover_mode.setCurrentIndex(self.rtk_rover_mode.findData(DEFAULTS["rtk_rover_mode"]))
-        self.rtk_rover_format.setCurrentIndex(self.rtk_rover_format.findData(DEFAULTS["rtk_rover_format"]))
-        self.rtk_base_format.setCurrentIndex(self.rtk_base_format.findData(DEFAULTS["rtk_base_format"]))
+        self.rtk_network_protocol.setCurrentIndex(
+            self.rtk_network_protocol.findData(DEFAULTS["rtk_network_protocol"])
+        )
+        self.rtk_rover_mode.setCurrentIndex(
+            self.rtk_rover_mode.findData(DEFAULTS["rtk_rover_mode"])
+        )
+        self.rtk_rover_format.setCurrentIndex(
+            self.rtk_rover_format.findData(DEFAULTS["rtk_rover_format"])
+        )
+        self.rtk_base_format.setCurrentIndex(
+            self.rtk_base_format.findData(DEFAULTS["rtk_base_format"])
+        )
         self.rtk_frequency.setCurrentIndex(self.rtk_frequency.findData(DEFAULTS["rtk_frequency"]))
         self.rtk_dynamics.setChecked(DEFAULTS["rtk_dynamics"])
         self.rtk_ar_mode.setCurrentIndex(self.rtk_ar_mode.findData(DEFAULTS["rtk_ar_mode"]))
-        self.rtk_glonass_ar.setCurrentIndex(self.rtk_glonass_ar.findData(DEFAULTS["rtk_glonass_ar_mode"]))
+        self.rtk_glonass_ar.setCurrentIndex(
+            self.rtk_glonass_ar.findData(DEFAULTS["rtk_glonass_ar_mode"])
+        )
         self.rtk_bds_ar.setChecked(DEFAULTS["rtk_bds_ar"])
         self.rtk_ratio.setValue(DEFAULTS["rtk_ar_ratio_threshold"])
         self.rtk_lock_count.setValue(DEFAULTS["rtk_ar_lock_count"])
@@ -751,10 +805,12 @@ class PositioningConfigDialog(QDialog):
         self.rtk_base_position_source.setCurrentIndex(
             self.rtk_base_position_source.findData(DEFAULTS["rtk_base_position_source"])
         )
-        for editor, value in zip(self.rtk_base_position, DEFAULTS["rtk_base_position"]):
+        for editor, value in zip(
+            self.rtk_base_position, DEFAULTS["rtk_base_position"], strict=False
+        ):
             editor.setText(str(value))
         self.rtk_gga_mode.setCurrentIndex(self.rtk_gga_mode.findData(DEFAULTS["rtk_gga_mode"]))
-        for editor, value in zip(self.rtk_gga_position, DEFAULTS["rtk_gga_position"]):
+        for editor, value in zip(self.rtk_gga_position, DEFAULTS["rtk_gga_position"], strict=False):
             editor.setText(str(value))
         self.rtk_gga_cycle.setValue(DEFAULTS["rtk_gga_cycle_ms"])
         self.rtk_max_age.setValue(DEFAULTS["rtk_max_correction_age_s"])
@@ -777,7 +833,9 @@ class PositioningConfigDialog(QDialog):
             "require_ssr_corrections": self.require_ssr_corrections.isChecked(),
             "weight_mode": self.weight_mode.currentData(),
             "code_sigma_m": float(self.settings.get("code_sigma_m", 1.0)),
-            "system_code_weight_factors": dict(self.settings.get("system_code_weight_factors", {"R": 5.0})),
+            "system_code_weight_factors": dict(
+                self.settings.get("system_code_weight_factors", {"R": 5.0})
+            ),
             "use_smoothing": self.use_smoothing.isChecked(),
             "smoothing_window": int(self.smoothing_window.value()),
             "random_walk": float(self.random_walk.value()),
@@ -785,12 +843,8 @@ class PositioningConfigDialog(QDialog):
             "fixed_std_pos": float(self.fixed_std.value()),
             "ppp_use_station_apriori": self.ppp_use_station_apriori.isChecked(),
             "ppp_use_config_initial_position": self.ppp_use_config_initial_position.isChecked(),
-            "ppp_independent_mode": bool(
-                self.settings.get("ppp_independent_mode", False)
-            ),
-            "ppp_observation_model": str(
-                self.settings.get("ppp_observation_model", "IFLC")
-            ),
+            "ppp_independent_mode": bool(self.settings.get("ppp_independent_mode", False)),
+            "ppp_observation_model": str(self.settings.get("ppp_observation_model", "IFLC")),
             "ppp_station_apriori_sigma_m": float(self.ppp_station_sigma.value()),
             "ppp_initial_position_sigma_m": float(self.ppp_initial_position_sigma.value()),
             "ppp_spp_bootstrap_sigma_m": float(
@@ -826,9 +880,7 @@ class PositioningConfigDialog(QDialog):
             "ppp_blq_file": self.ppp_blq_file.text().strip(),
             "ppp_receiver_antenna": self.ppp_receiver_antenna.text().strip(),
             "ppp_station_id": self.ppp_station_id.text().strip().upper(),
-            "ppp_antenna_eccentricity_neu_m": self._read_coordinates(
-                self.ppp_antenna_eccentricity
-            ),
+            "ppp_antenna_eccentricity_neu_m": self._read_coordinates(self.ppp_antenna_eccentricity),
             "ppp_auto_ssr_apc_reference": self.ppp_auto_ssr_apc_reference.isChecked(),
             "ppp_ssr_apc_reference": self.ppp_ssr_apc_reference.isChecked(),
             "ppp_postfit_enabled": self.ppp_postfit_enabled.isChecked(),
@@ -841,17 +893,23 @@ class PositioningConfigDialog(QDialog):
             "ppp_ar_min_elevation_deg": float(self.settings.get("ppp_ar_min_elevation_deg", 10.0)),
             "ppp_ar_max_wl_fraction": float(self.settings.get("ppp_ar_max_wl_fraction", 0.15)),
             "ppp_ar_max_nl_fraction": float(self.ppp_ar_nl_fraction.value()),
-            "ppp_ar_max_wl_sigma_cycles": float(self.settings.get("ppp_ar_max_wl_sigma_cycles", 0.20)),
-            "ppp_ar_max_nl_sigma_cycles": float(self.settings.get("ppp_ar_max_nl_sigma_cycles", 0.20)),
+            "ppp_ar_max_wl_sigma_cycles": float(
+                self.settings.get("ppp_ar_max_wl_sigma_cycles", 0.20)
+            ),
+            "ppp_ar_max_nl_sigma_cycles": float(
+                self.settings.get("ppp_ar_max_nl_sigma_cycles", 0.20)
+            ),
             "ppp_ar_ratio_threshold": float(self.ppp_ar_ratio.value()),
-            "ppp_ar_constraint_sigma_m": float(self.settings.get("ppp_ar_constraint_sigma_m", 0.0001)),
-            "ppp_ar_max_position_shift_m": float(self.settings.get("ppp_ar_max_position_shift_m", 0.50)),
+            "ppp_ar_constraint_sigma_m": float(
+                self.settings.get("ppp_ar_constraint_sigma_m", 0.0001)
+            ),
+            "ppp_ar_max_position_shift_m": float(
+                self.settings.get("ppp_ar_max_position_shift_m", 0.50)
+            ),
             "ppp_ar_require_mw_consistency": bool(
                 self.settings.get("ppp_ar_require_mw_consistency", True)
             ),
-            "ppp_ar_require_full_group": bool(
-                self.settings.get("ppp_ar_require_full_group", True)
-            ),
+            "ppp_ar_require_full_group": bool(self.settings.get("ppp_ar_require_full_group", True)),
             "rtk_type": self.rtk_type.currentData(),
             "rtk_network_protocol": self.rtk_network_protocol.currentData(),
             "rtk_rover_mode": self.rtk_rover_mode.currentData(),
@@ -867,7 +925,9 @@ class PositioningConfigDialog(QDialog):
             "rtk_ar_min_fix": int(self.rtk_min_fix.value()),
             "rtk_ar_outage_count": int(self.settings.get("rtk_ar_outage_count", 5)),
             "rtk_max_correction_age_s": float(self.rtk_max_age.value()),
-            "rtk_cycle_slip_threshold_m": float(self.settings.get("rtk_cycle_slip_threshold_m", 0.05)),
+            "rtk_cycle_slip_threshold_m": float(
+                self.settings.get("rtk_cycle_slip_threshold_m", 0.05)
+            ),
             "rtk_filter_iterations": int(self.settings.get("rtk_filter_iterations", 1)),
             "rtk_base_position_source": self.rtk_base_position_source.currentData(),
             "rtk_base_position": self._read_coordinates(self.rtk_base_position),

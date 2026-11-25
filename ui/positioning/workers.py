@@ -11,38 +11,42 @@ Threading model:
   - Solutions are emitted as Qt signals back to UI thread
 """
 
+import math
 import threading
 import time
-import math
-import numpy as np
-from typing import Optional
 
+import numpy as np
 from PySide6.QtCore import QObject, Signal
-from core.ppp_positioning import PPPPositioner
-from core.spp_positioning import SPPPositioner, PositioningResult
-from core.positioning_models import (
-    PositioningSolution, PositioningMode, SolutionStatus, PositionTrack
-)
-from core.global_config import get_global_config
-from core.ring_buffer import RingBuffer
-import logging
+
 from core.geo_utils import ecef2lla
+from core.global_config import get_global_config
 from core.gnss_time import GNSSTime
 from core.native_rtk import NativeRTKRunner
+from core.positioning_models import (
+    PositioningMode,
+    PositioningSolution,
+    PositionTrack,
+    SolutionStatus,
+)
+from core.ppp_positioning import PPPPositioner
+from core.ring_buffer import RingBuffer
+from core.spp_positioning import PositioningResult, SPPPositioner
+from rtgs.infrastructure import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class PositioningSignals(QObject):
     """
     Qt signal container for positioning thread communication.
-    
+
     Attributes:
         solution_signal (Signal): Emitted when a new positioning solution is available
                                  Carries: PositioningSolution object
         log_signal (Signal): Emitted for logging and status messages
         status_signal (Signal): Emitted when positioning status changes
     """
+
     solution_signal = Signal(object)  # PositioningSolution
     log_signal = Signal(str)
     status_signal = Signal(str, bool)  # (status_name, is_active)
@@ -52,10 +56,10 @@ class PositioningSignals(QObject):
 class PositioningThread(threading.Thread):
     """
     GNSS positioning computation thread.
-    
+
     Consumes observation epochs from a queue and computes positioning solutions
     using SPP or other algorithms. Solutions are emitted as Qt signals.
-    
+
     Responsibilities:
     - Receive EpochObservation objects from monitoring module
     - Maintain approximate receiver position
@@ -63,11 +67,13 @@ class PositioningThread(threading.Thread):
     - Track position history
     - Emit solutions to UI thread
     """
-    
-    def __init__(self, name: str, signals: PositioningSignals, ring_buffer: RingBuffer = None, handler=None):
+
+    def __init__(
+        self, name: str, signals: PositioningSignals, ring_buffer: RingBuffer = None, handler=None
+    ):
         """
         Initialize positioning thread.
-        
+
         Args:
             name: Thread identifier string
             signals: PositioningSignals object for Qt signal emission
@@ -81,32 +87,28 @@ class PositioningThread(threading.Thread):
         self.handler = handler
         self.daemon = True
         self.running = True
-        
+
         # Configuration
         config = get_global_config()
         pos_config = dict(config.get_positioning_settings())
         pos_config["ppp_ssr_mountpoint"] = str(config.ssr_settings.mountpoint or "")
         if not str(pos_config.get("ppp_station_id", "") or "").strip():
             pos_config["ppp_station_id"] = str(config.obs_settings.mountpoint or "")[:4].upper()
-        
+
         # Initialize positioning engines with shared ephemeris/SSR caches.
         self.spp_positioner = SPPPositioner(ephemeris_handler=handler, config=pos_config)
         self.ppp_positioner = PPPPositioner(ephemeris_handler=handler, config=pos_config)
         self.positioner = self.spp_positioner
         self.position_track = PositionTrack()
-        
-        self._configured_reference_position = self._valid_reference_position(
-            config.approx_rec_pos
-        )
+
+        self._configured_reference_position = self._valid_reference_position(config.approx_rec_pos)
         self.reference_position = (
             None
             if self._configured_reference_position is None
             else self._configured_reference_position.copy()
         )
         self.reference_source = "stream-config" if self.reference_position is not None else ""
-        self.ppp_independent_mode = bool(
-            pos_config.get("ppp_independent_mode", False)
-        )
+        self.ppp_independent_mode = bool(pos_config.get("ppp_independent_mode", False))
         self.approx_position = (
             None
             if self.ppp_independent_mode or self.reference_position is None
@@ -118,17 +120,17 @@ class PositioningThread(threading.Thread):
         if self.approx_position is None:
             # Let SPP compute the first coarse position from satellite geometry.
             self.approx_position = None
-        
+
         self.mode = PositioningMode.SPP
-        self.min_satellites = pos_config.get('min_satellites', 4)
-        self.min_elevation = pos_config.get('cutoff_elevation_deg', 10.0)
-        
+        self.min_satellites = pos_config.get("min_satellites", 4)
+        self.min_elevation = pos_config.get("cutoff_elevation_deg", 10.0)
+
         # Epoch caching and merging: combine observations from same UTC time
         # self.current_epoch_utc: normalized UTC time of the pending epoch (datetime object)
         # self.pending_epoch: EpochObservation being accumulated
         self.current_epoch_utc = None
         self.pending_epoch = None
-        
+
         # Statistics
         self.solution_count = 0
         self.last_log_time = time.time()
@@ -138,7 +140,7 @@ class PositioningThread(threading.Thread):
         self.last_solution_source = ""
 
     @staticmethod
-    def _valid_reference_position(values) -> Optional[np.ndarray]:
+    def _valid_reference_position(values) -> np.ndarray | None:
         try:
             position = np.asarray(values, dtype=float).reshape(-1)[:3]
         except Exception:
@@ -175,10 +177,12 @@ class PositioningThread(threading.Thread):
     def refresh_runtime_config(self) -> None:
         """Apply stream-loaded positioning settings before a run starts."""
         config = get_global_config()
-        self.update_positioning_settings(config.get_positioning_settings())
-        self._configured_reference_position = self._valid_reference_position(
-            config.approx_rec_pos
-        )
+        pos_config = dict(config.get_positioning_settings())
+        pos_config["ppp_ssr_mountpoint"] = str(config.ssr_settings.mountpoint or "")
+        if not str(pos_config.get("ppp_station_id", "") or "").strip():
+            pos_config["ppp_station_id"] = str(config.obs_settings.mountpoint or "")[:4].upper()
+        self.update_positioning_settings(pos_config)
+        self._configured_reference_position = self._valid_reference_position(config.approx_rec_pos)
         self._refresh_reference_position()
         self.approx_position = (
             None
@@ -241,7 +245,9 @@ class PositioningThread(threading.Thread):
         if "troposphere_model" in settings:
             self.spp_positioner.troposphere_model = settings["troposphere_model"]
         if "gnss_systems" in settings:
-            self.spp_positioner.gnss_systems = SPPPositioner.normalize_gnss_systems(settings["gnss_systems"])
+            self.spp_positioner.gnss_systems = SPPPositioner.normalize_gnss_systems(
+                settings["gnss_systems"]
+            )
         if "prefer_gps_only" in settings:
             self.spp_positioner.prefer_gps_only = bool(settings["prefer_gps_only"])
         if "allow_gps_fallback" in settings:
@@ -263,9 +269,7 @@ class PositioningThread(threading.Thread):
             self.spp_positioner.fixed_std_pos = float(settings["fixed_std_pos"])
         ppp_settings = dict(settings)
         if "ppp_use_config_initial_position" in settings:
-            self.ppp_use_config_initial_position = bool(
-                settings["ppp_use_config_initial_position"]
-            )
+            self.ppp_use_config_initial_position = bool(settings["ppp_use_config_initial_position"])
         if "ppp_independent_mode" in settings:
             self.ppp_independent_mode = bool(settings["ppp_independent_mode"])
             if self.ppp_independent_mode:
@@ -282,11 +286,11 @@ class PositioningThread(threading.Thread):
         if self.mode == PositioningMode.PPP:
             return self.ppp_positioner
         return self.spp_positioner
-        
+
     def run(self):
         """
         Main positioning computation loop with epoch caching and merging.
-        
+
         Procedure:
         1. Wait for EpochObservation from ring_buffer (blocking with 100ms timeout)
         2. Extract UTC time (normalized to seconds) from epoch_obs
@@ -296,18 +300,18 @@ class PositioningThread(threading.Thread):
         """
         self.signals.log_signal.emit(f"[{self.name}] Positioning thread started")
         self.signals.status_signal.emit("Ready", True)
-        
+
         while self.running:
             try:
                 # Check if ring_buffer is available
                 if self.ring_buffer is None:
                     time.sleep(0.1)
                     continue
-                
+
                 # Step 1: Blocking get from ring_buffer with timeout
                 # Blocks up to 100ms if no data available, allows responsive shutdown
                 epoch_obs = self.ring_buffer.get(block=True, timeout=0.1)
-                
+
                 # Check if buffer is closed or empty
                 if epoch_obs is None:
                     if self.ring_buffer.closed:
@@ -323,32 +327,32 @@ class PositioningThread(threading.Thread):
                         self.signals.log_signal.emit(f"[{self.name}] Buffer closed, stopping")
                         break
                     continue
-                
+
                 # Step 2: Extract UTC time (normalized to seconds for merging)
-                utc_dt = getattr(epoch_obs, 'utc_datetime', None)
+                utc_dt = getattr(epoch_obs, "utc_datetime", None)
                 if utc_dt is None:
                     logger.warning(f"[{self.name}] epoch_obs missing utc_datetime, skipping")
                     continue
-                
+
                 # Normalize to whole second (remove microseconds)
                 utc_normalized = utc_dt.replace(microsecond=0)
-                
+
                 # Step 3 & 4: Handle epoch caching and merging
                 if self.current_epoch_utc is None:
                     # First epoch: start caching
                     self.current_epoch_utc = utc_normalized
                     self.pending_epoch = epoch_obs
-                    
+
                 elif utc_normalized == self.current_epoch_utc:
                     # Same UTC time: merge satellites/signals into pending epoch
                     for sat_k, sat_v in epoch_obs.satellites.items():
                         self.pending_epoch.satellites[sat_k] = sat_v
-                    
+
                 else:
                     # Different UTC time: process pending epoch, then start new
                     if self.pending_epoch is not None:
                         solution = self._process_epoch(self.pending_epoch)
-                        
+
                         if solution is not None:
                             self.solution_count += 1
                             if solution.status != SolutionStatus.NO_FIX:
@@ -362,14 +366,14 @@ class PositioningThread(threading.Thread):
                                     f"UTC: {utc_normalized.strftime('%Y-%m-%d %H:%M:%S')}"
                                 )
                                 self.first_solution = False
-                            
+
                             # Emit solution
                             self.signals.solution_signal.emit(solution)
-                    
+
                     # Start caching the new epoch
                     self.current_epoch_utc = utc_normalized
                     self.pending_epoch = epoch_obs
-                
+
                 # Step 5: Periodic status logging every 30 seconds
                 now = time.time()
                 if now - self.last_log_time >= 30.0 and self.last_position is not None:
@@ -383,27 +387,29 @@ class PositioningThread(threading.Thread):
                     )
                     self.solution_count = 0
                     self.last_log_time = now
-                
+
             except Exception as e:
                 self.signals.log_signal.emit(f"[{self.name}] Error: {str(e)}")
-                logger.error(f"[{self.name}] Exception in positioning thread: {str(e)}", exc_info=True)
-        
+                logger.error(
+                    f"[{self.name}] Exception in positioning thread: {str(e)}", exc_info=True
+                )
+
         self.signals.log_signal.emit(f"[{self.name}] Positioning thread stopped")
         self.signals.status_signal.emit("Stopped", False)
-    
-    def _process_epoch(self, epoch_obs) -> Optional[PositioningSolution]:
+
+    def _process_epoch(self, epoch_obs) -> PositioningSolution | None:
         """
         Process a single observation epoch.
-        
+
         Args:
             epoch_obs: EpochObservation object
-        
+
         Returns:
             PositioningSolution if successful, None otherwise
         """
         try:
             start_time = time.time()
-            
+
             if self.mode in (PositioningMode.SPP, PositioningMode.PPP):
                 active_positioner = self._active_positioner()
                 self.positioner = active_positioner
@@ -434,37 +440,43 @@ class PositioningThread(threading.Thread):
                 else:
                     # Station-apriori mode may use the configured approximate
                     # position when no decoded RTCM station coordinates exist.
-                    approx_pos = np.array(self.approx_position, dtype=float) if self.approx_position is not None else None
-                
+                    approx_pos = (
+                        np.array(self.approx_position, dtype=float)
+                        if self.approx_position is not None
+                        else None
+                    )
+
                 result = active_positioner.process_epoch(epoch_obs, approx_pos)
             else:
-                self.signals.log_signal.emit(f"[{self.name}] {self.mode.name} positioning is not implemented")
+                self.signals.log_signal.emit(
+                    f"[{self.name}] {self.mode.name} positioning is not implemented"
+                )
                 return None
-            
+
             if result is None:
                 self._emit_failure_diagnostics(getattr(active_positioner, "last_diagnostics", {}))
                 return None
-            
+
             # Convert RTCMHandler's PositioningResult to our PositioningSolution
             solution = self._convert_result_to_solution(result, epoch_obs)
             if solution.status != SolutionStatus.NO_FIX:
                 self.approx_position = np.array(result.position_ecef, dtype=float)
-            
+
             # Timing
             solution.processing_time_ms = (time.time() - start_time) * 1000
             self._emit_solution_diagnostics(solution)
-            
+
             return solution
-        
+
         except Exception as e:
             logger.error(f"Epoch processing failed: {str(e)}")
             return None
-    
+
     def _convert_result_to_solution(
         self, result: PositioningResult, epoch_obs
     ) -> PositioningSolution:
         """Convert SPPPositioner's PositioningResult to PositioningSolution."""
-        
+
         status_map = {
             "Fixed": SolutionStatus.FIXED,
             "Uncertain": SolutionStatus.UNCERTAIN,
@@ -472,18 +484,20 @@ class PositioningThread(threading.Thread):
             "No Fix": SolutionStatus.NO_FIX,
         }
         status = status_map.get(result.solution_status, SolutionStatus.NO_FIX)
-        
+        if self.mode == PositioningMode.PPP and status != SolutionStatus.NO_FIX:
+            # The dashboard's PPP status describes coordinate convergence.
+            # Ambiguity validation is reported separately in the solution.
+            status = SolutionStatus.FIXED if result.convergence else SolutionStatus.UNCERTAIN
+
         # Count total signals
-        num_signals = sum(
-            len(sat.signals) for sat in epoch_obs.satellites.values()
-        )
-        
+        num_signals = sum(len(sat.signals) for sat in epoch_obs.satellites.values())
+
         epoch_time = getattr(result, "epoch_time", None) or getattr(epoch_obs, "utc_datetime", None)
         try:
             gps_week, _gps_sow = GNSSTime.utc_to_gps(epoch_time)
         except Exception:
             gps_week = 0
-        
+
         solution = PositioningSolution(
             timestamp=result.timestamp,
             gps_week=gps_week,
@@ -508,13 +522,14 @@ class PositioningThread(threading.Thread):
             zhd=float(getattr(result, "zhd", 0.0) or 0.0),
             zwd=float(getattr(result, "zwd", 0.0) or 0.0),
             ambiguity_ratio=float(getattr(result, "ambiguity_ratio", 0.0) or 0.0),
+            ambiguity_fixed_count=int(getattr(result, "ambiguity_fixed_count", 0) or 0),
             num_satellites=result.num_satellites,
             num_signals=num_signals,
             variance_unit_weight=result.variance,
             convergence=result.convergence,
             status=status,
             mode=self.mode,
-            time_offsets=getattr(result, 'time_offsets', {}),
+            time_offsets=getattr(result, "time_offsets", {}),
             used_satellites=list(getattr(result, "used_satellites", []) or []),
             used_system_counts=dict(getattr(result, "used_system_counts", {}) or {}),
             candidate_system_counts=dict(getattr(result, "candidate_system_counts", {}) or {}),
@@ -523,7 +538,7 @@ class PositioningThread(threading.Thread):
             quality_reason=str(getattr(result, "quality_reason", "") or ""),
             diagnostics=dict(getattr(self.positioner, "last_diagnostics", {}) or {}),
         )
-        
+
         # Compute residuals statistics
         if result.residuals:
             residuals_array = np.array(result.residuals)
@@ -532,7 +547,7 @@ class PositioningThread(threading.Thread):
             solution.residuals_max = float(np.max(np.abs(residuals_array)))
 
         self._apply_reference_errors(solution)
-        
+
         return solution
 
     @staticmethod
@@ -576,13 +591,27 @@ class PositioningThread(threading.Thread):
             message += f"; quality={solution.quality_reason}"
         diagnostics = solution.diagnostics or {}
         if solution.mode == PositioningMode.PPP:
+            antex_status = (
+                str(diagnostics.get("antex_source", "on"))
+                if diagnostics.get("antex_loaded")
+                else "off"
+            )
+            blq_status = (
+                str(diagnostics.get("blq_source", "on"))
+                if diagnostics.get("blq_loaded")
+                else "off"
+            )
             message += (
                 f"; SSR-ref={diagnostics.get('ssr_reference_point', '?')}"
-                f"; ANTEX={'on' if diagnostics.get('antex_loaded') else 'off'}"
+                f"; ANTEX={antex_status}"
+                f"; BLQ={blq_status}"
                 f"; AR={diagnostics.get('ar_status', 'unknown')}"
                 f" candidates={int(diagnostics.get('ar_candidate_count', 0) or 0)}"
                 f" fixed={int(diagnostics.get('ar_fixed_count', 0) or 0)}"
             )
+            ocean_status = str(diagnostics.get("ocean_loading_status", "") or "")
+            if ocean_status and ocean_status != "applied":
+                message += f"; OTL={ocean_status}"
             ar_reason = str(diagnostics.get("ar_rejection_reason", "") or "")
             if ar_reason:
                 message += f" ({ar_reason})"
@@ -620,21 +649,21 @@ class PositioningThread(threading.Thread):
                 f"[{self.name}] {mode_label} rejected observations: {self._format_counts(reject_counts)}"
             )
         self.last_diagnostic_log_time = now
-    
+
     def set_ring_buffer(self, ring_buffer: RingBuffer):
         """
         Set the ring buffer for receiving observation epochs.
-        
+
         Args:
             ring_buffer: RingBuffer containing observation epochs
         """
         self.ring_buffer = ring_buffer
-    
+
     def set_mode(self, mode: PositioningMode):
         """Set positioning mode."""
         self.mode = mode
         self.positioner = self._active_positioner()
-    
+
     def set_parameters(self, min_satellites: int = None, min_elevation: float = None):
         """Update positioning parameters."""
         if min_satellites is not None:
@@ -645,15 +674,15 @@ class PositioningThread(threading.Thread):
             self.min_elevation = min_elevation
             self.spp_positioner.MIN_ELEVATION = min_elevation
             self.ppp_positioner.spp.MIN_ELEVATION = min_elevation
-    
+
     def get_position_history(self):
         """Get complete position history."""
         return self.position_track.positions
-    
-    def get_last_solution(self) -> Optional[PositioningSolution]:
+
+    def get_last_solution(self) -> PositioningSolution | None:
         """Get the most recent positioning solution."""
         return self.last_position
-    
+
     def stop(self):
         """Signal the thread to stop."""
         self.running = False

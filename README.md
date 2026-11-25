@@ -71,6 +71,18 @@ python gui_main.py
 python rtcm_batch_gui.py
 ```
 
+On Linux and macOS, use `python3` when `python` is not available:
+
+```bash
+./scripts/setup_environment.sh
+./scripts/run_rtgs.sh
+```
+
+The setup script detects a virtual environment copied from another checkout
+or built for an unavailable Python version, removes it, and creates one working
+environment for the selected `PYTHON_BIN` (Python 3.10+). Set
+`RTGS_KEEP_ENV_BACKUP=1` when a timestamped backup is required.
+
 The compatibility command `python -m pip install -r requirements.txt` installs the
 same editable development environment. After installation, `rtgs` and
 `rtgs-rtcm-batch` are also available as GUI commands. See
@@ -148,4 +160,8 @@ and ocean loading requires a station ID present in the BLQ catalog.
 
 - [Monitoring user guide](doc/USAGE.md)
 - [Positioning user guide](doc/POSITIONING.md)
+- [Architecture and development boundaries](doc/ARCHITECTURE.md)
+- [Configuration layout](config/README.md)
+- Run `./scripts/clean_environment.sh` to remove caches and build metadata. Add
+  `--all` to remove stale `.venv-*` copies while keeping the canonical `.venv`.
 - PDF files in `doc/` are external references for RTCM, RINEX, and receiver-specific documentation.

@@ -1,15 +1,37 @@
 """Shared configuration dialog for stream inputs, replay files, and receiver settings."""
 
 import importlib.util
+
 import yaml
-from PySide6.QtWidgets import (QDialog, QVBoxLayout, QGroupBox, QFormLayout, 
-                             QLineEdit, QCheckBox, QHBoxLayout, QPushButton, 
-                             QFileDialog, QMessageBox, QStyle, QComboBox, QLabel,
-                             QSpinBox, QScrollArea, QWidget, QDoubleSpinBox, QSizePolicy)
-from PySide6.QtGui import QIcon
 from PySide6.QtCore import Qt
-from core.config_paths import CONFIG_ROOT, DEFAULT_STREAM_SAVE_NAME, STREAM_CONFIG_DIR, ensure_config_directories
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QStyle,
+    QVBoxLayout,
+    QWidget,
+)
+
+from core.config_paths import (
+    CONFIG_ROOT,
+    DEFAULT_STREAM_SAVE_NAME,
+    STREAM_CONFIG_DIR,
+    ensure_config_directories,
+)
 from ui.responsive import adaptive_window_size
+
 
 class ConfigDialog(QDialog):
     def __init__(self, parent=None, initial_settings=None):
@@ -28,14 +50,14 @@ class ConfigDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
         layout.setContentsMargins(10, 10, 10, 10)
-        
+
         # Create scroll area for better usability
         scroll_area = QScrollArea()
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout(scroll_widget)
         scroll_layout.setSpacing(10)
         scroll_layout.setContentsMargins(10, 10, 10, 10)
-        
+
         # =====================================================================
         # OBS Stream Configuration
         # =====================================================================
@@ -45,100 +67,123 @@ class ConfigDialog(QDialog):
         fl_obs.setRowWrapPolicy(QFormLayout.DontWrapRows)
         fl_obs.setFormAlignment(Qt.AlignHCenter | Qt.AlignTop)
         fl_obs.setLabelAlignment(Qt.AlignLeft)
-        
+
         # Data source type selector
         self.obs_source = QComboBox()
         self.obs_source.addItems(["NTRIP Server", "Serial Port", "RINEX File"])
-        obs_source_val = self.settings.get('OBS', {}).get('source', 'NTRIP Server')
+        obs_source_val = self.settings.get("OBS", {}).get("source", "NTRIP Server")
         self.obs_source.setCurrentText(obs_source_val)
         self.obs_source.currentTextChanged.connect(self.on_obs_source_changed)
         fl_obs.addRow("Data Source:", self.obs_source)
-        
+
         # NTRIP fields
-        self.obs_h = QLineEdit(self.settings.get('OBS', {}).get('host',''))
-        self.obs_p = QLineEdit(str(self.settings.get('OBS', {}).get('port','2101')))
-        self.obs_m = QLineEdit(self.settings.get('OBS', {}).get('mountpoint',''))
-        self.obs_u = QLineEdit(self.settings.get('OBS', {}).get('user',''))
-        self.obs_pw = QLineEdit(self.settings.get('OBS', {}).get('password',''))
+        self.obs_h = QLineEdit(self.settings.get("OBS", {}).get("host", ""))
+        self.obs_p = QLineEdit(str(self.settings.get("OBS", {}).get("port", "2101")))
+        self.obs_m = QLineEdit(self.settings.get("OBS", {}).get("mountpoint", ""))
+        self.obs_u = QLineEdit(self.settings.get("OBS", {}).get("user", ""))
+        self.obs_pw = QLineEdit(self.settings.get("OBS", {}).get("password", ""))
         self.obs_pw.setEchoMode(QLineEdit.EchoMode.Password)
-        
+
         self.lbl_obs_host = QLabel("Host:")
         self.lbl_obs_port = QLabel("Port:")
         self.lbl_obs_mount = QLabel("Mountpoint:")
         self.lbl_obs_user = QLabel("User:")
         self.lbl_obs_pw = QLabel("Password:")
-        
+
         # Set size policy for better resizing behavior
-        self._set_size_policy_for_widgets([self.obs_h, self.obs_p, self.obs_m, self.obs_u, self.obs_pw])
-        
+        self._set_size_policy_for_widgets(
+            [self.obs_h, self.obs_p, self.obs_m, self.obs_u, self.obs_pw]
+        )
+
         fl_obs.addRow(self.lbl_obs_host, self.obs_h)
         fl_obs.addRow(self.lbl_obs_port, self.obs_p)
         fl_obs.addRow(self.lbl_obs_mount, self.obs_m)
         fl_obs.addRow(self.lbl_obs_user, self.obs_u)
         fl_obs.addRow(self.lbl_obs_pw, self.obs_pw)
-        
+
         # Serial port fields
         self.obs_port = QComboBox()
         self.obs_port.addItems(self._get_available_ports() or ["No ports found"])
-        obs_port_setting = self.settings.get('OBS', {}).get('port', 'COM1')
+        obs_port_setting = self.settings.get("OBS", {}).get("port", "COM1")
         self.obs_port.setCurrentText(str(obs_port_setting))
-        
+
         # Baud rate dropdown with common values
         self.obs_baudrate = QComboBox()
-        common_baudrates = ["300", "1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600"]
+        common_baudrates = [
+            "300",
+            "1200",
+            "2400",
+            "4800",
+            "9600",
+            "19200",
+            "38400",
+            "57600",
+            "115200",
+            "230400",
+            "460800",
+            "921600",
+        ]
         self.obs_baudrate.addItems(common_baudrates)
-        default_baudrate = str(self.settings.get('OBS', {}).get('baudrate', 115200))
+        default_baudrate = str(self.settings.get("OBS", {}).get("baudrate", 115200))
         if default_baudrate in common_baudrates:
             self.obs_baudrate.setCurrentText(default_baudrate)
         else:
             self.obs_baudrate.setCurrentText("115200")
-        
+
         # Data bits dropdown
         self.obs_databits = QComboBox()
         self.obs_databits.addItems(["5", "6", "7", "8"])
-        databits_val = str(self.settings.get('OBS', {}).get('databits', 8))
+        databits_val = str(self.settings.get("OBS", {}).get("databits", 8))
         if databits_val in ["5", "6", "7", "8"]:
             self.obs_databits.setCurrentText(databits_val)
         else:
             self.obs_databits.setCurrentText("8")
-        
+
         # Stop bits dropdown
         self.obs_stopbits = QComboBox()
         self.obs_stopbits.addItems(["1", "1.5", "2"])
-        stopbits_val = str(self.settings.get('OBS', {}).get('stopbits', 1))
+        stopbits_val = str(self.settings.get("OBS", {}).get("stopbits", 1))
         if stopbits_val in ["1", "1.5", "2"]:
             self.obs_stopbits.setCurrentText(stopbits_val)
         else:
             self.obs_stopbits.setCurrentText("1")
-        
+
         # Parity dropdown
         self.obs_parity = QComboBox()
         self.obs_parity.addItems(["None", "Even", "Odd", "Mark", "Space"])
-        parity_val = self.settings.get('OBS', {}).get('parity', 'None')
+        parity_val = self.settings.get("OBS", {}).get("parity", "None")
         if parity_val in ["None", "Even", "Odd", "Mark", "Space"]:
             self.obs_parity.setCurrentText(parity_val)
         else:
             self.obs_parity.setCurrentText("None")
-        
+
         # Flow control dropdown
         self.obs_flowctrl = QComboBox()
         self.obs_flowctrl.addItems(["None", "RTS/CTS", "XOn/XOff"])
-        flowctrl_val = self.settings.get('OBS', {}).get('flowctrl', 'None')
+        flowctrl_val = self.settings.get("OBS", {}).get("flowctrl", "None")
         if flowctrl_val in ["None", "RTS/CTS", "XOn/XOff"]:
             self.obs_flowctrl.setCurrentText(flowctrl_val)
         else:
             self.obs_flowctrl.setCurrentText("None")
-        
+
         self.lbl_obs_serial_port = QLabel("Serial Port:")
         self.lbl_obs_baudrate = QLabel("Baud Rate:")
         self.lbl_obs_databits = QLabel("Data Bits:")
         self.lbl_obs_stopbits = QLabel("Stop Bits:")
         self.lbl_obs_parity = QLabel("Parity:")
         self.lbl_obs_flowctrl = QLabel("Flow Control:")
-        
-        self._set_size_policy_for_widgets([self.obs_port, self.obs_baudrate, self.obs_databits, 
-                                          self.obs_stopbits, self.obs_parity, self.obs_flowctrl])
-        
+
+        self._set_size_policy_for_widgets(
+            [
+                self.obs_port,
+                self.obs_baudrate,
+                self.obs_databits,
+                self.obs_stopbits,
+                self.obs_parity,
+                self.obs_flowctrl,
+            ]
+        )
+
         fl_obs.addRow(self.lbl_obs_serial_port, self.obs_port)
         fl_obs.addRow(self.lbl_obs_baudrate, self.obs_baudrate)
         fl_obs.addRow(self.lbl_obs_databits, self.obs_databits)
@@ -146,7 +191,7 @@ class ConfigDialog(QDialog):
         fl_obs.addRow(self.lbl_obs_parity, self.obs_parity)
         fl_obs.addRow(self.lbl_obs_flowctrl, self.obs_flowctrl)
 
-        self.obs_file_path = QLineEdit(self.settings.get('OBS', {}).get('file_path', ''))
+        self.obs_file_path = QLineEdit(self.settings.get("OBS", {}).get("file_path", ""))
         self.obs_file_path.setReadOnly(True)
         self.obs_file_browse = QPushButton("Browse...")
         self.obs_file_browse.clicked.connect(self.browse_obs_file)
@@ -161,125 +206,152 @@ class ConfigDialog(QDialog):
         self.obs_replay_speed.setDecimals(1)
         self.obs_replay_speed.setSingleStep(0.5)
         self.obs_replay_speed.setSuffix("x")
-        self.obs_replay_speed.setValue(float(self.settings.get('OBS', {}).get('replay_speed', 1.0) or 1.0))
+        self.obs_replay_speed.setValue(
+            float(self.settings.get("OBS", {}).get("replay_speed", 1.0) or 1.0)
+        )
         self.lbl_obs_replay_speed = QLabel("Speed Multiplier:")
         fl_obs.addRow(self.lbl_obs_replay_speed, self.obs_replay_speed)
 
         self.obs_final_results_only = QCheckBox("Final products only (no live UI updates)")
-        self.obs_final_results_only.setChecked(bool(self.settings.get('OBS', {}).get('final_results_only', False)))
+        self.obs_final_results_only.setChecked(
+            bool(self.settings.get("OBS", {}).get("final_results_only", False))
+        )
         self.lbl_obs_final_results_only = QLabel("Replay Mode:")
         fl_obs.addRow(self.lbl_obs_final_results_only, self.obs_final_results_only)
-        
+
         grp_obs.setLayout(fl_obs)
         scroll_layout.addWidget(grp_obs)
-        
+
         # =====================================================================
         # Broadcast ephemeris stream configuration (optional)
         # =====================================================================
         self.chk_eph = QCheckBox("Enable Broadcast Ephemeris Stream")
-        self.chk_eph.setChecked(self.settings.get('EPH_ENABLED', False))
+        self.chk_eph.setChecked(self.settings.get("EPH_ENABLED", False))
         self.chk_eph.stateChanged.connect(self.on_eph_enabled_changed)
         scroll_layout.addWidget(self.chk_eph)
-        
+
         grp_eph = QGroupBox("Broadcast Ephemeris Stream (EPH)")
         fl_eph = QFormLayout()
         fl_eph.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         fl_eph.setRowWrapPolicy(QFormLayout.DontWrapRows)
         fl_eph.setFormAlignment(Qt.AlignHCenter | Qt.AlignTop)
         fl_eph.setLabelAlignment(Qt.AlignLeft)
-        
+
         # Data source type selector for EPH
         self.eph_source = QComboBox()
         self.eph_source.addItems(["NTRIP Server", "Serial Port", "File"])
-        eph_source_val = self.settings.get('EPH', {}).get('source', 'NTRIP Server')
+        eph_source_val = self.settings.get("EPH", {}).get("source", "NTRIP Server")
         self.eph_source.setCurrentText(eph_source_val)
         self.eph_source.currentTextChanged.connect(self.on_eph_source_changed)
         fl_eph.addRow("Data Source:", self.eph_source)
-        
+
         # NTRIP fields for EPH
-        self.eph_h = QLineEdit(self.settings.get('EPH', {}).get('host',''))
-        self.eph_p = QLineEdit(str(self.settings.get('EPH', {}).get('port','2101')))
-        self.eph_m = QLineEdit(self.settings.get('EPH', {}).get('mountpoint',''))
-        self.eph_u = QLineEdit(self.settings.get('EPH', {}).get('user',''))
-        self.eph_pw = QLineEdit(self.settings.get('EPH', {}).get('password',''))
+        self.eph_h = QLineEdit(self.settings.get("EPH", {}).get("host", ""))
+        self.eph_p = QLineEdit(str(self.settings.get("EPH", {}).get("port", "2101")))
+        self.eph_m = QLineEdit(self.settings.get("EPH", {}).get("mountpoint", ""))
+        self.eph_u = QLineEdit(self.settings.get("EPH", {}).get("user", ""))
+        self.eph_pw = QLineEdit(self.settings.get("EPH", {}).get("password", ""))
         self.eph_pw.setEchoMode(QLineEdit.EchoMode.Password)
-        
+
         self.lbl_eph_host = QLabel("Host:")
         self.lbl_eph_port = QLabel("Port:")
         self.lbl_eph_mount = QLabel("Mountpoint:")
         self.lbl_eph_user = QLabel("User:")
         self.lbl_eph_pw = QLabel("Password:")
-        
-        self._set_size_policy_for_widgets([self.eph_h, self.eph_p, self.eph_m, self.eph_u, self.eph_pw])
-        
+
+        self._set_size_policy_for_widgets(
+            [self.eph_h, self.eph_p, self.eph_m, self.eph_u, self.eph_pw]
+        )
+
         fl_eph.addRow(self.lbl_eph_host, self.eph_h)
         fl_eph.addRow(self.lbl_eph_port, self.eph_p)
         fl_eph.addRow(self.lbl_eph_mount, self.eph_m)
         fl_eph.addRow(self.lbl_eph_user, self.eph_u)
         fl_eph.addRow(self.lbl_eph_pw, self.eph_pw)
-        
+
         # Serial port fields for EPH
         self.eph_port = QComboBox()
         self.eph_port.addItems(self._get_available_ports() or ["No ports found"])
-        eph_port_setting = self.settings.get('EPH', {}).get('port', 'COM2')
+        eph_port_setting = self.settings.get("EPH", {}).get("port", "COM2")
         self.eph_port.setCurrentText(str(eph_port_setting))
-        
+
         # Baud rate dropdown with common values
         self.eph_baudrate = QComboBox()
-        common_baudrates = ["300", "1200", "2400", "4800", "9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600"]
+        common_baudrates = [
+            "300",
+            "1200",
+            "2400",
+            "4800",
+            "9600",
+            "19200",
+            "38400",
+            "57600",
+            "115200",
+            "230400",
+            "460800",
+            "921600",
+        ]
         self.eph_baudrate.addItems(common_baudrates)
-        default_eph_baudrate = str(self.settings.get('EPH', {}).get('baudrate', 115200))
+        default_eph_baudrate = str(self.settings.get("EPH", {}).get("baudrate", 115200))
         if default_eph_baudrate in common_baudrates:
             self.eph_baudrate.setCurrentText(default_eph_baudrate)
         else:
             self.eph_baudrate.setCurrentText("115200")
-        
+
         # Data bits dropdown
         self.eph_databits = QComboBox()
         self.eph_databits.addItems(["5", "6", "7", "8"])
-        eph_databits_val = str(self.settings.get('EPH', {}).get('databits', 8))
+        eph_databits_val = str(self.settings.get("EPH", {}).get("databits", 8))
         if eph_databits_val in ["5", "6", "7", "8"]:
             self.eph_databits.setCurrentText(eph_databits_val)
         else:
             self.eph_databits.setCurrentText("8")
-        
+
         # Stop bits dropdown
         self.eph_stopbits = QComboBox()
         self.eph_stopbits.addItems(["1", "1.5", "2"])
-        eph_stopbits_val = str(self.settings.get('EPH', {}).get('stopbits', 1))
+        eph_stopbits_val = str(self.settings.get("EPH", {}).get("stopbits", 1))
         if eph_stopbits_val in ["1", "1.5", "2"]:
             self.eph_stopbits.setCurrentText(eph_stopbits_val)
         else:
             self.eph_stopbits.setCurrentText("1")
-        
+
         # Parity dropdown
         self.eph_parity = QComboBox()
         self.eph_parity.addItems(["None", "Even", "Odd", "Mark", "Space"])
-        eph_parity_val = self.settings.get('EPH', {}).get('parity', 'None')
+        eph_parity_val = self.settings.get("EPH", {}).get("parity", "None")
         if eph_parity_val in ["None", "Even", "Odd", "Mark", "Space"]:
             self.eph_parity.setCurrentText(eph_parity_val)
         else:
             self.eph_parity.setCurrentText("None")
-        
+
         # Flow control dropdown
         self.eph_flowctrl = QComboBox()
         self.eph_flowctrl.addItems(["None", "RTS/CTS", "XOn/XOff"])
-        eph_flowctrl_val = self.settings.get('EPH', {}).get('flowctrl', 'None')
+        eph_flowctrl_val = self.settings.get("EPH", {}).get("flowctrl", "None")
         if eph_flowctrl_val in ["None", "RTS/CTS", "XOn/XOff"]:
             self.eph_flowctrl.setCurrentText(eph_flowctrl_val)
         else:
             self.eph_flowctrl.setCurrentText("None")
-        
+
         self.lbl_eph_serial_port = QLabel("Serial Port:")
         self.lbl_eph_baudrate = QLabel("Baud Rate:")
         self.lbl_eph_databits = QLabel("Data Bits:")
         self.lbl_eph_stopbits = QLabel("Stop Bits:")
         self.lbl_eph_parity = QLabel("Parity:")
         self.lbl_eph_flowctrl = QLabel("Flow Control:")
-        
-        self._set_size_policy_for_widgets([self.eph_port, self.eph_baudrate, self.eph_databits, 
-                                          self.eph_stopbits, self.eph_parity, self.eph_flowctrl])
-        
+
+        self._set_size_policy_for_widgets(
+            [
+                self.eph_port,
+                self.eph_baudrate,
+                self.eph_databits,
+                self.eph_stopbits,
+                self.eph_parity,
+                self.eph_flowctrl,
+            ]
+        )
+
         fl_eph.addRow(self.lbl_eph_serial_port, self.eph_port)
         fl_eph.addRow(self.lbl_eph_baudrate, self.eph_baudrate)
         fl_eph.addRow(self.lbl_eph_databits, self.eph_databits)
@@ -287,7 +359,7 @@ class ConfigDialog(QDialog):
         fl_eph.addRow(self.lbl_eph_parity, self.eph_parity)
         fl_eph.addRow(self.lbl_eph_flowctrl, self.eph_flowctrl)
 
-        self.eph_file_path = QLineEdit(self.settings.get('EPH', {}).get('file_path', ''))
+        self.eph_file_path = QLineEdit(self.settings.get("EPH", {}).get("file_path", ""))
         self.eph_file_path.setReadOnly(True)
         self.eph_file_browse = QPushButton("Browse...")
         self.eph_file_browse.clicked.connect(self.browse_eph_file)
@@ -299,11 +371,15 @@ class ConfigDialog(QDialog):
 
         self.eph_file_type = QComboBox()
         self.eph_file_type.addItems(["Auto Detect", "Broadcast RINEX", "Precise SP3"])
-        eph_file_type = self.settings.get('EPH', {}).get('file_type', 'Auto Detect')
-        self.eph_file_type.setCurrentText(eph_file_type if eph_file_type in ["Auto Detect", "Broadcast RINEX", "Precise SP3"] else "Auto Detect")
+        eph_file_type = self.settings.get("EPH", {}).get("file_type", "Auto Detect")
+        self.eph_file_type.setCurrentText(
+            eph_file_type
+            if eph_file_type in ["Auto Detect", "Broadcast RINEX", "Precise SP3"]
+            else "Auto Detect"
+        )
         self.lbl_eph_file_type = QLabel("File Type:")
         fl_eph.addRow(self.lbl_eph_file_type, self.eph_file_type)
-        
+
         grp_eph.setLayout(fl_eph)
         grp_eph.setEnabled(self.chk_eph.isChecked())
         self.grp_eph = grp_eph
@@ -313,7 +389,7 @@ class ConfigDialog(QDialog):
         # SSR correction stream configuration (optional)
         # =====================================================================
         self.chk_ssr = QCheckBox("Enable SSR Corrections Stream")
-        self.chk_ssr.setChecked(self.settings.get('SSR_ENABLED', False))
+        self.chk_ssr.setChecked(self.settings.get("SSR_ENABLED", False))
         self.chk_ssr.stateChanged.connect(self.on_ssr_enabled_changed)
         scroll_layout.addWidget(self.chk_ssr)
 
@@ -324,19 +400,23 @@ class ConfigDialog(QDialog):
         fl_ssr.setFormAlignment(Qt.AlignHCenter | Qt.AlignTop)
         fl_ssr.setLabelAlignment(Qt.AlignLeft)
 
-        ssr_settings = self.settings.get('SSR', {})
+        ssr_settings = self.settings.get("SSR", {})
         self.ssr_source = QComboBox()
         self.ssr_source.addItems(["NTRIP Server", "Serial Port"])
-        ssr_source_val = ssr_settings.get('source') or ssr_settings.get('source_type') or 'NTRIP Server'
-        self.ssr_source.setCurrentText(ssr_source_val if ssr_source_val in ["NTRIP Server", "Serial Port"] else "NTRIP Server")
+        ssr_source_val = (
+            ssr_settings.get("source") or ssr_settings.get("source_type") or "NTRIP Server"
+        )
+        self.ssr_source.setCurrentText(
+            ssr_source_val if ssr_source_val in ["NTRIP Server", "Serial Port"] else "NTRIP Server"
+        )
         self.ssr_source.currentTextChanged.connect(self.on_ssr_source_changed)
         fl_ssr.addRow("Data Source:", self.ssr_source)
 
-        self.ssr_h = QLineEdit(ssr_settings.get('host', ''))
-        self.ssr_p = QLineEdit(str(ssr_settings.get('port', '2101')))
-        self.ssr_m = QLineEdit(ssr_settings.get('mountpoint', ''))
-        self.ssr_u = QLineEdit(ssr_settings.get('user', ''))
-        self.ssr_pw = QLineEdit(ssr_settings.get('password', ''))
+        self.ssr_h = QLineEdit(ssr_settings.get("host", ""))
+        self.ssr_p = QLineEdit(str(ssr_settings.get("port", "2101")))
+        self.ssr_m = QLineEdit(ssr_settings.get("mountpoint", ""))
+        self.ssr_u = QLineEdit(ssr_settings.get("user", ""))
+        self.ssr_pw = QLineEdit(ssr_settings.get("password", ""))
         self.ssr_pw.setEchoMode(QLineEdit.EchoMode.Password)
 
         self.lbl_ssr_host = QLabel("Host:")
@@ -345,7 +425,9 @@ class ConfigDialog(QDialog):
         self.lbl_ssr_user = QLabel("User:")
         self.lbl_ssr_pw = QLabel("Password:")
 
-        self._set_size_policy_for_widgets([self.ssr_h, self.ssr_p, self.ssr_m, self.ssr_u, self.ssr_pw])
+        self._set_size_policy_for_widgets(
+            [self.ssr_h, self.ssr_p, self.ssr_m, self.ssr_u, self.ssr_pw]
+        )
 
         fl_ssr.addRow(self.lbl_ssr_host, self.ssr_h)
         fl_ssr.addRow(self.lbl_ssr_port, self.ssr_p)
@@ -355,33 +437,43 @@ class ConfigDialog(QDialog):
 
         self.ssr_port = QComboBox()
         self.ssr_port.addItems(self._get_available_ports() or ["No ports found"])
-        ssr_port_setting = ssr_settings.get('serial_port') or ssr_settings.get('port') or 'COM3'
+        ssr_port_setting = ssr_settings.get("serial_port") or ssr_settings.get("port") or "COM3"
         self.ssr_port.setCurrentText(str(ssr_port_setting))
 
         self.ssr_baudrate = QComboBox()
         self.ssr_baudrate.addItems(common_baudrates)
-        default_ssr_baudrate = str(ssr_settings.get('baudrate', 115200))
-        self.ssr_baudrate.setCurrentText(default_ssr_baudrate if default_ssr_baudrate in common_baudrates else "115200")
+        default_ssr_baudrate = str(ssr_settings.get("baudrate", 115200))
+        self.ssr_baudrate.setCurrentText(
+            default_ssr_baudrate if default_ssr_baudrate in common_baudrates else "115200"
+        )
 
         self.ssr_databits = QComboBox()
         self.ssr_databits.addItems(["5", "6", "7", "8"])
-        ssr_databits_val = str(ssr_settings.get('databits', 8))
-        self.ssr_databits.setCurrentText(ssr_databits_val if ssr_databits_val in ["5", "6", "7", "8"] else "8")
+        ssr_databits_val = str(ssr_settings.get("databits", 8))
+        self.ssr_databits.setCurrentText(
+            ssr_databits_val if ssr_databits_val in ["5", "6", "7", "8"] else "8"
+        )
 
         self.ssr_stopbits = QComboBox()
         self.ssr_stopbits.addItems(["1", "1.5", "2"])
-        ssr_stopbits_val = str(ssr_settings.get('stopbits', 1))
-        self.ssr_stopbits.setCurrentText(ssr_stopbits_val if ssr_stopbits_val in ["1", "1.5", "2"] else "1")
+        ssr_stopbits_val = str(ssr_settings.get("stopbits", 1))
+        self.ssr_stopbits.setCurrentText(
+            ssr_stopbits_val if ssr_stopbits_val in ["1", "1.5", "2"] else "1"
+        )
 
         self.ssr_parity = QComboBox()
         self.ssr_parity.addItems(["None", "Even", "Odd", "Mark", "Space"])
-        ssr_parity_val = ssr_settings.get('parity', 'None')
-        self.ssr_parity.setCurrentText(ssr_parity_val if ssr_parity_val in ["None", "Even", "Odd", "Mark", "Space"] else "None")
+        ssr_parity_val = ssr_settings.get("parity", "None")
+        self.ssr_parity.setCurrentText(
+            ssr_parity_val if ssr_parity_val in ["None", "Even", "Odd", "Mark", "Space"] else "None"
+        )
 
         self.ssr_flowctrl = QComboBox()
         self.ssr_flowctrl.addItems(["None", "RTS/CTS", "XOn/XOff"])
-        ssr_flowctrl_val = ssr_settings.get('flowctrl', 'None')
-        self.ssr_flowctrl.setCurrentText(ssr_flowctrl_val if ssr_flowctrl_val in ["None", "RTS/CTS", "XOn/XOff"] else "None")
+        ssr_flowctrl_val = ssr_settings.get("flowctrl", "None")
+        self.ssr_flowctrl.setCurrentText(
+            ssr_flowctrl_val if ssr_flowctrl_val in ["None", "RTS/CTS", "XOn/XOff"] else "None"
+        )
 
         self.lbl_ssr_serial_port = QLabel("Serial Port:")
         self.lbl_ssr_baudrate = QLabel("Baud Rate:")
@@ -390,10 +482,16 @@ class ConfigDialog(QDialog):
         self.lbl_ssr_parity = QLabel("Parity:")
         self.lbl_ssr_flowctrl = QLabel("Flow Control:")
 
-        self._set_size_policy_for_widgets([
-            self.ssr_port, self.ssr_baudrate, self.ssr_databits,
-            self.ssr_stopbits, self.ssr_parity, self.ssr_flowctrl
-        ])
+        self._set_size_policy_for_widgets(
+            [
+                self.ssr_port,
+                self.ssr_baudrate,
+                self.ssr_databits,
+                self.ssr_stopbits,
+                self.ssr_parity,
+                self.ssr_flowctrl,
+            ]
+        )
 
         fl_ssr.addRow(self.lbl_ssr_serial_port, self.ssr_port)
         fl_ssr.addRow(self.lbl_ssr_baudrate, self.ssr_baudrate)
@@ -411,7 +509,7 @@ class ConfigDialog(QDialog):
         # RTK base station / network correction stream (optional)
         # =====================================================================
         self.chk_base = QCheckBox("Enable RTK Base / Network Stream")
-        self.chk_base.setChecked(self.settings.get('BASE_ENABLED', False))
+        self.chk_base.setChecked(self.settings.get("BASE_ENABLED", False))
         self.chk_base.stateChanged.connect(self.on_base_enabled_changed)
         scroll_layout.addWidget(self.chk_base)
 
@@ -419,20 +517,24 @@ class ConfigDialog(QDialog):
         fl_base = QFormLayout()
         fl_base.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         fl_base.setLabelAlignment(Qt.AlignLeft)
-        base_settings = self.settings.get('BASE', {})
+        base_settings = self.settings.get("BASE", {})
 
         self.base_source = QComboBox()
         self.base_source.addItems(["NTRIP Server", "Serial Port"])
-        base_source = base_settings.get('source') or base_settings.get('source_type') or 'NTRIP Server'
-        self.base_source.setCurrentText(base_source if base_source in ["NTRIP Server", "Serial Port"] else "NTRIP Server")
+        base_source = (
+            base_settings.get("source") or base_settings.get("source_type") or "NTRIP Server"
+        )
+        self.base_source.setCurrentText(
+            base_source if base_source in ["NTRIP Server", "Serial Port"] else "NTRIP Server"
+        )
         self.base_source.currentTextChanged.connect(self.on_base_source_changed)
         fl_base.addRow("Data Source:", self.base_source)
 
-        self.base_h = QLineEdit(base_settings.get('host', ''))
-        self.base_p = QLineEdit(str(base_settings.get('port', '2101')))
-        self.base_m = QLineEdit(base_settings.get('mountpoint', ''))
-        self.base_u = QLineEdit(base_settings.get('user', ''))
-        self.base_pw = QLineEdit(base_settings.get('password', ''))
+        self.base_h = QLineEdit(base_settings.get("host", ""))
+        self.base_p = QLineEdit(str(base_settings.get("port", "2101")))
+        self.base_m = QLineEdit(base_settings.get("mountpoint", ""))
+        self.base_u = QLineEdit(base_settings.get("user", ""))
+        self.base_pw = QLineEdit(base_settings.get("password", ""))
         self.base_pw.setEchoMode(QLineEdit.EchoMode.Password)
         self.lbl_base_host = QLabel("Host:")
         self.lbl_base_port = QLabel("Port:")
@@ -450,25 +552,32 @@ class ConfigDialog(QDialog):
 
         self.base_port = QComboBox()
         self.base_port.addItems(self._get_available_ports() or ["No ports found"])
-        self.base_port.setCurrentText(str(base_settings.get('serial_port') or 'COM2'))
+        self.base_port.setCurrentText(str(base_settings.get("serial_port") or "COM2"))
         self.base_baudrate = QComboBox()
         self.base_baudrate.addItems(common_baudrates)
-        base_baud = str(base_settings.get('baudrate', 115200))
+        base_baud = str(base_settings.get("baudrate", 115200))
         self.base_baudrate.setCurrentText(base_baud if base_baud in common_baudrates else "115200")
         self.lbl_base_serial_port = QLabel("Serial Port:")
         self.lbl_base_baudrate = QLabel("Baud Rate:")
         fl_base.addRow(self.lbl_base_serial_port, self.base_port)
         fl_base.addRow(self.lbl_base_baudrate, self.base_baudrate)
 
-        self._set_size_policy_for_widgets([
-            self.base_h, self.base_p, self.base_m, self.base_u, self.base_pw,
-            self.base_port, self.base_baudrate,
-        ])
+        self._set_size_policy_for_widgets(
+            [
+                self.base_h,
+                self.base_p,
+                self.base_m,
+                self.base_u,
+                self.base_pw,
+                self.base_port,
+                self.base_baudrate,
+            ]
+        )
         grp_base.setLayout(fl_base)
         grp_base.setEnabled(self.chk_base.isChecked())
         self.grp_base = grp_base
         scroll_layout.addWidget(grp_base)
-        
+
         # =====================================================================
         # General Settings
         # =====================================================================
@@ -478,11 +587,11 @@ class ConfigDialog(QDialog):
         fl_general.setRowWrapPolicy(QFormLayout.DontWrapRows)
         fl_general.setFormAlignment(Qt.AlignHCenter | Qt.AlignTop)
         fl_general.setLabelAlignment(Qt.AlignLeft)
-        
+
         # Receiver Approximate Position (ECEF X, Y, Z in meters) - using QLineEdit for display
         self.rec_pos_x = QLineEdit()
         # show empty string if approximate position is not configured
-        apr = self.settings.get('APPROX_REC_POS', None)
+        apr = self.settings.get("APPROX_REC_POS", None)
         if apr is None:
             self.rec_pos_x.setText("")
             self.rec_pos_y = QLineEdit()
@@ -506,7 +615,7 @@ class ConfigDialog(QDialog):
                 self.rec_pos_z.setText("")
         for widget in (self.rec_pos_x, self.rec_pos_y, self.rec_pos_z):
             widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        
+
         hlayout_pos = QHBoxLayout()
         hlayout_pos.addWidget(QLabel("X:"))
         hlayout_pos.addWidget(self.rec_pos_x)
@@ -514,24 +623,26 @@ class ConfigDialog(QDialog):
         hlayout_pos.addWidget(self.rec_pos_y)
         hlayout_pos.addWidget(QLabel("Z:"))
         hlayout_pos.addWidget(self.rec_pos_z)
-        
+
         fl_general.addRow("Receiver Position (ECEF in m):", hlayout_pos)
-        
+
         # GNSS System Filters
-        self.target_systems = QLineEdit(",".join(self.settings.get('TARGET_SYSTEMS', ['G', 'R', 'E', 'C', 'J', 'S', 'I'])))
+        self.target_systems = QLineEdit(
+            ",".join(self.settings.get("TARGET_SYSTEMS", ["G", "R", "E", "C", "J", "S", "I"]))
+        )
         self.target_systems.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         fl_general.addRow("Target Systems (comma-separated):", self.target_systems)
-        
+
         grp_general.setLayout(fl_general)
         scroll_layout.addWidget(grp_general)
-        
+
         # Add stretch to push content to the top
         scroll_layout.addStretch()
-        
+
         scroll_area.setWidget(scroll_widget)
         scroll_area.setWidgetResizable(True)
         layout.addWidget(scroll_area)
-        
+
         # Buttons
         btns = QHBoxLayout()
         b_load = QPushButton("Load File")
@@ -540,14 +651,14 @@ class ConfigDialog(QDialog):
         if not open_icon.isNull():
             b_load.setIcon(open_icon)
         b_load.clicked.connect(self.load_file)
-        
+
         b_save_config = QPushButton("Save Config")
         b_save_config.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         save_config_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton)
         if not save_config_icon.isNull():
             b_save_config.setIcon(save_config_icon)
         b_save_config.clicked.connect(self.save_config_to_file)
-        
+
         b_disconnect = QPushButton("Disconnect")
         b_disconnect.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         disconnect_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserStop)
@@ -568,7 +679,7 @@ class ConfigDialog(QDialog):
         btns.addWidget(b_disconnect)
         btns.addWidget(b_connect)
         layout.addLayout(btns)
-        
+
         # Initialize visibility
         self.on_obs_source_changed()
         self.on_eph_enabled_changed()
@@ -588,7 +699,7 @@ class ConfigDialog(QDialog):
         is_ntrip = self.obs_source.currentText() == "NTRIP Server"
         is_serial = self.obs_source.currentText() == "Serial Port"
         is_file = self.obs_source.currentText() == "RINEX File"
-        
+
         self.lbl_obs_host.setVisible(is_ntrip)
         self.obs_h.setVisible(is_ntrip)
         self.lbl_obs_port.setVisible(is_ntrip)
@@ -599,7 +710,7 @@ class ConfigDialog(QDialog):
         self.obs_u.setVisible(is_ntrip)
         self.lbl_obs_pw.setVisible(is_ntrip)
         self.obs_pw.setVisible(is_ntrip)
-        
+
         self.lbl_obs_serial_port.setVisible(is_serial)
         self.obs_port.setVisible(is_serial)
         self.lbl_obs_baudrate.setVisible(is_serial)
@@ -644,7 +755,7 @@ class ConfigDialog(QDialog):
         is_ntrip = self.eph_source.currentText() == "NTRIP Server"
         is_serial = self.eph_source.currentText() == "Serial Port"
         is_file = self.eph_source.currentText() == "File"
-        
+
         self.lbl_eph_host.setVisible(is_ntrip)
         self.eph_h.setVisible(is_ntrip)
         self.lbl_eph_port.setVisible(is_ntrip)
@@ -655,7 +766,7 @@ class ConfigDialog(QDialog):
         self.eph_u.setVisible(is_ntrip)
         self.lbl_eph_pw.setVisible(is_ntrip)
         self.eph_pw.setVisible(is_ntrip)
-        
+
         self.lbl_eph_serial_port.setVisible(is_serial)
         self.eph_port.setVisible(is_serial)
         self.lbl_eph_baudrate.setVisible(is_serial)
@@ -717,14 +828,23 @@ class ConfigDialog(QDialog):
         is_ntrip = self.base_source.currentText() == "NTRIP Server"
         is_serial = self.base_source.currentText() == "Serial Port"
         for widget in (
-            self.lbl_base_host, self.base_h, self.lbl_base_port, self.base_p,
-            self.lbl_base_mount, self.base_m, self.lbl_base_user, self.base_u,
-            self.lbl_base_pw, self.base_pw,
+            self.lbl_base_host,
+            self.base_h,
+            self.lbl_base_port,
+            self.base_p,
+            self.lbl_base_mount,
+            self.base_m,
+            self.lbl_base_user,
+            self.base_u,
+            self.lbl_base_pw,
+            self.base_pw,
         ):
             widget.setVisible(is_ntrip)
         for widget in (
-            self.lbl_base_serial_port, self.base_port,
-            self.lbl_base_baudrate, self.base_baudrate,
+            self.lbl_base_serial_port,
+            self.base_port,
+            self.lbl_base_baudrate,
+            self.base_baudrate,
         ):
             widget.setVisible(is_serial)
 
@@ -732,6 +852,7 @@ class ConfigDialog(QDialog):
         """Get list of available serial ports"""
         try:
             import serial.tools.list_ports
+
             return [port.device for port in serial.tools.list_ports.comports()]
         except (ImportError, OSError):
             return ["COM1", "COM2", "COM3"]
@@ -758,7 +879,7 @@ class ConfigDialog(QDialog):
             self,
             "Select RINEX Observation File",
             "",
-            "RINEX Observation Files (*.rnx *.obs *.o *.O);;All Files (*.*)"
+            "RINEX Observation Files (*.rnx *.obs *.o *.O);;All Files (*.*)",
         )
         if not filepath:
             return
@@ -770,7 +891,7 @@ class ConfigDialog(QDialog):
             self,
             "Select Ephemeris File",
             "",
-            "Ephemeris Files (*.rnx *.nav *.sp3 *.SP3);;All Files (*.*)"
+            "Ephemeris Files (*.rnx *.nav *.sp3 *.SP3);;All Files (*.*)",
         )
         if not filepath:
             return
@@ -818,7 +939,9 @@ class ConfigDialog(QDialog):
             if not self.obs_file_path.text().strip():
                 raise ValueError("Please select a RINEX observation file.")
             if not self.eph_file_path.text().strip():
-                raise ValueError("RINEX replay requires an ephemeris file for azimuth/elevation computation.")
+                raise ValueError(
+                    "RINEX replay requires an ephemeris file for azimuth/elevation computation."
+                )
             coords = []
             for field in (self.rec_pos_x, self.rec_pos_y, self.rec_pos_z):
                 text = field.text().strip()
@@ -866,147 +989,150 @@ class ConfigDialog(QDialog):
         """Load configuration from file (supports .yaml, .yml, and legacy .py formats)"""
         ensure_config_directories()
         f, _ = QFileDialog.getOpenFileName(
-            self, 
-            "Select Config File", 
-            str(CONFIG_ROOT), 
-            "YAML Files (*.yaml *.yml);;Python Files (*.py);;All Files (*.*)"
+            self,
+            "Select Config File",
+            str(CONFIG_ROOT),
+            "YAML Files (*.yaml *.yml);;Python Files (*.py);;All Files (*.*)",
         )
         if not f:
             return
-            
+
         try:
-            if f.lower().endswith(('.yaml', '.yml')):
+            if f.lower().endswith((".yaml", ".yml")):
                 # Load from YAML file
                 self._load_yaml_file(f)
             else:
                 # Load from legacy Python file
                 self._load_python_file(f)
-            QMessageBox.information(self, "Success", f"Configuration loaded successfully from:\n{f}")
+            QMessageBox.information(
+                self, "Success", f"Configuration loaded successfully from:\n{f}"
+            )
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to load configuration:\n{str(e)}")
 
     def _load_yaml_file(self, filepath):
         """Load configuration from YAML file"""
-        import yaml
         self._loaded_positioning_settings = None
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, encoding="utf-8") as f:
             config = yaml.safe_load(f)
-        
+
         if not config:
             raise ValueError("YAML file is empty or invalid")
-        
+
         # Load OBS settings
-        if 'obs_settings' in config:
-            obs = config['obs_settings']
-            if obs.get('source_type') == 'NTRIP Server':
-                self.obs_source.setCurrentText('NTRIP Server')
-                self.obs_h.setText(str(obs.get('host', '')))
-                self.obs_p.setText(str(obs.get('port', '2101')))
-                self.obs_m.setText(str(obs.get('mountpoint', '')))
-                self.obs_u.setText(str(obs.get('user', '')))
-                self.obs_pw.setText(str(obs.get('password', '')))
-            elif obs.get('source_type') == 'Serial Port':
-                self.obs_source.setCurrentText('Serial Port')
-                self.obs_port.setCurrentText(str(obs.get('serial_port', 'COM1')))
-                self.obs_baudrate.setCurrentText(str(obs.get('baudrate', 115200)))
-                self.obs_databits.setCurrentText(str(obs.get('databits', 8)))
-                self.obs_stopbits.setCurrentText(str(obs.get('stopbits', 1)))
-                self.obs_parity.setCurrentText(str(obs.get('parity', 'None')))
-                self.obs_flowctrl.setCurrentText(str(obs.get('flowctrl', 'None')))
+        if "obs_settings" in config:
+            obs = config["obs_settings"]
+            if obs.get("source_type") == "NTRIP Server":
+                self.obs_source.setCurrentText("NTRIP Server")
+                self.obs_h.setText(str(obs.get("host", "")))
+                self.obs_p.setText(str(obs.get("port", "2101")))
+                self.obs_m.setText(str(obs.get("mountpoint", "")))
+                self.obs_u.setText(str(obs.get("user", "")))
+                self.obs_pw.setText(str(obs.get("password", "")))
+            elif obs.get("source_type") == "Serial Port":
+                self.obs_source.setCurrentText("Serial Port")
+                self.obs_port.setCurrentText(str(obs.get("serial_port", "COM1")))
+                self.obs_baudrate.setCurrentText(str(obs.get("baudrate", 115200)))
+                self.obs_databits.setCurrentText(str(obs.get("databits", 8)))
+                self.obs_stopbits.setCurrentText(str(obs.get("stopbits", 1)))
+                self.obs_parity.setCurrentText(str(obs.get("parity", "None")))
+                self.obs_flowctrl.setCurrentText(str(obs.get("flowctrl", "None")))
             else:
-                self.obs_source.setCurrentText('RINEX File')
-                self.obs_file_path.setText(str(obs.get('file_path', '')))
-                self.obs_replay_speed.setValue(float(obs.get('replay_speed', 1.0) or 1.0))
-                self.obs_final_results_only.setChecked(bool(obs.get('final_results_only', False)))
-                if not config.get('approx_rec_pos') and self.obs_file_path.text().strip():
+                self.obs_source.setCurrentText("RINEX File")
+                self.obs_file_path.setText(str(obs.get("file_path", "")))
+                self.obs_replay_speed.setValue(float(obs.get("replay_speed", 1.0) or 1.0))
+                self.obs_final_results_only.setChecked(bool(obs.get("final_results_only", False)))
+                if not config.get("approx_rec_pos") and self.obs_file_path.text().strip():
                     self._apply_obs_file_metadata(self.obs_file_path.text().strip())
-        
+
         # Load EPH settings
-        if 'eph_settings' in config:
-            eph = config['eph_settings']
-            eph_enabled = eph.get('enabled', False)
+        if "eph_settings" in config:
+            eph = config["eph_settings"]
+            eph_enabled = eph.get("enabled", False)
             self.chk_eph.setChecked(eph_enabled)
             if eph_enabled:
-                if eph.get('source_type') == 'NTRIP Server':
-                    self.eph_source.setCurrentText('NTRIP Server')
-                    self.eph_h.setText(str(eph.get('host', '')))
-                    self.eph_p.setText(str(eph.get('port', '2101')))
-                    self.eph_m.setText(str(eph.get('mountpoint', '')))
-                    self.eph_u.setText(str(eph.get('user', '')))
-                    self.eph_pw.setText(str(eph.get('password', '')))
-                elif eph.get('source_type') == 'Serial Port':
-                    self.eph_source.setCurrentText('Serial Port')
-                    self.eph_port.setCurrentText(str(eph.get('serial_port', 'COM2')))
-                    self.eph_baudrate.setCurrentText(str(eph.get('baudrate', 115200)))
-                    self.eph_databits.setCurrentText(str(eph.get('databits', 8)))
-                    self.eph_stopbits.setCurrentText(str(eph.get('stopbits', 1)))
-                    self.eph_parity.setCurrentText(str(eph.get('parity', 'None')))
-                    self.eph_flowctrl.setCurrentText(str(eph.get('flowctrl', 'None')))
+                if eph.get("source_type") == "NTRIP Server":
+                    self.eph_source.setCurrentText("NTRIP Server")
+                    self.eph_h.setText(str(eph.get("host", "")))
+                    self.eph_p.setText(str(eph.get("port", "2101")))
+                    self.eph_m.setText(str(eph.get("mountpoint", "")))
+                    self.eph_u.setText(str(eph.get("user", "")))
+                    self.eph_pw.setText(str(eph.get("password", "")))
+                elif eph.get("source_type") == "Serial Port":
+                    self.eph_source.setCurrentText("Serial Port")
+                    self.eph_port.setCurrentText(str(eph.get("serial_port", "COM2")))
+                    self.eph_baudrate.setCurrentText(str(eph.get("baudrate", 115200)))
+                    self.eph_databits.setCurrentText(str(eph.get("databits", 8)))
+                    self.eph_stopbits.setCurrentText(str(eph.get("stopbits", 1)))
+                    self.eph_parity.setCurrentText(str(eph.get("parity", "None")))
+                    self.eph_flowctrl.setCurrentText(str(eph.get("flowctrl", "None")))
                 else:
-                    self.eph_source.setCurrentText('File')
-                    self.eph_file_path.setText(str(eph.get('file_path', '')))
-                    eph_file_type = str(eph.get('file_type', 'Auto Detect'))
+                    self.eph_source.setCurrentText("File")
+                    self.eph_file_path.setText(str(eph.get("file_path", "")))
+                    eph_file_type = str(eph.get("file_type", "Auto Detect"))
                     self.eph_file_type.setCurrentText(
-                        eph_file_type if eph_file_type in ["Auto Detect", "Broadcast RINEX", "Precise SP3"] else "Auto Detect"
+                        eph_file_type
+                        if eph_file_type in ["Auto Detect", "Broadcast RINEX", "Precise SP3"]
+                        else "Auto Detect"
                     )
 
         # Load SSR settings
-        if 'ssr_settings' in config:
-            ssr = config['ssr_settings']
-            ssr_enabled = ssr.get('enabled', False)
+        if "ssr_settings" in config:
+            ssr = config["ssr_settings"]
+            ssr_enabled = ssr.get("enabled", False)
             self.chk_ssr.setChecked(ssr_enabled)
             if ssr_enabled:
-                if ssr.get('source_type') == 'Serial Port':
-                    self.ssr_source.setCurrentText('Serial Port')
-                    self.ssr_port.setCurrentText(str(ssr.get('serial_port', 'COM3')))
-                    self.ssr_baudrate.setCurrentText(str(ssr.get('baudrate', 115200)))
-                    self.ssr_databits.setCurrentText(str(ssr.get('databits', 8)))
-                    self.ssr_stopbits.setCurrentText(str(ssr.get('stopbits', 1)))
-                    self.ssr_parity.setCurrentText(str(ssr.get('parity', 'None')))
-                    self.ssr_flowctrl.setCurrentText(str(ssr.get('flowctrl', 'None')))
+                if ssr.get("source_type") == "Serial Port":
+                    self.ssr_source.setCurrentText("Serial Port")
+                    self.ssr_port.setCurrentText(str(ssr.get("serial_port", "COM3")))
+                    self.ssr_baudrate.setCurrentText(str(ssr.get("baudrate", 115200)))
+                    self.ssr_databits.setCurrentText(str(ssr.get("databits", 8)))
+                    self.ssr_stopbits.setCurrentText(str(ssr.get("stopbits", 1)))
+                    self.ssr_parity.setCurrentText(str(ssr.get("parity", "None")))
+                    self.ssr_flowctrl.setCurrentText(str(ssr.get("flowctrl", "None")))
                 else:
-                    self.ssr_source.setCurrentText('NTRIP Server')
-                    self.ssr_h.setText(str(ssr.get('host', '')))
-                    self.ssr_p.setText(str(ssr.get('port', '2101')))
-                    self.ssr_m.setText(str(ssr.get('mountpoint', '')))
-                    self.ssr_u.setText(str(ssr.get('user', '')))
-                    self.ssr_pw.setText(str(ssr.get('password', '')))
+                    self.ssr_source.setCurrentText("NTRIP Server")
+                    self.ssr_h.setText(str(ssr.get("host", "")))
+                    self.ssr_p.setText(str(ssr.get("port", "2101")))
+                    self.ssr_m.setText(str(ssr.get("mountpoint", "")))
+                    self.ssr_u.setText(str(ssr.get("user", "")))
+                    self.ssr_pw.setText(str(ssr.get("password", "")))
 
         # Load RTK base station / network correction settings
-        if 'base_settings' in config:
-            base = config['base_settings']
-            base_enabled = base.get('enabled', False)
+        if "base_settings" in config:
+            base = config["base_settings"]
+            base_enabled = base.get("enabled", False)
             self.chk_base.setChecked(base_enabled)
-            if base.get('source_type') == 'Serial Port':
-                self.base_source.setCurrentText('Serial Port')
-                self.base_port.setCurrentText(str(base.get('serial_port', 'COM2')))
-                self.base_baudrate.setCurrentText(str(base.get('baudrate', 115200)))
+            if base.get("source_type") == "Serial Port":
+                self.base_source.setCurrentText("Serial Port")
+                self.base_port.setCurrentText(str(base.get("serial_port", "COM2")))
+                self.base_baudrate.setCurrentText(str(base.get("baudrate", 115200)))
             else:
-                self.base_source.setCurrentText('NTRIP Server')
-                self.base_h.setText(str(base.get('host', '')))
-                self.base_p.setText(str(base.get('port', '2101')))
-                self.base_m.setText(str(base.get('mountpoint', '')))
-                self.base_u.setText(str(base.get('user', '')))
-                self.base_pw.setText(str(base.get('password', '')))
-        
+                self.base_source.setCurrentText("NTRIP Server")
+                self.base_h.setText(str(base.get("host", "")))
+                self.base_p.setText(str(base.get("port", "2101")))
+                self.base_m.setText(str(base.get("mountpoint", "")))
+                self.base_u.setText(str(base.get("user", "")))
+                self.base_pw.setText(str(base.get("password", "")))
+
         # Load general settings
-        if 'approx_rec_pos' in config and config['approx_rec_pos']:
-            pos = config['approx_rec_pos']
+        if "approx_rec_pos" in config and config["approx_rec_pos"]:
+            pos = config["approx_rec_pos"]
             if len(pos) >= 3:
                 self.rec_pos_x.setText(str(pos[0]))
                 self.rec_pos_y.setText(str(pos[1]))
                 self.rec_pos_z.setText(str(pos[2]))
-        
-        if 'target_systems' in config:
-            systems = config['target_systems']
+
+        if "target_systems" in config:
+            systems = config["target_systems"]
             if isinstance(systems, list):
-                self.target_systems.setText(','.join(systems))
+                self.target_systems.setText(",".join(systems))
             else:
                 self.target_systems.setText(str(systems))
 
-        if isinstance(config.get('positioning_settings'), dict):
-            self._loaded_positioning_settings = dict(config['positioning_settings'])
-        
+        if isinstance(config.get("positioning_settings"), dict):
+            self._loaded_positioning_settings = dict(config["positioning_settings"])
+
         # Update visibility
         self.on_obs_source_changed()
         self.on_eph_enabled_changed()
@@ -1021,20 +1147,24 @@ class ConfigDialog(QDialog):
         spec = importlib.util.spec_from_file_location("cfg", filepath)
         m = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(m)
-        
+
         # Load OBS settings
-        if hasattr(m, 'NTRIP_HOST'):
-            self.obs_source.setCurrentText('NTRIP Server')
+        if hasattr(m, "NTRIP_HOST"):
+            self.obs_source.setCurrentText("NTRIP Server")
             self.obs_h.setText(str(m.NTRIP_HOST))
-        if hasattr(m, 'NTRIP_PORT'): self.obs_p.setText(str(m.NTRIP_PORT))
-        if hasattr(m, 'MOUNTPOINT'): self.obs_m.setText(str(m.MOUNTPOINT))
-        if hasattr(m, 'USER'): self.obs_u.setText(str(m.USER))
-        if hasattr(m, 'PASSWORD'): self.obs_pw.setText(str(m.PASSWORD))
-        
+        if hasattr(m, "NTRIP_PORT"):
+            self.obs_p.setText(str(m.NTRIP_PORT))
+        if hasattr(m, "MOUNTPOINT"):
+            self.obs_m.setText(str(m.MOUNTPOINT))
+        if hasattr(m, "USER"):
+            self.obs_u.setText(str(m.USER))
+        if hasattr(m, "PASSWORD"):
+            self.obs_pw.setText(str(m.PASSWORD))
+
         # Load EPH settings
-        if hasattr(m, 'EPH_HOST'): 
+        if hasattr(m, "EPH_HOST"):
             self.chk_eph.setChecked(True)
-            self.eph_source.setCurrentText('NTRIP Server')
+            self.eph_source.setCurrentText("NTRIP Server")
             self.eph_h.setText(str(m.EPH_HOST))
             self.eph_p.setText(str(m.EPH_PORT))
             self.eph_m.setText(str(m.EPH_MOUNTPOINT))
@@ -1042,27 +1172,27 @@ class ConfigDialog(QDialog):
             self.eph_pw.setText(str(m.EPH_PASSWORD))
 
         # Load SSR settings
-        if hasattr(m, 'SSR_HOST'):
+        if hasattr(m, "SSR_HOST"):
             self.chk_ssr.setChecked(True)
-            self.ssr_source.setCurrentText('NTRIP Server')
+            self.ssr_source.setCurrentText("NTRIP Server")
             self.ssr_h.setText(str(m.SSR_HOST))
-            self.ssr_p.setText(str(getattr(m, 'SSR_PORT', 2101)))
-            self.ssr_m.setText(str(getattr(m, 'SSR_MOUNTPOINT', '')))
-            self.ssr_u.setText(str(getattr(m, 'SSR_USER', '')))
-            self.ssr_pw.setText(str(getattr(m, 'SSR_PASSWORD', '')))
-                
+            self.ssr_p.setText(str(getattr(m, "SSR_PORT", 2101)))
+            self.ssr_m.setText(str(getattr(m, "SSR_MOUNTPOINT", "")))
+            self.ssr_u.setText(str(getattr(m, "SSR_USER", "")))
+            self.ssr_pw.setText(str(getattr(m, "SSR_PASSWORD", "")))
+
         # Load general settings
-        if hasattr(m, 'APPROX_REC_POS'):
+        if hasattr(m, "APPROX_REC_POS"):
             pos = m.APPROX_REC_POS
             if len(pos) >= 3:
                 self.rec_pos_x.setText(str(pos[0]))
                 self.rec_pos_y.setText(str(pos[1]))
                 self.rec_pos_z.setText(str(pos[2]))
-                    
-        if hasattr(m, 'TARGET_SYSTEMS'):
+
+        if hasattr(m, "TARGET_SYSTEMS"):
             systems = m.TARGET_SYSTEMS
             if isinstance(systems, list):
-                systems_str = ','.join(systems)
+                systems_str = ",".join(systems)
                 self.target_systems.setText(systems_str)
             else:
                 self.target_systems.setText(str(systems))
@@ -1080,115 +1210,131 @@ class ConfigDialog(QDialog):
             update_general_settings,
             update_positioning_settings,
         )
-        
+
         # Update OBS settings
         obs_source_type = self.obs_source.currentText()
         obs_settings = {
-            'source_type': obs_source_type,
-            'host': self.obs_h.text(),
-            'port': self.obs_p.text() if obs_source_type == "NTRIP Server" else (self.obs_port.currentText() if obs_source_type == "Serial Port" else ""),
-            'serial_port': self.obs_port.currentText(),
-            'baudrate': int(self.obs_baudrate.currentText()),
-            'databits': int(self.obs_databits.currentText()),
-            'stopbits': float(self.obs_stopbits.currentText()),
-            'parity': self.obs_parity.currentText(),
-            'flowctrl': self.obs_flowctrl.currentText(),
-            'mountpoint': self.obs_m.text(),
-            'user': self.obs_u.text(),
-            'password': self.obs_pw.text(),
-            'file_path': self.obs_file_path.text().strip(),
-            'replay_speed': float(self.obs_replay_speed.value()),
-            'file_type': 'Auto Detect',
-            'final_results_only': bool(self.obs_final_results_only.isChecked()),
+            "source_type": obs_source_type,
+            "host": self.obs_h.text(),
+            "port": (
+                self.obs_p.text()
+                if obs_source_type == "NTRIP Server"
+                else (self.obs_port.currentText() if obs_source_type == "Serial Port" else "")
+            ),
+            "serial_port": self.obs_port.currentText(),
+            "baudrate": int(self.obs_baudrate.currentText()),
+            "databits": int(self.obs_databits.currentText()),
+            "stopbits": float(self.obs_stopbits.currentText()),
+            "parity": self.obs_parity.currentText(),
+            "flowctrl": self.obs_flowctrl.currentText(),
+            "mountpoint": self.obs_m.text(),
+            "user": self.obs_u.text(),
+            "password": self.obs_pw.text(),
+            "file_path": self.obs_file_path.text().strip(),
+            "replay_speed": float(self.obs_replay_speed.value()),
+            "file_type": "Auto Detect",
+            "final_results_only": bool(self.obs_final_results_only.isChecked()),
         }
-        update_connection_settings('OBS', obs_settings)
-        
+        update_connection_settings("OBS", obs_settings)
+
         # Update EPH settings
         eph_enabled = self.chk_eph.isChecked()
         if eph_enabled:
             eph_source_type = self.eph_source.currentText()
             eph_settings = {
-                'source_type': eph_source_type,
-                'enabled': eph_enabled,
-                'host': self.eph_h.text(),
-                'port': self.eph_p.text() if eph_source_type == "NTRIP Server" else (self.eph_port.currentText() if eph_source_type == "Serial Port" else ""),
-                'serial_port': self.eph_port.currentText(),
-                'baudrate': int(self.eph_baudrate.currentText()),
-                'databits': int(self.eph_databits.currentText()),
-                'stopbits': float(self.eph_stopbits.currentText()),
-                'parity': self.eph_parity.currentText(),
-                'flowctrl': self.eph_flowctrl.currentText(),
-                'mountpoint': self.eph_m.text(),
-                'user': self.eph_u.text(),
-                'password': self.eph_pw.text(),
-                'file_path': self.eph_file_path.text().strip(),
-                'replay_speed': 1.0,
-                'file_type': self.eph_file_type.currentText(),
-                'final_results_only': False,
+                "source_type": eph_source_type,
+                "enabled": eph_enabled,
+                "host": self.eph_h.text(),
+                "port": (
+                    self.eph_p.text()
+                    if eph_source_type == "NTRIP Server"
+                    else (self.eph_port.currentText() if eph_source_type == "Serial Port" else "")
+                ),
+                "serial_port": self.eph_port.currentText(),
+                "baudrate": int(self.eph_baudrate.currentText()),
+                "databits": int(self.eph_databits.currentText()),
+                "stopbits": float(self.eph_stopbits.currentText()),
+                "parity": self.eph_parity.currentText(),
+                "flowctrl": self.eph_flowctrl.currentText(),
+                "mountpoint": self.eph_m.text(),
+                "user": self.eph_u.text(),
+                "password": self.eph_pw.text(),
+                "file_path": self.eph_file_path.text().strip(),
+                "replay_speed": 1.0,
+                "file_type": self.eph_file_type.currentText(),
+                "final_results_only": False,
             }
-            update_connection_settings('EPH', eph_settings)
+            update_connection_settings("EPH", eph_settings)
         else:
             # Update EPH to disabled state
-            update_connection_settings('EPH', {'enabled': False})
+            update_connection_settings("EPH", {"enabled": False})
 
         # Update SSR settings
         ssr_enabled = self.chk_ssr.isChecked()
         if ssr_enabled:
             ssr_source_type = self.ssr_source.currentText()
             ssr_settings = {
-                'source_type': ssr_source_type,
-                'enabled': ssr_enabled,
-                'host': self.ssr_h.text(),
-                'port': self.ssr_p.text() if ssr_source_type == "NTRIP Server" else self.ssr_port.currentText(),
-                'serial_port': self.ssr_port.currentText(),
-                'baudrate': int(self.ssr_baudrate.currentText()),
-                'databits': int(self.ssr_databits.currentText()),
-                'stopbits': float(self.ssr_stopbits.currentText()),
-                'parity': self.ssr_parity.currentText(),
-                'flowctrl': self.ssr_flowctrl.currentText(),
-                'mountpoint': self.ssr_m.text(),
-                'user': self.ssr_u.text(),
-                'password': self.ssr_pw.text(),
-                'file_path': '',
-                'replay_speed': 1.0,
-                'file_type': 'Auto Detect',
-                'final_results_only': False,
+                "source_type": ssr_source_type,
+                "enabled": ssr_enabled,
+                "host": self.ssr_h.text(),
+                "port": (
+                    self.ssr_p.text()
+                    if ssr_source_type == "NTRIP Server"
+                    else self.ssr_port.currentText()
+                ),
+                "serial_port": self.ssr_port.currentText(),
+                "baudrate": int(self.ssr_baudrate.currentText()),
+                "databits": int(self.ssr_databits.currentText()),
+                "stopbits": float(self.ssr_stopbits.currentText()),
+                "parity": self.ssr_parity.currentText(),
+                "flowctrl": self.ssr_flowctrl.currentText(),
+                "mountpoint": self.ssr_m.text(),
+                "user": self.ssr_u.text(),
+                "password": self.ssr_pw.text(),
+                "file_path": "",
+                "replay_speed": 1.0,
+                "file_type": "Auto Detect",
+                "final_results_only": False,
             }
-            update_connection_settings('SSR', ssr_settings)
+            update_connection_settings("SSR", ssr_settings)
         else:
-            update_connection_settings('SSR', {'enabled': False})
+            update_connection_settings("SSR", {"enabled": False})
 
         # Update RTK base/network stream settings
         base_enabled = self.chk_base.isChecked()
         base_source_type = self.base_source.currentText()
         base_settings = {
-            'source_type': base_source_type,
-            'enabled': base_enabled,
-            'host': self.base_h.text(),
-            'port': self.base_p.text() if base_source_type == "NTRIP Server" else self.base_port.currentText(),
-            'serial_port': self.base_port.currentText(),
-            'baudrate': int(self.base_baudrate.currentText()),
-            'databits': 8,
-            'stopbits': 1.0,
-            'parity': 'None',
-            'flowctrl': 'None',
-            'mountpoint': self.base_m.text(),
-            'user': self.base_u.text(),
-            'password': self.base_pw.text(),
-            'file_path': '',
-            'replay_speed': 1.0,
-            'file_type': 'Auto Detect',
-            'final_results_only': False,
-            'data_format': 'RTCM3',
+            "source_type": base_source_type,
+            "enabled": base_enabled,
+            "host": self.base_h.text(),
+            "port": (
+                self.base_p.text()
+                if base_source_type == "NTRIP Server"
+                else self.base_port.currentText()
+            ),
+            "serial_port": self.base_port.currentText(),
+            "baudrate": int(self.base_baudrate.currentText()),
+            "databits": 8,
+            "stopbits": 1.0,
+            "parity": "None",
+            "flowctrl": "None",
+            "mountpoint": self.base_m.text(),
+            "user": self.base_u.text(),
+            "password": self.base_pw.text(),
+            "file_path": "",
+            "replay_speed": 1.0,
+            "file_type": "Auto Detect",
+            "final_results_only": False,
+            "data_format": "RTCM3",
         }
-        update_connection_settings('BASE', base_settings)
-        
+        update_connection_settings("BASE", base_settings)
+
         # Update general settings
         try:
-            target_systems = [s.strip() for s in self.target_systems.text().split(',')]
+            target_systems = [s.strip() for s in self.target_systems.text().split(",")]
         except AttributeError:
-            target_systems = ['G', 'R', 'E', 'C', 'J', 'S', 'I']
-            
+            target_systems = ["G", "R", "E", "C", "J", "S", "I"]
+
         # Read coordinates from QLineEdit
         # build approximate position; if any of the three fields are blank or
         # non-numeric we treat the whole setting as None (no prior estimate).
@@ -1203,10 +1349,7 @@ class ConfigDialog(QDialog):
             except ValueError:
                 coords = None
                 break
-        general_settings = {
-            'approx_rec_pos': coords,
-            'target_systems': target_systems
-        }
+        general_settings = {"approx_rec_pos": coords, "target_systems": target_systems}
         update_general_settings(general_settings)
         if self._loaded_positioning_settings is not None:
             update_positioning_settings(self._loaded_positioning_settings)
@@ -1214,84 +1357,104 @@ class ConfigDialog(QDialog):
         legacy_pos = None
         if coords is not None:
             legacy_pos = coords
-        
+
         # Return the legacy settings format for backward compatibility
         return {
-            'OBS': {
-                'source': obs_source_type,
-                'host': self.obs_h.text(),
-                'port': self.obs_p.text() if obs_source_type == "NTRIP Server" else (self.obs_port.currentText() if obs_source_type == "Serial Port" else ""),
-                'baudrate': int(self.obs_baudrate.currentText()),
-                'databits': int(self.obs_databits.currentText()),
-                'stopbits': float(self.obs_stopbits.currentText()),
-                'parity': self.obs_parity.currentText(),
-                'flowctrl': self.obs_flowctrl.currentText(),
-                'mountpoint': self.obs_m.text(),
-                'user': self.obs_u.text(),
-                'password': self.obs_pw.text(),
-                'file_path': self.obs_file_path.text().strip(),
-                'replay_speed': float(self.obs_replay_speed.value()),
-                'file_type': 'Auto Detect',
-                'final_results_only': bool(self.obs_final_results_only.isChecked()),
+            "OBS": {
+                "source": obs_source_type,
+                "host": self.obs_h.text(),
+                "port": (
+                    self.obs_p.text()
+                    if obs_source_type == "NTRIP Server"
+                    else (self.obs_port.currentText() if obs_source_type == "Serial Port" else "")
+                ),
+                "baudrate": int(self.obs_baudrate.currentText()),
+                "databits": int(self.obs_databits.currentText()),
+                "stopbits": float(self.obs_stopbits.currentText()),
+                "parity": self.obs_parity.currentText(),
+                "flowctrl": self.obs_flowctrl.currentText(),
+                "mountpoint": self.obs_m.text(),
+                "user": self.obs_u.text(),
+                "password": self.obs_pw.text(),
+                "file_path": self.obs_file_path.text().strip(),
+                "replay_speed": float(self.obs_replay_speed.value()),
+                "file_type": "Auto Detect",
+                "final_results_only": bool(self.obs_final_results_only.isChecked()),
             },
-            'EPH_ENABLED': eph_enabled,
-            'EPH': {
-                'source': self.eph_source.currentText(),
-                'host': self.eph_h.text(),
-                'port': self.eph_p.text() if self.eph_source.currentText() == "NTRIP Server" else (self.eph_port.currentText() if self.eph_source.currentText() == "Serial Port" else ""),
-                'baudrate': int(self.eph_baudrate.currentText()),
-                'databits': int(self.eph_databits.currentText()),
-                'stopbits': float(self.eph_stopbits.currentText()),
-                'parity': self.eph_parity.currentText(),
-                'flowctrl': self.eph_flowctrl.currentText(),
-                'mountpoint': self.eph_m.text(),
-                'user': self.eph_u.text(),
-                'password': self.eph_pw.text(),
-                'file_path': self.eph_file_path.text().strip(),
-                'replay_speed': 1.0,
-                'file_type': self.eph_file_type.currentText(),
-                'final_results_only': False,
+            "EPH_ENABLED": eph_enabled,
+            "EPH": {
+                "source": self.eph_source.currentText(),
+                "host": self.eph_h.text(),
+                "port": (
+                    self.eph_p.text()
+                    if self.eph_source.currentText() == "NTRIP Server"
+                    else (
+                        self.eph_port.currentText()
+                        if self.eph_source.currentText() == "Serial Port"
+                        else ""
+                    )
+                ),
+                "baudrate": int(self.eph_baudrate.currentText()),
+                "databits": int(self.eph_databits.currentText()),
+                "stopbits": float(self.eph_stopbits.currentText()),
+                "parity": self.eph_parity.currentText(),
+                "flowctrl": self.eph_flowctrl.currentText(),
+                "mountpoint": self.eph_m.text(),
+                "user": self.eph_u.text(),
+                "password": self.eph_pw.text(),
+                "file_path": self.eph_file_path.text().strip(),
+                "replay_speed": 1.0,
+                "file_type": self.eph_file_type.currentText(),
+                "final_results_only": False,
             },
-            'SSR_ENABLED': ssr_enabled,
-            'SSR': {
-                'source': self.ssr_source.currentText(),
-                'host': self.ssr_h.text(),
-                'port': self.ssr_p.text() if self.ssr_source.currentText() == "NTRIP Server" else self.ssr_port.currentText(),
-                'baudrate': int(self.ssr_baudrate.currentText()),
-                'databits': int(self.ssr_databits.currentText()),
-                'stopbits': float(self.ssr_stopbits.currentText()),
-                'parity': self.ssr_parity.currentText(),
-                'flowctrl': self.ssr_flowctrl.currentText(),
-                'mountpoint': self.ssr_m.text(),
-                'user': self.ssr_u.text(),
-                'password': self.ssr_pw.text(),
-                'file_path': '',
-                'replay_speed': 1.0,
-                'file_type': 'Auto Detect',
-                'final_results_only': False,
+            "SSR_ENABLED": ssr_enabled,
+            "SSR": {
+                "source": self.ssr_source.currentText(),
+                "host": self.ssr_h.text(),
+                "port": (
+                    self.ssr_p.text()
+                    if self.ssr_source.currentText() == "NTRIP Server"
+                    else self.ssr_port.currentText()
+                ),
+                "baudrate": int(self.ssr_baudrate.currentText()),
+                "databits": int(self.ssr_databits.currentText()),
+                "stopbits": float(self.ssr_stopbits.currentText()),
+                "parity": self.ssr_parity.currentText(),
+                "flowctrl": self.ssr_flowctrl.currentText(),
+                "mountpoint": self.ssr_m.text(),
+                "user": self.ssr_u.text(),
+                "password": self.ssr_pw.text(),
+                "file_path": "",
+                "replay_speed": 1.0,
+                "file_type": "Auto Detect",
+                "final_results_only": False,
             },
-            'BASE_ENABLED': base_enabled,
-            'BASE': {
-                'source': base_source_type,
-                'host': self.base_h.text(),
-                'port': self.base_p.text() if base_source_type == "NTRIP Server" else self.base_port.currentText(),
-                'serial_port': self.base_port.currentText(),
-                'baudrate': int(self.base_baudrate.currentText()),
-                'databits': 8,
-                'stopbits': 1.0,
-                'parity': 'None',
-                'flowctrl': 'None',
-                'mountpoint': self.base_m.text(),
-                'user': self.base_u.text(),
-                'password': self.base_pw.text(),
-                'file_path': '',
-                'replay_speed': 1.0,
-                'file_type': 'Auto Detect',
-                'final_results_only': False,
-                'data_format': 'RTCM3',
+            "BASE_ENABLED": base_enabled,
+            "BASE": {
+                "source": base_source_type,
+                "host": self.base_h.text(),
+                "port": (
+                    self.base_p.text()
+                    if base_source_type == "NTRIP Server"
+                    else self.base_port.currentText()
+                ),
+                "serial_port": self.base_port.currentText(),
+                "baudrate": int(self.base_baudrate.currentText()),
+                "databits": 8,
+                "stopbits": 1.0,
+                "parity": "None",
+                "flowctrl": "None",
+                "mountpoint": self.base_m.text(),
+                "user": self.base_u.text(),
+                "password": self.base_pw.text(),
+                "file_path": "",
+                "replay_speed": 1.0,
+                "file_type": "Auto Detect",
+                "final_results_only": False,
+                "data_format": "RTCM3",
             },
-            'APPROX_REC_POS': legacy_pos,
-            'TARGET_SYSTEMS': target_systems
+            "APPROX_REC_POS": legacy_pos,
+            "TARGET_SYSTEMS": target_systems,
         }
 
     def save_config_to_file(self):
@@ -1301,32 +1464,27 @@ class ConfigDialog(QDialog):
             self,
             "Save Configuration",
             str(STREAM_CONFIG_DIR / DEFAULT_STREAM_SAVE_NAME),
-            "YAML Files (*.yaml);;YAML Files (*.yml)"
+            "YAML Files (*.yaml);;YAML Files (*.yml)",
         )
-        
+
         if not filepath:
             return
-        
+
         # Ensure file has correct extension
-        if not filepath.lower().endswith(('.yaml', '.yml')):
-            filepath += '.yaml'
-        
+        if not filepath.lower().endswith((".yaml", ".yml")):
+            filepath += ".yaml"
+
         try:
             # First, update the global config with current UI settings
             self.get_settings()
-            
+
             # Then save the global config to file
             from core.global_config import save_config_to_file as save_global_config
+
             save_global_config(filepath)
-            
+
             QMessageBox.information(
-                self, 
-                "Success", 
-                f"Configuration saved successfully to:\n{filepath}"
+                self, "Success", f"Configuration saved successfully to:\n{filepath}"
             )
         except Exception as e:
-            QMessageBox.warning(
-                self, 
-                "Error", 
-                f"Failed to save configuration:\n{str(e)}"
-            )
+            QMessageBox.warning(self, "Error", f"Failed to save configuration:\n{str(e)}")

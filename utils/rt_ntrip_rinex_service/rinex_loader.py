@@ -2,23 +2,27 @@
 
 from __future__ import annotations
 
-from bisect import bisect_left
-from collections import defaultdict
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
 import gzip
 import math
+from bisect import bisect_left
+from collections import defaultdict
+from collections.abc import Iterable
+from contextlib import suppress
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Iterable
+from typing import TYPE_CHECKING
 
 try:
     import numpy as np
-except Exception:  # pragma: no cover - depends on environment
+except ImportError:  # pragma: no cover - depends on environment
     np = None
 
 from .data_models import EpochObservation, SatelliteState, SignalData
 from .gnss_time import GNSSTime
 
+if TYPE_CHECKING:
+    from .broadcast_ephemeris import BroadcastEphemeris
 
 SECONDS_PER_WEEK = 7 * 24 * 3600.0
 LIGHT_SPEED = 299792458.0
@@ -144,10 +148,8 @@ def _parse_obs_header(handle) -> RinexObservationMetadata:
                 current_system = line[0].strip().upper()
                 parts = content.split()
                 if len(parts) >= 2:
-                    try:
+                    with suppress(ValueError):
                         expected_obs_counts[current_system] = int(parts[1])
-                    except ValueError:
-                        pass
                 metadata.sys_obs_types.setdefault(current_system, []).extend(parts[2:])
             elif current_system is not None:
                 metadata.sys_obs_types.setdefault(current_system, []).extend(content.split())
@@ -260,7 +262,9 @@ def _has_nonzero_position(values: Iterable[float] | None) -> bool:
     return any(abs(float(value)) > 1e-6 for value in coords[:3])
 
 
-def _build_satellite_state(satellite_id: str, obs_types: list[str], raw_fields: str) -> SatelliteState | None:
+def _build_satellite_state(
+    satellite_id: str, obs_types: list[str], raw_fields: str
+) -> SatelliteState | None:
     if len(satellite_id) < 2:
         return None
 
@@ -414,7 +418,7 @@ def _compute_broadcast_clock(eph: dict, transmit_time: float) -> float:
     if sqrt_a and ecc is not None and m0 is not None and delta_n is not None and toe is not None:
         try:
             semi_major_axis = float(sqrt_a) ** 2
-            mean_motion = math.sqrt(3.986005e14 / (semi_major_axis ** 3)) + float(delta_n)
+            mean_motion = math.sqrt(3.986005e14 / (semi_major_axis**3)) + float(delta_n)
             tk = transmit_time - float(toe)
             if tk > 302400.0:
                 tk -= SECONDS_PER_WEEK
@@ -452,7 +456,7 @@ class FileEphemerisProvider:
         self,
         kind: str,
         source_path: str,
-        broadcast_ephemeris: "BroadcastEphemeris | None" = None,
+        broadcast_ephemeris: BroadcastEphemeris | None = None,
         precise_records: dict[str, list[tuple[float, np.ndarray, float | None]]] | None = None,
     ) -> None:
         self.kind = kind
@@ -473,8 +477,8 @@ class FileEphemerisProvider:
         cls,
         path: str | Path,
         file_type: str = "auto",
-        broadcast_ephemeris: "BroadcastEphemeris | None" = None,
-    ) -> "FileEphemerisProvider":
+        broadcast_ephemeris: BroadcastEphemeris | None = None,
+    ) -> FileEphemerisProvider:
         source_path = str(path)
         resolved_type = cls._resolve_file_type(source_path, file_type)
 
@@ -510,7 +514,7 @@ class FileEphemerisProvider:
         return "broadcast"
 
     @staticmethod
-    def _load_broadcast_nav(path: str, eph_cache: "BroadcastEphemeris") -> None:
+    def _load_broadcast_nav(path: str, eph_cache: BroadcastEphemeris) -> None:
         with Path(path).open("r", encoding="utf-8", errors="ignore") as handle:
             while True:
                 line = handle.readline()
@@ -836,7 +840,9 @@ class FileEphemerisProvider:
             target_time -= float(pseudorange_m) / LIGHT_SPEED
         return self._interpolate_precise_state(satellite_id, target_time)
 
-    def _interpolate_precise_state(self, satellite_id: str, target_time: float) -> SatelliteEphemerisState | None:
+    def _interpolate_precise_state(
+        self, satellite_id: str, target_time: float
+    ) -> SatelliteEphemerisState | None:
         records = self.precise_records.get(satellite_id)
         times = self._precise_times.get(satellite_id)
         if not records or not times:
@@ -861,7 +867,10 @@ class FileEphemerisProvider:
             return None
 
         weight = (target_time - left_time) / span
-        position = np.asarray(left_position, dtype=float) * (1.0 - weight) + np.asarray(right_position, dtype=float) * weight
+        position = (
+            np.asarray(left_position, dtype=float) * (1.0 - weight)
+            + np.asarray(right_position, dtype=float) * weight
+        )
 
         if left_clock is None or right_clock is None:
             clock_value = left_clock if left_clock is not None else right_clock
@@ -912,7 +921,9 @@ class RinexObservationReader:
                     continue
 
                 epoch_dt, flag, satellite_count = epoch_header
-                utc_dt, gps_week, gps_sow = _timescale_to_utc_and_gps(epoch_dt, self.metadata.time_system)
+                utc_dt, gps_week, gps_sow = _timescale_to_utc_and_gps(
+                    epoch_dt, self.metadata.time_system
+                )
                 epoch = EpochObservation(gps_time=gps_sow, utc_datetime=utc_dt)
                 skip_epoch = flag not in (0, 1)
 
@@ -922,7 +933,9 @@ class RinexObservationReader:
                         break
                     satellite_id = observation_line[:3].strip().upper()
                     obs_types = self.metadata.sys_obs_types.get(satellite_id[:1], [])
-                    raw_fields = _read_observation_record_payload(handle, observation_line, len(obs_types))
+                    raw_fields = _read_observation_record_payload(
+                        handle, observation_line, len(obs_types)
+                    )
 
                     if skip_epoch or not satellite_id or not obs_types:
                         continue
@@ -951,7 +964,9 @@ class RinexObservationReader:
                             if receiver_position is not None:
                                 from .geo_utils import calculate_az_el
 
-                                azimuth, elevation = calculate_az_el(state.position_ecef_m, receiver_position)
+                                azimuth, elevation = calculate_az_el(
+                                    state.position_ecef_m, receiver_position
+                                )
                                 sat_state.azimuth = float(azimuth)
                                 sat_state.elevation = float(elevation)
 

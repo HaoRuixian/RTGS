@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from core.data_models import EpochObservation, SatelliteState, SignalData
 from utils import rtcm_batch_converter
@@ -61,7 +62,10 @@ def test_find_input_files_filters_extensions_and_recurses(tmp_path):
     (nested / "b.DAT").write_bytes(b"")
     (tmp_path / "ignore.txt").write_bytes(b"")
 
-    assert [item.name for item in find_input_files(tmp_path, extensions=(".rtcm", ".dat"))] == ["a.rtcm", "b.DAT"]
+    assert [item.name for item in find_input_files(tmp_path, extensions=(".rtcm", ".dat"))] == [
+        "a.rtcm",
+        "b.DAT",
+    ]
 
 
 def test_filter_epoch_keeps_selected_systems_and_values():
@@ -117,6 +121,67 @@ def test_convert_file_splits_and_decimates_with_selected_observations(tmp_path):
     assert first_text.count("\n> ") == 2
 
 
+def test_explicit_sampling_interval_aligns_epochs_to_rinex_grid(tmp_path):
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    epochs = [_epoch(start + timedelta(seconds=value)) for value in (2, 17)]
+    reader_factory, handler_factory = _factories(epochs)
+    source = tmp_path / "offset.rtcm"
+    source.write_bytes(b"input")
+    options = BatchConversionOptions(
+        input_dir=tmp_path,
+        output_dir=tmp_path / "out",
+        extensions=(".rtcm",),
+        systems=("G",),
+        split_seconds=86_400,
+        sample_interval_seconds=15,
+        overwrite=True,
+    )
+
+    result = convert_file(
+        source,
+        options,
+        reader_factory=reader_factory,
+        handler_factory=handler_factory,
+    )
+
+    assert result.error == ""
+    assert result.written_epochs == 2
+    text = result.output_paths[0].read_text(encoding="utf-8")
+    assert "> 2026 01 01 00 00 15.0000000  0  1" in text
+    assert "> 2026 01 01 00 00 30.0000000  0  1" in text
+
+
+def test_daily_split_uses_utc_time_across_midnight(tmp_path):
+    start = datetime(2026, 1, 1, 23, 59, 42, tzinfo=timezone.utc)
+    epochs = [_epoch(start), _epoch(start + timedelta(seconds=30))]
+    reader_factory, handler_factory = _factories(epochs)
+    source = tmp_path / "midnight.rtcm"
+    source.write_bytes(b"input")
+    options = BatchConversionOptions(
+        input_dir=tmp_path,
+        output_dir=tmp_path / "out",
+        extensions=(".rtcm",),
+        systems=("G",),
+        split_seconds=86_400,
+        sample_interval_seconds=15,
+        overwrite=True,
+    )
+
+    result = convert_file(
+        source,
+        options,
+        reader_factory=reader_factory,
+        handler_factory=handler_factory,
+    )
+
+    assert result.error == ""
+    assert len(result.output_paths) == 1
+    text = result.output_paths[0].read_text(encoding="utf-8")
+    assert "GPS         TIME OF FIRST OBS" in text
+    assert "> 2026 01 02 00 00  0.0000000  0  1" in text
+    assert "> 2026 01 02 00 00 30.0000000  0  1" in text
+
+
 def test_convert_file_uses_short_metadata_scan(tmp_path):
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     epochs = [_epoch(start + timedelta(seconds=15 * index)) for index in range(130)]
@@ -150,10 +215,117 @@ def test_convert_folder_routes_default_pipeline_to_process_pool(tmp_path, monkey
         return expected
 
     monkeypatch.setattr(rtcm_batch_converter, "_convert_folder_parallel", fake_parallel)
-    options = BatchConversionOptions(tmp_path, tmp_path / "out", extensions=(".dat",), max_workers=4)
+    options = BatchConversionOptions(
+        tmp_path, tmp_path / "out", extensions=(".dat",), max_workers=4
+    )
 
     report = convert_folder(options)
 
     assert report is expected
     assert captured["paths"] == [source]
     assert captured["workers"] == 4
+
+
+def test_convert_folder_merges_daily_outputs_from_adjacent_inputs(tmp_path):
+    first = tmp_path / "20260101.dat"
+    second = tmp_path / "20260102.dat"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    epoch_by_name = {
+        first.name: [
+            _epoch(datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=15 * index))
+            for index in range(5760)
+        ],
+        second.name: [
+            _epoch(datetime(2026, 1, 2, tzinfo=timezone.utc) + timedelta(seconds=15 * index))
+            for index in range(5760)
+        ],
+    }
+
+    class PerFileReader:
+        def __init__(self, stream):
+            self._messages = iter(
+                (b"", epoch) for epoch in epoch_by_name[Path(stream.name).name]
+            )
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._messages)
+
+    options = BatchConversionOptions(
+        input_dir=tmp_path,
+        output_dir=tmp_path / "out",
+        extensions=(".dat",),
+        systems=("G",),
+        split_seconds=86_400,
+        sample_interval_seconds=15,
+        overwrite=True,
+        max_workers=1,
+    )
+
+    report = convert_folder(
+        options,
+        reader_factory=PerFileReader,
+        handler_factory=lambda: _Handler(),
+    )
+
+    assert report.failed_files == 0
+    assert len(report.files) == 2
+    assert len(list((tmp_path / "out").glob("*.rnx"))) == 2
+    assert report.files[0].output_paths[1] == report.files[1].output_paths[0]
+    text = report.files[1].output_paths[0].read_text(encoding="utf-8")
+    assert "> 2026 01 02 00 00  0.0000000  0  1" in text
+    assert "> 2026 01 02 23 59 45.0000000  0  1" in text
+
+
+def test_convert_folder_drops_single_epoch_daily_boundary_fragment(tmp_path):
+    first = tmp_path / "20260101.dat"
+    second = tmp_path / "20260102.dat"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    epoch_by_name = {
+        first.name: [
+            _epoch(datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=15 * index))
+            for index in range(5760)
+        ],
+        second.name: [_epoch(datetime(2026, 1, 2, 0, 0, 0, tzinfo=timezone.utc))],
+    }
+
+    class PerFileReader:
+        def __init__(self, stream):
+            self._messages = iter(
+                (b"", epoch) for epoch in epoch_by_name[Path(stream.name).name]
+            )
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._messages)
+
+    logs = []
+    options = BatchConversionOptions(
+        input_dir=tmp_path,
+        output_dir=tmp_path / "out",
+        extensions=(".dat",),
+        systems=("G",),
+        split_seconds=86_400,
+        sample_interval_seconds=15,
+        overwrite=True,
+        max_workers=1,
+    )
+
+    report = convert_folder(
+        options,
+        reader_factory=PerFileReader,
+        handler_factory=lambda: _Handler(),
+        log_callback=logs.append,
+    )
+
+    outputs = list((tmp_path / "out").glob("*.rnx"))
+    assert report.failed_files == 0
+    assert len(outputs) == 1
+    assert report.files[1].output_paths == []
+    assert any("Skipped incomplete daily fragment" in line for line in logs)

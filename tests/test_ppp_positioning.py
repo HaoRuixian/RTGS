@@ -13,7 +13,6 @@ from core.positioning_models import PositioningMode, SolutionStatus
 from core.ppp_positioning import PPPPositioner
 from core.ssr import SsrCorrectionStore, SsrPhaseBias, SsrPhaseBiasCorrection
 
-
 EARTH_ROTATION_RATE = 7.2921151467e-5
 LIGHT_SPEED = 299792458.0
 
@@ -34,7 +33,9 @@ def _ecef_to_enu_rotation(rec_ecef: np.ndarray) -> np.ndarray:
     )
 
 
-def _satellite_position(rec_ecef: np.ndarray, az_deg: float, el_deg: float, slant_range_m: float) -> np.ndarray:
+def _satellite_position(
+    rec_ecef: np.ndarray, az_deg: float, el_deg: float, slant_range_m: float
+) -> np.ndarray:
     az_rad = math.radians(az_deg)
     el_rad = math.radians(el_deg)
     enu = np.array(
@@ -73,7 +74,8 @@ def _dual_frequency_epoch(
     receiver_clock_bias_m = 40000.0
     epoch = EpochObservation(
         gps_time=gps_time,
-        utc_datetime=datetime(2026, 7, 16, tzinfo=timezone.utc) + timedelta(seconds=gps_time - 100000.0),
+        utc_datetime=datetime(2026, 7, 16, tzinfo=timezone.utc)
+        + timedelta(seconds=gps_time - 100000.0),
     )
     geometry = [
         ("G01", "1C", "2W", 20.0, 65.0, 2.20e7),
@@ -101,12 +103,16 @@ def _dual_frequency_epoch(
             el_deg = min(82.0, max(12.0, el_deg + 12.0 * math.sin(epoch_step / 55.0 + index)))
         sat_pos = _satellite_position(receiver_ecef, az_deg, el_deg, slant_range_m)
         geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
-        sagnac = EARTH_ROTATION_RATE * (
-            sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0]
-        ) / LIGHT_SPEED
+        sagnac = (
+            EARTH_ROTATION_RATE
+            * (sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0])
+            / LIGHT_SPEED
+        )
         trop_delay = 0.0
         if zwd_m is not None:
-            zhd_m, _standard_zwd, height_term = PPPPositioner._standard_troposphere_components(receiver_ecef)
+            zhd_m, _standard_zwd, height_term = PPPPositioner._standard_troposphere_components(
+                receiver_ecef
+            )
             sin_el = math.sin(math.radians(el_deg))
             cot_sq = (math.cos(math.radians(el_deg)) / sin_el) ** 2
             trop_delay = (zhd_m + zwd_m - height_term * cot_sq) / sin_el
@@ -135,9 +141,11 @@ def _prepare_gps_ar_epoch(
     sat_id = "G05"
     sat_pos = _satellite_position(receiver_ecef, 72.0 + epoch_index * 0.05, 36.0, 2.26e7)
     geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
-    sagnac = EARTH_ROTATION_RATE * (
-        sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0]
-    ) / LIGHT_SPEED
+    sagnac = (
+        EARTH_ROTATION_RATE
+        * (sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0])
+        / LIGHT_SPEED
+    )
     code_range = geometric_range + sagnac + 40000.0
     sat = SatelliteState(sys_id="G", prn=5)
     sat.signals["1C"] = _signal(sat_id, "1C", code_range, code_range)
@@ -165,7 +173,11 @@ def _prepare_gps_ar_epoch(
             frequency_hz, wavelength_m = get_freq(signal_id, sat_key, 0)
             # RTCM/BNC phase bias convention: the raw phase contains the
             # negative of the broadcast correction.
-            signal.phase = (signal.pseudorange + wavelength_m * integer - phase_bias) * frequency_hz / LIGHT_SPEED
+            signal.phase = (
+                (signal.pseudorange + wavelength_m * integer - phase_bias)
+                * frequency_hz
+                / LIGHT_SPEED
+            )
         store.update_phase_biases(
             SsrPhaseBiasCorrection(
                 satellite_id=sat_key,
@@ -247,9 +259,9 @@ def test_ppp_bds_code_if_uses_ssr_bias_without_reapplying_broadcast_tgd() -> Non
     value, _variance, sig1, sig2 = measurement
     f1 = 1561.098e6
     f2 = 1268.52e6
-    expected = (
-        f1 * f1 * (20_000_000.0 + 1.25) - f2 * f2 * (20_000_020.0 - 0.50)
-    ) / (f1 * f1 - f2 * f2)
+    expected = (f1 * f1 * (20_000_000.0 + 1.25) - f2 * f2 * (20_000_020.0 - 0.50)) / (
+        f1 * f1 - f2 * f2
+    )
     assert (sig1, sig2) == ("2I", "6I")
     assert value == pytest.approx(expected)
 
@@ -382,9 +394,9 @@ def test_ppp_float_applies_non_integer_phase_biases_when_ar_is_disabled() -> Non
     value, _variance, _sig1, _sig2, ar_data = measurement
     f1, _ = get_freq("1C", "G01", 0)
     f2, _ = get_freq("2W", "G01", 0)
-    expected = (
-        f1 * f1 * (20_000_010.0 + 0.30) - f2 * f2 * (20_000_030.0 - 0.20)
-    ) / (f1 * f1 - f2 * f2)
+    expected = (f1 * f1 * (20_000_010.0 + 0.30) - f2 * f2 * (20_000_030.0 - 0.20)) / (
+        f1 * f1 - f2 * f2
+    )
     assert value == pytest.approx(expected)
     assert ar_data["phase_bias_correction"] is not None
     assert not ar_data["integer_pair"]
@@ -424,9 +436,7 @@ def test_precise_mode_ignores_non_integer_phase_biases_outside_ar() -> None:
     value, _variance, _sig1, _sig2, ar_data = measurement
     f1, _ = get_freq("1C", "G01", 0)
     f2, _ = get_freq("2W", "G01", 0)
-    expected = (
-        f1 * f1 * 20_000_010.0 - f2 * f2 * 20_000_030.0
-    ) / (f1 * f1 - f2 * f2)
+    expected = (f1 * f1 * 20_000_010.0 - f2 * f2 * 20_000_030.0) / (f1 * f1 - f2 * f2)
     assert value == pytest.approx(expected)
     assert ar_data["phase_bias_correction"] is None
 
@@ -603,6 +613,8 @@ def test_ppp_precise_bie_fixes_validated_ambiguities() -> None:
             "ppp_apply_shapiro_delay": False,
             "ppp_apply_solid_earth_tide": False,
             "ppp_apply_ocean_loading": False,
+            "ppp_apply_receiver_antenna": False,
+            "ppp_apply_satellite_antenna": False,
             "ppp_postfit_enabled": False,
             "ppp_ar_enabled": True,
             "ppp_ar_min_epochs": 8,
@@ -676,14 +688,18 @@ def test_ppp_zwd_and_position_remain_stable_over_many_epochs() -> None:
             zwd_m=true_zwd_m,
             vary_geometry=True,
         )
-        result = positioner.process_epoch(epoch, approx_position=initial if epoch_index == 0 else None)
+        result = positioner.process_epoch(
+            epoch, approx_position=initial if epoch_index == 0 else None
+        )
         assert result is not None
 
     assert result is not None
     assert result.zwd == pytest.approx(true_zwd_m, abs=0.06)
     assert result.zwd > 0.10
     assert np.linalg.norm(np.asarray(result.position_ecef) - receiver_ecef) < 0.20
-    assert not any("ppp-code-prefit" in reason for reason in positioner.last_diagnostics["reject_counts"])
+    assert not any(
+        "ppp-code-prefit" in reason for reason in positioner.last_diagnostics["reject_counts"]
+    )
 
 
 def test_ppp_reinitializes_unflagged_phase_outlier_without_corrupting_position() -> None:
@@ -818,10 +834,23 @@ def test_precise_ppp_estimates_horizontal_troposphere_gradients() -> None:
     assert result is not None
     assert "TROP_GRAD_N" in positioner.state_names
     assert "TROP_GRAD_E" in positioner.state_names
-    assert positioner.last_diagnostics["troposphere_mapping"] == (
-        "Niell hydrostatic/wet"
-    )
+    assert positioner.last_diagnostics["troposphere_mapping"] == ("Niell hydrostatic/wet")
     assert positioner.last_diagnostics["troposphere_gradients_enabled"] is True
+
+
+def test_ppp_coordinate_stability_needs_a_continuous_precise_window() -> None:
+    positioner = PPPPositioner()
+    positioner.x = np.array([3_875_000.0, 332_500.0, 5_029_000.0])
+
+    assert not positioner._is_position_stable(604770.0, 0.2)
+    assert not positioner._is_position_stable(0.0, 0.2)
+    assert positioner._is_position_stable(30.0, 0.2)
+    assert not positioner._is_position_stable(31.0, 0.4)
+    positioner.x[0] += 0.2
+    assert not positioner._is_position_stable(32.0, 0.2)
+    assert not positioner._is_position_stable(120.0, 0.2)
+    positioner.reset_filter()
+    assert not positioner._position_history
 
 
 def test_positioning_thread_routes_ppp_mode_to_ppp_positioner() -> None:
@@ -851,7 +880,8 @@ def test_positioning_thread_routes_ppp_mode_to_ppp_positioner() -> None:
 
         assert solution is not None
         assert solution.mode == PositioningMode.PPP
-        assert solution.status != SolutionStatus.NO_FIX
+        assert solution.status == SolutionStatus.UNCERTAIN
+        assert solution.ambiguity_fixed_count == 0
         assert solution.solution_source == "PPP float"
         assert solution.used_system_counts == {"E": 2, "G": 4, "R": 2}
         assert np.linalg.norm(np.asarray(solution.position_ecef) - receiver_ecef) < 5.0
@@ -861,7 +891,9 @@ def test_positioning_thread_routes_ppp_mode_to_ppp_positioner() -> None:
         assert solution.error_3d == pytest.approx(
             np.linalg.norm(np.asarray(solution.position_ecef) - receiver_ecef)
         )
-        assert solution.error_horizontal == pytest.approx(math.hypot(solution.error_east, solution.error_north))
+        assert solution.error_horizontal == pytest.approx(
+            math.hypot(solution.error_east, solution.error_north)
+        )
     finally:
         global_config.approx_rec_pos = original_position
 

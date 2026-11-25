@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-import sys
 import multiprocessing
+import os
+import sys
 import threading
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
+# Avoid Qt's GTK theme reading the removed GNOME xsettings antialiasing key.
+# Match the main GUI's Linux default while preserving explicit user choices.
+if sys.platform.startswith("linux") and not os.environ.get("QT_QPA_PLATFORMTHEME"):
+    os.environ["QT_QPA_PLATFORMTHEME"] = "generic"
+
+from PySide6.QtCore import QObject, Qt, QThread, Signal, Slot
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -36,6 +43,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from rtgs.infrastructure import configure_logging
 from utils.rtcm_batch_converter import (
     DEFAULT_EXTENSIONS,
     DEFAULT_MAX_WORKERS,
@@ -62,9 +70,12 @@ class BatchConverterWorker(QObject):
     @Slot()
     def run(self) -> None:
         try:
+
             def on_progress(index, total, path, item):
                 output_names = ", ".join(output.name for output in item.output_paths)
-                self.progress.emit(index, total, str(path), item.written_epochs, bool(item.error), output_names)
+                self.progress.emit(
+                    index, total, str(path), item.written_epochs, bool(item.error), output_names
+                )
 
             report = convert_folder(
                 self.options,
@@ -158,10 +169,17 @@ class BatchConverterWindow(QMainWindow):
         systems_layout.setHorizontalSpacing(16)
         systems_layout.setVerticalSpacing(6)
         self.system_checks: dict[str, QCheckBox] = {}
-        for index, (code, name) in enumerate((
-            ("G", "GPS"), ("R", "GLONASS"), ("E", "Galileo"), ("C", "BeiDou"),
-            ("J", "QZSS"), ("S", "SBAS"), ("I", "NavIC"),
-        )):
+        for index, (code, name) in enumerate(
+            (
+                ("G", "GPS"),
+                ("R", "GLONASS"),
+                ("E", "Galileo"),
+                ("C", "BeiDou"),
+                ("J", "QZSS"),
+                ("S", "SBAS"),
+                ("I", "NavIC"),
+            )
+        ):
             check = QCheckBox(f"{code}  {name}")
             check.setChecked(code in {"G", "R", "E", "C"})
             self.system_checks[code] = check
@@ -187,10 +205,14 @@ class BatchConverterWindow(QMainWindow):
         obs_layout.setHorizontalSpacing(18)
         obs_layout.setVerticalSpacing(7)
         self.obs_checks: dict[str, QCheckBox] = {}
-        for index, (code, label) in enumerate((
-            ("C", "C  Pseudorange"), ("L", "L  Carrier phase"),
-            ("D", "D  Doppler"), ("S", "S  Signal strength"),
-        )):
+        for index, (code, label) in enumerate(
+            (
+                ("C", "C  Pseudorange"),
+                ("L", "L  Carrier phase"),
+                ("D", "D  Doppler"),
+                ("S", "S  Signal strength"),
+            )
+        ):
             check = QCheckBox(label)
             check.setChecked(True)
             self.obs_checks[code] = check
@@ -263,7 +285,12 @@ class BatchConverterWindow(QMainWindow):
             ("Receiver type", self.receiver_edit, "Receiver no.", self.receiver_number_edit),
             ("Country", self.country_edit, "Receiver serial", self.receiver_serial_edit),
             ("Firmware", self.receiver_version_edit, "Antenna type", self.antenna_edit),
-            ("Antenna serial", self.antenna_number_edit, "Reference UTC date", self.reference_date_edit),
+            (
+                "Antenna serial",
+                self.antenna_number_edit,
+                "Reference UTC date",
+                self.reference_date_edit,
+            ),
         )
         for row, (label_a, field_a, label_b, field_b) in enumerate(metadata_fields):
             metadata_layout.addWidget(QLabel(label_a), row, 0)
@@ -285,11 +312,15 @@ class BatchConverterWindow(QMainWindow):
         results_layout.setSpacing(10)
         action_row = QHBoxLayout()
         self.start_button = QPushButton("Start conversion")
-        self.start_button.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_MediaPlay))
+        self.start_button.setIcon(
+            self.style().standardIcon(self.style().StandardPixmap.SP_MediaPlay)
+        )
         self.start_button.clicked.connect(self.start_conversion)
         self.start_button.setObjectName("primaryButton")
         self.stop_button = QPushButton("Stop")
-        self.stop_button.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_MediaStop))
+        self.stop_button.setIcon(
+            self.style().standardIcon(self.style().StandardPixmap.SP_MediaStop)
+        )
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.stop_conversion)
         action_row.addWidget(self.start_button)
@@ -306,7 +337,9 @@ class BatchConverterWindow(QMainWindow):
         results_group_layout = QVBoxLayout(results_group)
         results_group_layout.setContentsMargins(8, 12, 8, 8)
         self.results_table = QTableWidget(0, 4)
-        self.results_table.setHorizontalHeaderLabels(("Input file", "Status", "Epochs", "Output files"))
+        self.results_table.setHorizontalHeaderLabels(
+            ("Input file", "Status", "Epochs", "Output files")
+        )
         self.results_table.horizontalHeader().setStretchLastSection(True)
         self.results_table.setColumnWidth(0, 180)
         self.results_table.setColumnWidth(1, 80)
@@ -373,7 +406,9 @@ class BatchConverterWindow(QMainWindow):
             raise ValueError("Select an output folder.")
         systems = tuple(code for code, check in self.system_checks.items() if check.isChecked())
         observations = tuple(code for code, check in self.obs_checks.items() if check.isChecked())
-        extensions = tuple(item.strip() for item in self.extensions_edit.text().split(",") if item.strip())
+        extensions = tuple(
+            item.strip() for item in self.extensions_edit.text().split(",") if item.strip()
+        )
         approx_position = None
         position_text = self.position_edit.text().strip()
         if position_text:
@@ -388,7 +423,9 @@ class BatchConverterWindow(QMainWindow):
         reference_text = self.reference_date_edit.text().strip()
         if reference_text:
             try:
-                reference_utc = datetime.strptime(reference_text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                reference_utc = datetime.strptime(reference_text, "%Y-%m-%d").replace(
+                    tzinfo=timezone.utc
+                )
             except ValueError as exc:
                 raise ValueError("Reference UTC date must use YYYY-MM-DD.") from exc
         return BatchConversionOptions(
@@ -421,11 +458,13 @@ class BatchConverterWindow(QMainWindow):
             return
         try:
             options = self._build_options()
-            files = len(find_input_files(
-                options.input_dir,
-                recursive=options.recursive,
-                extensions=options.extensions,
-            ))
+            files = len(
+                find_input_files(
+                    options.input_dir,
+                    recursive=options.recursive,
+                    extensions=options.extensions,
+                )
+            )
             if files == 0:
                 raise ValueError("No matching RTCM/Unicore files were found.")
         except Exception as exc:
@@ -460,7 +499,9 @@ class BatchConverterWindow(QMainWindow):
             self.stop_button.setEnabled(False)
 
     @Slot(int, int, str, int, int, str)
-    def _on_progress(self, index: int, total: int, path: str, written: int, failed: int, output_names: str) -> None:
+    def _on_progress(
+        self, index: int, total: int, path: str, written: int, failed: int, output_names: str
+    ) -> None:
         self.progress.setValue(int(index * 100 / max(1, total)))
         row = self.results_table.rowCount()
         self.results_table.insertRow(row)
@@ -471,7 +512,11 @@ class BatchConverterWindow(QMainWindow):
 
     @Slot(object)
     def _on_completed(self, report: BatchConversionReport) -> None:
-        state = "Cancelled" if report.cancelled else f"Done: {report.succeeded_files} succeeded, {report.failed_files} failed"
+        state = (
+            "Cancelled"
+            if report.cancelled
+            else f"Done: {report.succeeded_files} succeeded, {report.failed_files} failed"
+        )
         self.status_label.setText(state)
         self.progress.setValue(100 if not report.cancelled else self.progress.value())
         self.log_edit.append(f"{state}; wrote {report.written_epochs} epochs")
@@ -492,8 +537,7 @@ class BatchConverterWindow(QMainWindow):
         self.stop_button.setEnabled(False)
 
     def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
+        self.setStyleSheet("""
             QMainWindow, QWidget { background: #edf1f5; color: #25313c; }
             QScrollArea#settingsScroll { border: 0; background: transparent; }
             QGroupBox { background: #ffffff; border: 1px solid #d5dce3; border-radius: 4px; margin-top: 9px; padding-top: 8px; font-weight: 600; }
@@ -517,8 +561,7 @@ class BatchConverterWindow(QMainWindow):
             QHeaderView::section { background: #e8edf1; color: #43515d; border: 0; border-bottom: 1px solid #cbd4dc; padding: 6px; font-weight: 600; }
             QTableWidget { gridline-color: #e1e6eb; alternate-background-color: #f7f9fb; }
             QSplitter::handle { background: #d9e0e6; }
-            """
-        )
+            """)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._worker is not None:
@@ -532,16 +575,25 @@ class BatchConverterWindow(QMainWindow):
         event.accept()
 
 
-def main() -> int:
-    multiprocessing.freeze_support()
-    app = QApplication(sys.argv)
+def create_batch_application(
+    argv: Sequence[str] | None = None,
+) -> tuple[QApplication, BatchConverterWindow]:
+    """Create the batch converter without entering the Qt event loop."""
+    configure_logging()
+    app = QApplication.instance() or QApplication(list(argv) if argv is not None else sys.argv)
     app.setApplicationName("RTGS RTCM Batch Converter")
     window = BatchConverterWindow()
     window.show()
+    return app, window
+
+
+def main() -> int:
+    multiprocessing.freeze_support()
+    app, _window = create_batch_application()
     return app.exec()
 
 
-__all__ = ["BatchConverterWorker", "BatchConverterWindow", "main"]
+__all__ = ["BatchConverterWorker", "BatchConverterWindow", "create_batch_application", "main"]
 
 
 if __name__ == "__main__":

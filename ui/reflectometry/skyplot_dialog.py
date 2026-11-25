@@ -2,17 +2,27 @@
 
 from __future__ import annotations
 
-from typing import Mapping
+from collections.abc import Mapping
 
+import numpy as np
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
-import numpy as np
-from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QHBoxLayout,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from core.reflectometry.config import GeometryConfig, ProcessingConfig
-from core.reflectometry.services.geometry import effective_reflection_zones, matches_reflection_zones
-from ui.shared.colors import get_sys_color
+from core.reflectometry.services.geometry import (
+    effective_reflection_zones,
+    matches_reflection_zones,
+)
 from ui.responsive import adaptive_window_size
+from ui.shared.colors import get_sys_color
 
 
 class ReflectometrySkyplotCanvas(FigureCanvas):
@@ -55,9 +65,21 @@ class ReflectometrySkyplotCanvas(FigureCanvas):
         )
         self.ax.grid(True, color=self.theme["grid"], linestyle="--", linewidth=0.8, alpha=0.55)
         self.ax.spines["polar"].set_visible(False)
-        self.ax.set_title("REFLECTOMETRY SKYPLOT", pad=18, fontsize=11, fontweight="bold", color=self.theme["accent"])
+        self.ax.set_title(
+            "REFLECTOMETRY SKYPLOT",
+            pad=18,
+            fontsize=11,
+            fontweight="bold",
+            color=self.theme["accent"],
+        )
         base_theta = np.linspace(0.0, 2.0 * np.pi, 180)
-        self.ax.fill(base_theta, np.full_like(base_theta, 90.0), color=self.theme["accent"], alpha=0.03, zorder=0)
+        self.ax.fill(
+            base_theta,
+            np.full_like(base_theta, 90.0),
+            color=self.theme["accent"],
+            alpha=0.03,
+            zorder=0,
+        )
 
     def update_view(
         self,
@@ -72,7 +94,9 @@ class ReflectometrySkyplotCanvas(FigureCanvas):
         self._draw_satellites(satellites, active_systems, geometry_config, processing_config)
         self.draw_idle()
 
-    def _draw_reflection_zones(self, geometry_config: GeometryConfig, processing_config: ProcessingConfig) -> None:
+    def _draw_reflection_zones(
+        self, geometry_config: GeometryConfig, processing_config: ProcessingConfig
+    ) -> None:
         zones = effective_reflection_zones(geometry_config, processing_config)
         for zone_index, zone in enumerate(zones):
             color = self.theme["zone_colors"][zone_index % len(self.theme["zone_colors"])]
@@ -228,4 +252,3 @@ def _segment_midpoint(start_deg: float, end_deg: float) -> float:
         return (start_deg + end_deg) / 2.0
     span = (360.0 - start_deg) + end_deg
     return (start_deg + span / 2.0) % 360.0
-

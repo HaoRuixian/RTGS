@@ -13,7 +13,7 @@ eph_settings:
   host: ntrip.data.gnss.ga.gov.au
   mountpoint: BCEP00BKG0
   parity: None
-  password: Hao20030801@
+  password: ''
   port: '2101'
   replay_speed: 1.0
   serial_port: COM8
@@ -31,7 +31,7 @@ obs_settings:
   host: 8.140.235.117
   mountpoint: NBFH
   parity: None
-  password: hao20030801
+  password: ''
   port: '2101'
   replay_speed: 1.0
   serial_port: COM8

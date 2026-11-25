@@ -7,8 +7,7 @@ from scipy.signal import savgol_filter
 
 from core.geo_utils import get_freq
 from core.reflectometry.config import IrConfig, ProcessingConfig, minimum_required_arc_samples
-from core.reflectometry.models import SnrUnit
-from core.reflectometry.models import SatelliteArc, SnrSeries
+from core.reflectometry.models import SatelliteArc, SnrSeries, SnrUnit
 from core.reflectometry.signal_utils import normalize_signal_id
 
 
@@ -64,7 +63,7 @@ class SnrPreprocessor:
         if np.count_nonzero(mask) < minimum_samples:
             raise ValueError("Outlier rejection removed too many samples")
 
-        timestamps = [timestamp for timestamp, keep in zip(timestamps, mask) if keep]
+        timestamps = [timestamp for timestamp, keep in zip(timestamps, mask, strict=True) if keep]
         snr_db = snr_db[mask]
         elevation_deg = elevation_deg[mask]
         azimuth_deg = azimuth_deg[mask]
@@ -72,8 +71,14 @@ class SnrPreprocessor:
 
         smoothed_snr_db = self._smooth(snr_db)
         smoothed_linear = _dbhz_to_linear(smoothed_snr_db)
-        detrend_x = sin_elevation if "sin_elevation" in self.processing_config.detrend_method else elevation_deg
-        residual, trend = _detrend_polynomial(detrend_x, smoothed_snr_db, self.processing_config.detrend_order)
+        detrend_x = (
+            sin_elevation
+            if "sin_elevation" in self.processing_config.detrend_method
+            else elevation_deg
+        )
+        residual, trend = _detrend_polynomial(
+            detrend_x, smoothed_snr_db, self.processing_config.detrend_order
+        )
 
         return SnrSeries(
             arc_id=arc.arc_id,

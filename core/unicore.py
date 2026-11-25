@@ -11,17 +11,14 @@ raw-observation families used by the RINEX pipeline:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-import math
 import re
 import struct
-from typing import Iterable
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 
 from core.data_models import EpochObservation, SatelliteState, SignalData
 from core.geo_utils import CLIGHT, get_freq
 from core.gnss_time import GNSSTime
-
 
 UNICORE_BINARY_SYNC = b"\xaa\x44\xb5"
 UNICORE_BINARY_HEADER_LENGTH = 24
@@ -208,7 +205,7 @@ class UnicoreMessage:
     source: str = "UNICORE"
 
     @classmethod
-    def parse_frame(cls, frame: bytes) -> "UnicoreMessage":
+    def parse_frame(cls, frame: bytes) -> UnicoreMessage:
         if frame.startswith(b"#"):
             return cls.parse_ascii(frame)
         if frame.startswith(UNICORE_BINARY_SYNC):
@@ -216,7 +213,7 @@ class UnicoreMessage:
         raise UnicoreParseError("Not a Unicore frame")
 
     @classmethod
-    def parse_ascii(cls, frame: bytes | str) -> "UnicoreMessage":
+    def parse_ascii(cls, frame: bytes | str) -> UnicoreMessage:
         raw = frame.encode("ascii", errors="ignore") if isinstance(frame, str) else bytes(frame)
         line = raw.strip()
         if not line.startswith(b"#"):
@@ -241,7 +238,9 @@ class UnicoreMessage:
         except ValueError as exc:
             raise UnicoreParseError("ASCII Unicore frame is missing ';' separator") from exc
 
-        header_parts = [part.decode("ascii", errors="ignore").strip() for part in header_blob.split(b",")]
+        header_parts = [
+            part.decode("ascii", errors="ignore").strip() for part in header_blob.split(b",")
+        ]
         if not header_parts or not header_parts[0]:
             raise UnicoreParseError("ASCII Unicore frame has an empty message name")
 
@@ -279,7 +278,7 @@ class UnicoreMessage:
         )
 
     @classmethod
-    def parse_binary(cls, frame: bytes) -> "UnicoreMessage":
+    def parse_binary(cls, frame: bytes) -> UnicoreMessage:
         raw = bytes(frame)
         if len(raw) < UNICORE_BINARY_HEADER_LENGTH + 4:
             raise UnicoreParseError("Binary Unicore frame is too short")
@@ -341,13 +340,15 @@ class UnicoreMessage:
         )
 
     def to_epoch(self, target_systems: Iterable[str] | None = None) -> EpochObservation:
-        target_set = {str(system).upper()[0] for system in (target_systems or []) if str(system).strip()}
+        target_set = {
+            str(system).upper()[0] for system in (target_systems or []) if str(system).strip()
+        }
         gps_week, gps_seconds = _header_gps_time(self.header)
         utc_datetime = GNSSTime.gps_to_utc_datetime(gps_week, gps_seconds)
         epoch = EpochObservation(gps_time=gps_seconds % GPS_WEEK_SECONDS, utc_datetime=utc_datetime)
-        setattr(epoch, "source_protocol", self.protocol)
-        setattr(epoch, "source_message", self.identity)
-        setattr(epoch, "receiver_antenna", self.antenna)
+        epoch.source_protocol = self.protocol
+        epoch.source_message = self.identity
+        epoch.receiver_antenna = self.antenna
 
         for record in self.records:
             if target_set and record.sys_id not in target_set:
@@ -356,10 +357,12 @@ class UnicoreMessage:
             sat_state = epoch.satellites.get(sat_key)
             if sat_state is None:
                 sat_state = SatelliteState(record.sys_id, record.prn)
-                setattr(sat_state, "receiver_antenna", record.antenna)
+                sat_state.receiver_antenna = record.antenna
                 epoch.satellites[sat_key] = sat_state
 
-            has_range = _tracking_pseudorange_valid(record.tracking_status) and record.pseudorange > 0.0
+            has_range = (
+                _tracking_pseudorange_valid(record.tracking_status) and record.pseudorange > 0.0
+            )
             has_phase = _tracking_phase_valid(record.tracking_status) and record.phase != 0.0
             if not (has_range or has_phase or record.cn0 > 0.0):
                 continue
@@ -373,9 +376,9 @@ class UnicoreMessage:
                 half_cycle=0,
                 doppler=float(record.doppler),
             )
-            setattr(signal, "receiver_antenna", record.antenna)
-            setattr(signal, "tracking_status", record.tracking_status)
-            setattr(signal, "glonass_fcn", record.glonass_fcn)
+            signal.receiver_antenna = record.antenna
+            signal.tracking_status = record.tracking_status
+            signal.glonass_fcn = record.glonass_fcn
             sat_state.signals[record.signal_id] = signal
 
         return epoch
@@ -448,7 +451,9 @@ def build_unicore_binary_frame(
     return frame + unicore_crc32(frame).to_bytes(4, "little")
 
 
-def _parse_ascii_records(data_text: str, info: UnicoreMessageInfo) -> list[UnicoreObservationRecord]:
+def _parse_ascii_records(
+    data_text: str, info: UnicoreMessageInfo
+) -> list[UnicoreObservationRecord]:
     if not data_text:
         return []
     parts = [part.strip() for part in data_text.split(",")]
@@ -757,4 +762,3 @@ def current_unicore_ascii_crc(frame_without_crc: str) -> str:
     """
     payload = frame_without_crc[1:] if frame_without_crc.startswith("#") else frame_without_crc
     return f"{unicore_crc32(payload.encode('ascii')):08x}"
-

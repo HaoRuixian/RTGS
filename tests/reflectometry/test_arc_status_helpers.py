@@ -5,7 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from core.reflectometry.models import ObservationRecord, ReceiverPosition
-from ui.reflectometry.arc_status import build_tracking_context, collect_latest_tracking_buffers, tracking_arc_id
+from ui.reflectometry.arc_status import (
+    build_tracking_context,
+    collect_latest_tracking_buffers,
+    tracking_arc_id,
+)
 
 
 def _record(
@@ -64,4 +68,3 @@ def test_build_tracking_context_uses_stable_arc_id_and_solving_status():
     assert context.status == "solving"
     assert context.reason == "Arc window ready; solving..."
     assert context.series.metadata["tracking"] is True
-

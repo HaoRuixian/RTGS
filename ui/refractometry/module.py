@@ -1,20 +1,30 @@
 """Refractometry workbench with placeholder views for atmospheric products."""
 
-from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QTabWidget,
-                             QPushButton, QLabel, QTableWidget, QTableWidgetItem,
-                             QHBoxLayout)
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from ui.style import get_app_stylesheet, ui_scale_for_width
+from PySide6.QtCore import Signal
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
 from ui.responsive import adaptive_window_size, window_ui_scale
+from ui.style import get_app_stylesheet
 
 
 class RefractometryModule(QMainWindow):
     """
     Refractometry module for ZTD, PWV and ionospheric parameter estimation.
     """
+
     back_to_launcher = Signal()
 
     def __init__(self):
@@ -87,7 +97,7 @@ class RefractometryModule(QMainWindow):
         table.setMaximumHeight(150)
         params = ["Current ZTD", "Average ZTD", "Max ZTD", "Min ZTD", "Std Dev"]
         values = ["0.00 mm", "0.00 mm", "0.00 mm", "0.00 mm", "0.00 mm"]
-        for i, (param, value) in enumerate(zip(params, values)):
+        for i, (param, value) in enumerate(zip(params, values, strict=False)):
             table.setItem(i, 0, QTableWidgetItem(param))
             table.setItem(i, 1, QTableWidgetItem(value))
         layout.addWidget(table)
@@ -115,7 +125,7 @@ class RefractometryModule(QMainWindow):
         table.setMaximumHeight(150)
         params = ["Current PWV", "Average PWV", "Max PWV", "Min PWV", "Std Dev"]
         values = ["0.00 mm", "0.00 mm", "0.00 mm", "0.00 mm", "0.00 mm"]
-        for i, (param, value) in enumerate(zip(params, values)):
+        for i, (param, value) in enumerate(zip(params, values, strict=False)):
             table.setItem(i, 0, QTableWidgetItem(param))
             table.setItem(i, 1, QTableWidgetItem(value))
         layout.addWidget(table)
@@ -143,7 +153,7 @@ class RefractometryModule(QMainWindow):
         table.setMaximumHeight(150)
         params = ["Current TEC", "Average TEC", "Max TEC", "Min TEC", "Rate of Change"]
         values = ["0.00 TECU", "0.00 TECU", "0.00 TECU", "0.00 TECU", "0.00 TECU/min"]
-        for i, (param, value) in enumerate(zip(params, values)):
+        for i, (param, value) in enumerate(zip(params, values, strict=False)):
             table.setItem(i, 0, QTableWidgetItem(param))
             table.setItem(i, 1, QTableWidgetItem(value))
         layout.addWidget(table)
@@ -173,7 +183,7 @@ class RefractometryModule(QMainWindow):
         table.setMaximumHeight(130)
         params = ["North-South Gradient", "East-West Gradient", "Total Magnitude", "Direction"]
         values = ["0.00 mm", "0.00 mm", "0.00 mm", "0.00 °"]
-        for i, (param, value) in enumerate(zip(params, values)):
+        for i, (param, value) in enumerate(zip(params, values, strict=False)):
             table.setItem(i, 0, QTableWidgetItem(param))
             table.setItem(i, 1, QTableWidgetItem(value))
         layout.addWidget(table)

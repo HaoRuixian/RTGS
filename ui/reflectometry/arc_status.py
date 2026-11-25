@@ -65,9 +65,11 @@ def collect_latest_tracking_buffers(
     for grouped_records in grouped.values():
         ordered = sorted(grouped_records, key=lambda item: item.timestamp)
         segment = latest_tracking_segment(ordered, max_time_gap_seconds=max_time_gap_seconds)
-        if segment and (reference_time - segment[-1].timestamp).total_seconds() <= max_time_gap_seconds:
-            if len(segment) >= 2:
-                latest_segments.append(segment)
+        if (
+            segment
+            and (reference_time - segment[-1].timestamp).total_seconds() <= max_time_gap_seconds
+        ) and len(segment) >= 2:
+            latest_segments.append(segment)
     return latest_segments
 
 
@@ -93,7 +95,12 @@ def latest_tracking_segment(
         step_sign = 1 if diff > 1e-6 else -1 if diff < -1e-6 else 0
 
         split_required = time_gap > max_time_gap_seconds
-        if not split_required and direction_sign is not None and step_sign != 0 and step_sign != direction_sign:
+        if (
+            not split_required
+            and direction_sign is not None
+            and step_sign != 0
+            and step_sign != direction_sign
+        ):
             split_required = True
 
         if split_required:
@@ -137,7 +144,9 @@ def tracking_arc_id(buffer: list[ObservationRecord]) -> str:
 def format_arc_time_summary(start: datetime, end: datetime) -> str:
     """Format arc midpoint plus start/end times."""
     midpoint = start + (end - start) / 2
-    return f"{midpoint.strftime('%H:%M:%S')} ({start.strftime('%H:%M:%S')}-{end.strftime('%H:%M:%S')})"
+    return (
+        f"{midpoint.strftime('%H:%M:%S')} ({start.strftime('%H:%M:%S')}-{end.strftime('%H:%M:%S')})"
+    )
 
 
 def format_tracking_elevation_summary(buffer: list[ObservationRecord]) -> str:
@@ -184,7 +193,9 @@ def build_tracking_context(
     sample_count = len(buffer)
     arc_id = tracking_arc_id(buffer)
     direction = buffer_direction_text(buffer)
-    mean_az = format_mean_azimuth([item.azimuth_deg for item in buffer if item.azimuth_deg is not None])
+    mean_az = format_mean_azimuth(
+        [item.azimuth_deg for item in buffer if item.azimuth_deg is not None]
+    )
     first = buffer[0]
     return TrackingArcContext(
         arc_id=arc_id,
@@ -249,8 +260,16 @@ def build_solution_status_row(
             time_summary,
             elevation_text,
             mean_az_text,
-            f"{solution.reflector_height_m:.3f}" if solution.reflector_height_m is not None else "--",
-            f"{solution.peak_to_noise_ratio:.2f}" if solution.peak_to_noise_ratio is not None else "--",
+            (
+                f"{solution.reflector_height_m:.3f}"
+                if solution.reflector_height_m is not None
+                else "--"
+            ),
+            (
+                f"{solution.peak_to_noise_ratio:.2f}"
+                if solution.peak_to_noise_ratio is not None
+                else "--"
+            ),
             status_text,
             qc_text,
         ],

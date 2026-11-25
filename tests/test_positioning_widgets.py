@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 import pytest
 
-
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 
@@ -45,7 +44,10 @@ def test_residual_widget_uses_solution_time_and_supports_y_axis_zoom():
         widget.update_solution(_solution(start + timedelta(seconds=30), 0.15, -0.10, 0.25))
 
         times, series, uses_reference = widget._series_for_mode()
-        assert times == [start.replace(tzinfo=None), (start + timedelta(seconds=30)).replace(tzinfo=None)]
+        assert times == [
+            start.replace(tzinfo=None),
+            (start + timedelta(seconds=30)).replace(tzinfo=None),
+        ]
         assert series["East"] == [0.10, 0.15]
         assert uses_reference is True
 
@@ -79,9 +81,9 @@ def test_atmosphere_widget_uses_numeric_dates_and_independent_parameter_scales()
             )
         widget.canvas.draw()
 
-        for name, ax in zip(widget.PARAMETERS, widget.axes):
+        for _name, ax in zip(widget.PARAMETERS, widget.axes, strict=True):
             assert ax.xaxis.get_offset_text().get_visible() is False
-            assert widget.value_labels[name].get_text() != "--"
+        assert not hasattr(widget, "value_labels")
 
         labels = [label.get_text() for label in widget.axes[-1].get_xticklabels()]
         assert labels
@@ -108,6 +110,78 @@ def test_atmosphere_widget_uses_numeric_dates_and_independent_parameter_scales()
         assert widget.summary_labels["ZWD"].text() == "ZWD  0.140 m"
     finally:
         widget.close()
+
+
+def test_atmosphere_widget_retains_long_trends_without_storing_every_ui_refresh():
+    _qapp()
+    from core.positioning_models import PositioningMode
+    from ui.positioning.widgets import AtmosphereWidget
+
+    start = datetime(2026, 7, 1, tzinfo=timezone.utc)
+    widget = AtmosphereWidget()
+    try:
+        for offset, ztd in ((0.0, 2.400), (0.25, 2.401), (3600.0, 2.410), (21600.0, 2.420)):
+            widget.update_solution(
+                SimpleNamespace(
+                    epoch_time=start + timedelta(seconds=offset),
+                    mode=PositioningMode.PPP,
+                    ztd=ztd,
+                    zhd=2.270,
+                    zwd=ztd - 2.270,
+                )
+            )
+
+        assert len(widget.times) == 3
+        assert widget.history["ZTD"] == pytest.approx([2.401, 2.410, 2.420])
+        assert widget.times[-1] - widget.times[0] > timedelta(hours=5)
+    finally:
+        widget.close()
+
+
+def test_current_solution_uses_paired_columns_and_mode_specific_fields():
+    _qapp()
+    import shiboken6
+
+    from core.positioning_models import PositioningMode, PositioningSolution, SolutionStatus
+    from ui.positioning.widgets import PositionInfoWidget
+
+    widget = PositionInfoWidget()
+    try:
+        widget.set_positioning_mode(PositioningMode.PPP)
+        assert widget.table.columnCount() == 4
+        assert "Differential Age" not in widget.parameter_cells
+        assert "Ambiguity Ratio" not in widget.parameter_cells
+        assert "PPP Ambiguities" in widget.parameter_cells
+        assert "Coordinate Stability" in widget.parameter_cells
+
+        solution = PositioningSolution(
+            timestamp=0,
+            gps_week=0,
+            latitude=48.5,
+            longitude=-123.0,
+            height=1.0,
+            ecef_x=-2304501.0,
+            ecef_y=-3547589.0,
+            ecef_z=4757288.0,
+            mode=PositioningMode.PPP,
+            status=SolutionStatus.FIXED,
+            convergence=True,
+            diagnostics={"ar_status": "waiting", "ar_candidate_count": 8},
+        )
+        widget.update_solution(solution)
+        assert widget.table.item(*widget.parameter_cells["Solution Status"]).text() == "Fixed"
+        assert widget.table.item(*widget.parameter_cells["PPP Ambiguities"]).text() == "Float"
+        assert (
+            widget.table.item(*widget.parameter_cells["AR Constraints / Candidates"]).text()
+            == "0 / 8"
+        )
+
+        widget.set_positioning_mode(PositioningMode.RTK)
+        assert "Differential Age" in widget.parameter_cells
+        assert "Ambiguity Ratio" in widget.parameter_cells
+    finally:
+        widget.close()
+        shiboken6.delete(widget)
 
 
 def test_position_map_fills_initial_rectangular_canvas_and_draws_track():
@@ -147,6 +221,54 @@ def test_position_map_fills_initial_rectangular_canvas_and_draws_track():
         assert len(widget.start_point.get_xdata()) == 1
     finally:
         widget.close()
+
+
+def test_position_map_switches_between_street_and_satellite_tile_layers():
+    _qapp()
+
+    import shiboken6
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    from ui.positioning.widgets import PositionMapWidget
+
+    widget = PositionMapWidget()
+    widget._request_tiles_for_view = lambda: None
+    try:
+        assert widget.tile_source_combo.currentData() == "satellite"
+        assert widget._tile_source == "satellite"
+        assert widget._tile_url_candidates("satellite", 12, 654, 1582)[0].endswith("/12/1582/654")
+        assert "Esri" in widget.map_attribution.get_text()
+        assert widget.north_label.get_color() == "#FFFFFF"
+        assert widget.scale_bar.get_color() == "#FFFFFF"
+        wheel = QWheelEvent(
+            QPointF(8, 8),
+            QPointF(8, 8),
+            QPoint(),
+            QPoint(0, -120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+        QApplication.sendEvent(widget.tile_source_combo, wheel)
+        assert widget._tile_source == "satellite"
+
+        widget.update_track(48.546, -123.008, height=0.0)
+        first_extent = widget.ax.get_xlim(), widget.ax.get_ylim()
+        widget.update_track(48.5460001, -123.0080001, height=0.1)
+        np_extent = widget.ax.get_xlim(), widget.ax.get_ylim()
+        for observed, expected in zip(np_extent, first_extent, strict=True):
+            assert observed == pytest.approx(expected, abs=1e-6, rel=0)
+
+        widget.tile_source_combo.setCurrentIndex(1)
+        assert widget._tile_source == "osm"
+        assert widget._tile_url_candidates("osm", 12, 654, 1582)[0].endswith("/12/654/1582.png")
+        assert widget.scale_bar.get_color() == widget.theme["fg"]
+    finally:
+        widget.close()
+        shiboken6.delete(widget)
 
 
 def test_stopping_an_initial_rtk_run_does_not_disable_unstarted_spp_thread():

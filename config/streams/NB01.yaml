@@ -10,7 +10,7 @@ eph_settings:
   host: ntrip.data.gnss.ga.gov.au
   mountpoint: BCEP00BKG0
   parity: None
-  password: Hao20030801@
+  password: ''
   port: '2101'
   replay_speed: 1.0
   serial_port: /dev/ttyS31
@@ -28,7 +28,7 @@ obs_settings:
   host: grserg.top
   mountpoint: NB01
   parity: None
-  password: hao20030801
+  password: ''
   port: '2101'
   replay_speed: 1.0
   serial_port: /dev/ttyS31

@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlparse, parse_qs
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .manager import RuntimeManager
-
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = PACKAGE_DIR / "static"
@@ -43,7 +43,9 @@ class RTRinexRequestHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/status":
             return self._send_json(self.manager.status())
         if parsed.path == "/api/config":
-            return self._send_json({"path": str(self.manager.store.path), "config": self.manager.store.load_raw()})
+            return self._send_json(
+                {"path": str(self.manager.store.path), "config": self.manager.store.load_raw()}
+            )
         if parsed.path == "/api/stations":
             return self._send_json(
                 {
@@ -136,10 +138,8 @@ class RTRinexRequestHandler(SimpleHTTPRequestHandler):
         try:
             super().handle_one_request()
         except Exception as exc:
-            try:
+            with suppress(Exception):
                 self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
-            except Exception:
-                pass
 
 
 def build_server(manager: RuntimeManager, host: str, port: int) -> ThreadingHTTPServer:

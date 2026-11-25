@@ -34,7 +34,7 @@ stations:
       host: 8.140.235.117
       mountpoint: BUAA01
       user: adminHRX
-      password: hao20030801
+      password: ''
     rinex:
       marker_name: BUAA01
       station_code: BUAA
@@ -49,7 +49,7 @@ stations:
       host: 8.140.235.117
       mountpoint: BUAA02
       user: adminHRX
-      password: hao20030801
+      password: ''
     rinex:
       marker_name: BUAA02
       station_code: BUAA
@@ -64,7 +64,7 @@ stations:
       host: 8.140.235.117
       mountpoint: BUAA04
       user: adminHRX
-      password: hao20030801
+      password: ''
     rinex:
       marker_name: BUAA04
       station_code: BUAA
@@ -79,7 +79,7 @@ stations:
       host: 8.140.235.117
       mountpoint: NBFH
       user: adminHRX
-      password: hao20030801
+      password: ''
     rinex:
       marker_name: NBFH
       station_code: NBFH
@@ -97,7 +97,7 @@ stations:
       host: 8.140.235.117
       mountpoint: CJ02
       user: adminHRX
-      password: hao20030801
+      password: ''
     rinex:
       marker_name: CJ02
       station_code: CJ02
@@ -115,7 +115,7 @@ stations:
       host: 8.140.235.117
       mountpoint: GR01
       user: adminHRX
-      password: hao20030801
+      password: ''
     rinex:
       marker_name: GR01
       station_code: GR01

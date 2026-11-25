@@ -2,23 +2,23 @@
 
 from __future__ import annotations
 
+import json
+import os
+import secrets
+import time
+from contextlib import suppress
+from datetime import datetime, timezone
 from email import policy
 from email.parser import BytesParser
-import json
-from datetime import datetime, timezone
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
-import os
 from pathlib import Path
-import secrets
 from threading import RLock
-import time
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .runtime import RealtimeEkfRuntimeManager
-
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = PACKAGE_DIR / "static"
@@ -86,7 +86,9 @@ class RealtimeEkfRequestHandler(SimpleHTTPRequestHandler):
             user = self._require_admin()
             if user is None:
                 return
-            return self._send_json({"path": str(self.manager.store.path), "config": self.manager.store.load_raw()})
+            return self._send_json(
+                {"path": str(self.manager.store.path), "config": self.manager.store.load_raw()}
+            )
         if parsed.path == "/api/stations":
             user = self._require_login()
             if user is None:
@@ -118,7 +120,9 @@ class RealtimeEkfRequestHandler(SimpleHTTPRequestHandler):
                     "products": self.manager.products(name, limit, start=start, end=end),
                 }
             )
-        if parsed.path.startswith("/api/stations/") and parsed.path.endswith("/reflectometry-config"):
+        if parsed.path.startswith("/api/stations/") and parsed.path.endswith(
+            "/reflectometry-config"
+        ):
             user = self._require_login()
             if user is None:
                 return
@@ -216,7 +220,12 @@ class RealtimeEkfRequestHandler(SimpleHTTPRequestHandler):
             if name.endswith("/reflectometry-config"):
                 station_name = unquote(name[: -len("/reflectometry-config")])
                 payload = self._read_json()
-                return self._send_json({"ok": True, "config": self.manager.update_reflectometry_config(station_name, payload)})
+                return self._send_json(
+                    {
+                        "ok": True,
+                        "config": self.manager.update_reflectometry_config(station_name, payload),
+                    }
+                )
             try:
                 station = self.manager.store.upsert_station(self._read_json(), original_name=name)
             except ValueError as exc:
@@ -280,7 +289,7 @@ class RealtimeEkfRequestHandler(SimpleHTTPRequestHandler):
         if length <= 0:
             raise ValueError("Upload body is empty")
         body = self.rfile.read(length)
-        header = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8")
+        header = f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode()
         message = BytesParser(policy=policy.default).parsebytes(header + body)
         fields: dict[str, str] = {}
         files: dict[str, tuple[str, bytes]] = {}
@@ -393,10 +402,8 @@ class RealtimeEkfRequestHandler(SimpleHTTPRequestHandler):
         try:
             super().handle_one_request()
         except Exception as exc:
-            try:
+            with suppress(Exception):
                 self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
-            except Exception:
-                pass
 
 
 def build_server(manager: RealtimeEkfRuntimeManager, host: str, port: int) -> ThreadingHTTPServer:

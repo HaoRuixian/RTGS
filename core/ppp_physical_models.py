@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 import gzip
 import math
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import TextIO
 
 import numpy as np
 
 from core.geo_utils import ecef2lla, rot_ecef2enu
-
 
 LIGHT_SPEED = 299_792_458.0
 EARTH_ROTATION_RATE = 7.2921151467e-5
@@ -37,9 +36,39 @@ SSR_UPDATE_INTERVAL_SECONDS = (
     7200.0,
     10800.0,
 )
+_NIELL_HYDRO_AVERAGE = np.array(
+    [
+        [1.2769934e-3, 1.2683230e-3, 1.2465397e-3, 1.2196049e-3, 1.2045996e-3],
+        [2.9153695e-3, 2.9152299e-3, 2.9288445e-3, 2.9022565e-3, 2.9024912e-3],
+        [62.610505e-3, 62.837393e-3, 63.721774e-3, 63.824265e-3, 64.258455e-3],
+    ],
+    dtype=float,
+)
+_NIELL_HYDRO_AMPLITUDE = np.array(
+    [
+        [0.0, 1.2709626e-5, 2.6523662e-5, 3.4000452e-5, 4.1202191e-5],
+        [0.0, 2.1414979e-5, 3.0160779e-5, 7.2562722e-5, 11.723375e-5],
+        [0.0, 9.01284e-5, 4.3497037e-5, 84.795348e-5, 170.37206e-5],
+    ],
+    dtype=float,
+)
+_NIELL_WET = np.array(
+    [
+        [5.8021897e-4, 5.6794847e-4, 5.8118019e-4, 5.9727542e-4, 6.1641693e-4],
+        [1.4275268e-3, 1.5138625e-3, 1.4572752e-3, 1.5007428e-3, 1.7599082e-3],
+        [4.3472961e-2, 4.672951e-2, 4.3908931e-2, 4.4626982e-2, 5.4736038e-2],
+    ],
+    dtype=float,
+)
+for _niell_coefficients in (
+    _NIELL_HYDRO_AVERAGE,
+    _NIELL_HYDRO_AMPLITUDE,
+    _NIELL_WET,
+):
+    _niell_coefficients.setflags(write=False)
 
 
-def _unit(vector: np.ndarray) -> Optional[np.ndarray]:
+def _unit(vector: np.ndarray) -> np.ndarray | None:
     value = np.asarray(vector, dtype=float).reshape(-1)
     if value.size < 3 or not np.all(np.isfinite(value[:3])):
         return None
@@ -48,6 +77,12 @@ def _unit(vector: np.ndarray) -> Optional[np.ndarray]:
     if norm <= 1e-12:
         return None
     return value / norm
+
+
+def _open_antex_text(source: Path) -> TextIO:
+    if source.suffix.lower() == ".gz":
+        return gzip.open(source, "rt", encoding="utf-8", errors="ignore")
+    return source.open("r", encoding="utf-8", errors="ignore")
 
 
 def _frac(value: float) -> float:
@@ -132,16 +167,22 @@ def _precession_matrix(mjd_start: float, mjd_end: float) -> np.ndarray:
     t_value = (mjd_start - MJD_J2000) / 36_525.0
     dt = (mjd_end - mjd_start) / 36_525.0
     zeta = (
-        (2306.2181 + (1.39656 - 0.000139 * t_value) * t_value)
-        + ((0.30188 - 0.000344 * t_value) + 0.017998 * dt) * dt
-    ) * dt / ARCSEC_PER_RADIAN
-    z_value = zeta + (
-        (0.79280 + 0.000411 * t_value) + 0.000205 * dt
-    ) * dt * dt / ARCSEC_PER_RADIAN
+        (
+            (2306.2181 + (1.39656 - 0.000139 * t_value) * t_value)
+            + ((0.30188 - 0.000344 * t_value) + 0.017998 * dt) * dt
+        )
+        * dt
+        / ARCSEC_PER_RADIAN
+    )
+    z_value = zeta + ((0.79280 + 0.000411 * t_value) + 0.000205 * dt) * dt * dt / ARCSEC_PER_RADIAN
     theta = (
-        (2004.3109 - (0.85330 + 0.000217 * t_value) * t_value)
-        - ((0.42665 + 0.000217 * t_value) + 0.041833 * dt) * dt
-    ) * dt / ARCSEC_PER_RADIAN
+        (
+            (2004.3109 - (0.85330 + 0.000217 * t_value) * t_value)
+            - ((0.42665 + 0.000217 * t_value) + 0.041833 * dt) * dt
+        )
+        * dt
+        / ARCSEC_PER_RADIAN
+    )
     return _rot_z(-z_value) @ _rot_y(theta) @ _rot_z(-zeta)
 
 
@@ -151,10 +192,14 @@ def sun_position_ecef(epoch: datetime) -> np.ndarray:
     epsilon = math.radians(23.43929111)
     t_value = (mjd - MJD_J2000) / 36_525.0
     mean_anomaly = 2.0 * math.pi * _frac(0.9931267 + 99.9973583 * t_value)
-    longitude = 2.0 * math.pi * _frac(
-        0.7859444
-        + mean_anomaly / (2.0 * math.pi)
-        + (6892.0 * math.sin(mean_anomaly) + 72.0 * math.sin(2.0 * mean_anomaly)) / 1_296_000.0
+    longitude = (
+        2.0
+        * math.pi
+        * _frac(
+            0.7859444
+            + mean_anomaly / (2.0 * math.pi)
+            + (6892.0 * math.sin(mean_anomaly) + 72.0 * math.sin(2.0 * mean_anomaly)) / 1_296_000.0
+        )
     )
     radius = 149.619e9 - 2.499e9 * math.cos(mean_anomaly) - 0.021e9 * math.cos(2.0 * mean_anomaly)
     sun = np.array([radius * math.cos(longitude), radius * math.sin(longitude), 0.0], dtype=float)
@@ -189,9 +234,11 @@ def moon_position_ecef(epoch: datetime) -> np.ndarray:
         - 55.0 * math.sin(2.0 * argument - 2.0 * elongation)
     )
     longitude = 2.0 * math.pi * _frac(l_zero + delta_longitude / 1_296_000.0)
-    s_value = argument + (
-        delta_longitude + 412.0 * math.sin(2.0 * argument) + 541.0 * math.sin(sun_anomaly)
-    ) / ARCSEC_PER_RADIAN
+    s_value = (
+        argument
+        + (delta_longitude + 412.0 * math.sin(2.0 * argument) + 541.0 * math.sin(sun_anomaly))
+        / ARCSEC_PER_RADIAN
+    )
     h_value = argument - 2.0 * elongation
     latitude_term = (
         -526.0 * math.sin(h_value)
@@ -251,11 +298,10 @@ def solid_earth_tide_displacement(epoch: datetime, receiver_ecef: np.ndarray) ->
     gm_wgs = 398.6005e12
     gm_sun = 1.3271250e20
     gm_moon = 4.9027890e12
-    factor_sun = gm_sun / gm_wgs * receiver_radius ** 4 / sun_radius ** 3
-    factor_moon = gm_moon / gm_wgs * receiver_radius ** 4 / moon_radius ** 3
-    return (
-        factor_sun * (x2_sun * sun_unit + p2_sun * receiver_unit)
-        + factor_moon * (x2_moon * moon_unit + p2_moon * receiver_unit)
+    factor_sun = gm_sun / gm_wgs * receiver_radius**4 / sun_radius**3
+    factor_moon = gm_moon / gm_wgs * receiver_radius**4 / moon_radius**3
+    return factor_sun * (x2_sun * sun_unit + p2_sun * receiver_unit) + factor_moon * (
+        x2_moon * moon_unit + p2_moon * receiver_unit
     )
 
 
@@ -271,7 +317,7 @@ def shapiro_delay(receiver_ecef: np.ndarray, satellite_ecef: np.ndarray) -> floa
     if denominator <= 0.0 or numerator <= denominator:
         return 0.0
     earth_gm = 3.986004418e14
-    return float(2.0 * earth_gm / LIGHT_SPEED ** 2 * math.log(numerator / denominator))
+    return float(2.0 * earth_gm / LIGHT_SPEED**2 * math.log(numerator / denominator))
 
 
 def _niell_interpolate(coefficients: np.ndarray, latitude_deg: float) -> float:
@@ -283,18 +329,13 @@ def _niell_interpolate(coefficients: np.ndarray, latitude_deg: float) -> float:
         return float(coefficients[-1])
     lower = min(int(latitude / 15.0) - 1, 3)
     fraction = latitude / 15.0 - (lower + 1)
-    return float(
-        coefficients[lower] * (1.0 - fraction)
-        + coefficients[lower + 1] * fraction
-    )
+    return float(coefficients[lower] * (1.0 - fraction) + coefficients[lower + 1] * fraction)
 
 
 def _niell_map(elevation_rad: float, a_value: float, b_value: float, c_value: float) -> float:
     sin_elevation = math.sin(float(elevation_rad))
     numerator = 1.0 + a_value / (1.0 + b_value / (1.0 + c_value))
-    denominator = sin_elevation + a_value / (
-        sin_elevation + b_value / (sin_elevation + c_value)
-    )
+    denominator = sin_elevation + a_value / (sin_elevation + b_value / (sin_elevation + c_value))
     return float(numerator / denominator)
 
 
@@ -303,7 +344,7 @@ def niell_mapping_factors(
     latitude_rad: float,
     height_m: float,
     elevation_rad: float,
-) -> Tuple[float, float]:
+) -> tuple[float, float]:
     """Return Niell (1996) hydrostatic and wet mapping factors."""
     if elevation_rad <= 0.0:
         return 0.0, 0.0
@@ -312,59 +353,25 @@ def niell_mapping_factors(
     else:
         epoch = epoch.astimezone(timezone.utc)
 
-    hydro_average = np.array(
-        [
-            [1.2769934e-3, 1.2683230e-3, 1.2465397e-3, 1.2196049e-3, 1.2045996e-3],
-            [2.9153695e-3, 2.9152299e-3, 2.9288445e-3, 2.9022565e-3, 2.9024912e-3],
-            [62.610505e-3, 62.837393e-3, 63.721774e-3, 63.824265e-3, 64.258455e-3],
-        ],
-        dtype=float,
-    )
-    hydro_amplitude = np.array(
-        [
-            [0.0, 1.2709626e-5, 2.6523662e-5, 3.4000452e-5, 4.1202191e-5],
-            [0.0, 2.1414979e-5, 3.0160779e-5, 7.2562722e-5, 11.723375e-5],
-            [0.0, 9.0128400e-5, 4.3497037e-5, 84.795348e-5, 170.37206e-5],
-        ],
-        dtype=float,
-    )
-    wet = np.array(
-        [
-            [5.8021897e-4, 5.6794847e-4, 5.8118019e-4, 5.9727542e-4, 6.1641693e-4],
-            [1.4275268e-3, 1.5138625e-3, 1.4572752e-3, 1.5007428e-3, 1.7599082e-3],
-            [4.3472961e-2, 4.6729510e-2, 4.3908931e-2, 4.4626982e-2, 5.4736038e-2],
-        ],
-        dtype=float,
-    )
     latitude_deg = math.degrees(float(latitude_rad))
     day_fraction = (
-        epoch.hour * 3600.0
-        + epoch.minute * 60.0
-        + epoch.second
-        + epoch.microsecond * 1e-6
+        epoch.hour * 3600.0 + epoch.minute * 60.0 + epoch.second + epoch.microsecond * 1e-6
     ) / 86_400.0
-    seasonal_year = (
-        int(epoch.strftime("%j")) + day_fraction - 28.0
-    ) / 365.25
+    seasonal_year = (int(epoch.strftime("%j")) + day_fraction - 28.0) / 365.25
     if latitude_deg < 0.0:
         seasonal_year += 0.5
     seasonal_cosine = math.cos(2.0 * math.pi * seasonal_year)
     hydro = [
-        _niell_interpolate(hydro_average[index], latitude_deg)
-        - _niell_interpolate(hydro_amplitude[index], latitude_deg) * seasonal_cosine
+        _niell_interpolate(_NIELL_HYDRO_AVERAGE[index], latitude_deg)
+        - _niell_interpolate(_NIELL_HYDRO_AMPLITUDE[index], latitude_deg) * seasonal_cosine
         for index in range(3)
     ]
-    wet_values = [
-        _niell_interpolate(wet[index], latitude_deg)
-        for index in range(3)
-    ]
+    wet_values = [_niell_interpolate(_NIELL_WET[index], latitude_deg) for index in range(3)]
     hydro_mapping = _niell_map(elevation_rad, *hydro)
     wet_mapping = _niell_map(elevation_rad, *wet_values)
 
     height_mapping = _niell_map(elevation_rad, 2.53e-5, 5.49e-3, 1.14e-3)
-    hydro_mapping += (
-        1.0 / math.sin(elevation_rad) - height_mapping
-    ) * float(height_m) / 1000.0
+    hydro_mapping += (1.0 / math.sin(elevation_rad) - height_mapping) * float(height_m) / 1000.0
     return float(hydro_mapping), float(wet_mapping)
 
 
@@ -381,9 +388,9 @@ def neu_to_ecef(receiver_ecef: np.ndarray, north_east_up: np.ndarray) -> np.ndar
 def satellite_body_axes(
     epoch: datetime,
     satellite_ecef: np.ndarray,
-    satellite_velocity_ecef: Optional[np.ndarray] = None,
-    yaw_angle_deg: Optional[float] = None,
-) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    satellite_velocity_ecef: np.ndarray | None = None,
+    yaw_angle_deg: float | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
     """Return satellite body X/Y/Z axes for nominal or supplied yaw."""
     satellite = np.asarray(satellite_ecef, dtype=float).reshape(3)
     z_axis = _unit(-satellite)
@@ -426,7 +433,7 @@ class PhaseWindupModel:
     """Continuous phase wind-up correction stored per satellite."""
 
     def __init__(self) -> None:
-        self._cycles: Dict[str, float] = {}
+        self._cycles: dict[str, float] = {}
 
     def clear(self) -> None:
         self._cycles.clear()
@@ -441,8 +448,8 @@ class PhaseWindupModel:
         receiver_ecef: np.ndarray,
         satellite_ecef: np.ndarray,
         *,
-        satellite_velocity_ecef: Optional[np.ndarray] = None,
-        yaw_angle_deg: Optional[float] = None,
+        satellite_velocity_ecef: np.ndarray | None = None,
+        yaw_angle_deg: float | None = None,
     ) -> float:
         receiver = np.asarray(receiver_ecef, dtype=float).reshape(3)
         satellite = np.asarray(satellite_ecef, dtype=float).reshape(3)
@@ -482,10 +489,7 @@ class PhaseWindupModel:
             phase = -phase
         satellite_id = str(satellite_id)
         previous = self._cycles.get(satellite_id)
-        if previous is None:
-            continuous = phase
-        else:
-            continuous = math.floor(previous - phase + 0.5) + phase
+        continuous = phase if previous is None else math.floor(previous - phase + 0.5) + phase
         self._cycles[satellite_id] = float(continuous)
         return float(continuous)
 
@@ -502,7 +506,7 @@ class _AntexAntenna:
     zenith_start_deg: float = 0.0
     zenith_end_deg: float = 90.0
     zenith_step_deg: float = 5.0
-    frequencies: Dict[str, _AntexFrequency] = field(default_factory=dict)
+    frequencies: dict[str, _AntexFrequency] = field(default_factory=dict)
 
 
 class AntexCalibration:
@@ -510,7 +514,7 @@ class AntexCalibration:
 
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = ""
-        self.antennas: Dict[str, _AntexAntenna] = {}
+        self.antennas: dict[str, _AntexAntenna] = {}
         if path:
             self.load(path)
 
@@ -524,15 +528,11 @@ class AntexCalibration:
 
     def load(self, path: str | Path) -> None:
         source = Path(path).expanduser()
-        antennas: Dict[str, _AntexAntenna] = {}
-        current: Optional[_AntexAntenna] = None
+        antennas: dict[str, _AntexAntenna] = {}
+        current: _AntexAntenna | None = None
         current_frequency = ""
-        current_frequency_data: Optional[_AntexFrequency] = None
-        if source.suffix.lower() == ".gz":
-            source_handle = gzip.open(source, "rt", encoding="utf-8", errors="ignore")
-        else:
-            source_handle = source.open("r", encoding="utf-8", errors="ignore")
-        with source_handle as handle:
+        current_frequency_data: _AntexFrequency | None = None
+        with _open_antex_text(source) as handle:
             for raw_line in handle:
                 line = raw_line.rstrip("\n")
                 label = line[60:80].strip() if len(line) >= 60 else ""
@@ -616,7 +616,9 @@ class AntexCalibration:
         }.get(str(system).upper()[:1], "")
 
     @staticmethod
-    def _pattern_value(antenna: _AntexAntenna, frequency: _AntexFrequency, zenith_deg: float) -> float:
+    def _pattern_value(
+        antenna: _AntexAntenna, frequency: _AntexFrequency, zenith_deg: float
+    ) -> float:
         pattern = frequency.no_azimuth_pattern_m
         if pattern.size == 0 or antenna.zenith_step_deg <= 0.0:
             return 0.0
@@ -630,7 +632,7 @@ class AntexCalibration:
         frequency_code: str,
         elevation_rad: float,
         azimuth_rad: float,
-    ) -> Tuple[float, bool]:
+    ) -> tuple[float, bool]:
         if "NULLANTENNA" in str(antenna_name).upper():
             return 0.0, True
         antenna = self.antennas.get(self._key(antenna_name))
@@ -656,7 +658,7 @@ class AntexCalibration:
         frequency_code: str,
         transmit_elevation_rad: float,
         transmit_azimuth_rad: float,
-    ) -> Tuple[float, bool]:
+    ) -> tuple[float, bool]:
         antenna = self.antennas.get(self._key(str(satellite_id)[:3]))
         if antenna is None:
             return 0.0, False
@@ -712,7 +714,7 @@ class BlqOceanLoading:
 
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = ""
-        self.stations: Dict[str, _BlqStation] = {}
+        self.stations: dict[str, _BlqStation] = {}
         if path:
             self.load(path)
 
@@ -729,17 +731,23 @@ class BlqOceanLoading:
                 if not line or "$$" in line:
                     continue
                 content.append(line)
-        stations: Dict[str, _BlqStation] = {}
+        stations: dict[str, _BlqStation] = {}
         index = 0
         while index + 6 < len(content):
             station = self._key(content[index])
             try:
                 amplitudes = np.asarray(
-                    [[float(value) for value in content[index + row].split()[:11]] for row in range(1, 4)],
+                    [
+                        [float(value) for value in content[index + row].split()[:11]]
+                        for row in range(1, 4)
+                    ],
                     dtype=float,
                 )
                 phases = np.asarray(
-                    [[float(value) for value in content[index + row].split()[:11]] for row in range(4, 7)],
+                    [
+                        [float(value) for value in content[index + row].split()[:11]]
+                        for row in range(4, 7)
+                    ],
                     dtype=float,
                 )
             except (TypeError, ValueError):
@@ -758,7 +766,7 @@ class BlqOceanLoading:
         epoch: datetime,
         receiver_ecef: np.ndarray,
         station_id: str,
-    ) -> Tuple[np.ndarray, bool]:
+    ) -> tuple[np.ndarray, bool]:
         station = self.stations.get(self._key(station_id))
         if station is None:
             return np.zeros(3, dtype=float), False
@@ -773,10 +781,7 @@ class BlqOceanLoading:
         # every constituent roughly one century out of phase.
         days_since_1975 = (midnight - reference).days + 1
         fractional_day_seconds = (
-            epoch.hour * 3600.0
-            + epoch.minute * 60.0
-            + epoch.second
-            + epoch.microsecond * 1e-6
+            epoch.hour * 3600.0 + epoch.minute * 60.0 + epoch.second + epoch.microsecond * 1e-6
         )
         capt = (days_since_1975 * 1.000000035 + 27_392.500528) / 36_525.0
         degrees_to_radians = math.pi / 180.0
@@ -797,8 +802,7 @@ class BlqOceanLoading:
             + self.ANGULAR_FACTORS[3] * 2.0 * math.pi
         ) % (2.0 * math.pi)
         radial_west_south = np.sum(
-            station.amplitudes_m
-            * np.cos(angles[np.newaxis, :] - np.radians(station.phases_deg)),
+            station.amplitudes_m * np.cos(angles[np.newaxis, :] - np.radians(station.phases_deg)),
             axis=1,
         )
         north_east_up = np.array(
@@ -808,14 +812,14 @@ class BlqOceanLoading:
         return neu_to_ecef(receiver_ecef, north_east_up), True
 
 
-def propagated_ssr_yaw_deg(correction, gps_time_sow: float) -> Optional[float]:
+def propagated_ssr_yaw_deg(correction, gps_time_sow: float) -> float | None:
     """Propagate SSR yaw to the observation epoch."""
     if correction is None:
         return None
     try:
-        yaw = float(getattr(correction, "yaw_angle_deg"))
-        yaw_rate = float(getattr(correction, "yaw_rate_deg_s"))
-        correction_time = float(getattr(correction, "epoch_time"))
+        yaw = float(correction.yaw_angle_deg)
+        yaw_rate = float(correction.yaw_rate_deg_s)
+        correction_time = float(correction.epoch_time)
     except (TypeError, ValueError, AttributeError):
         return None
     dt = float(gps_time_sow) - correction_time

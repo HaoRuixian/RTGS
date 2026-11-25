@@ -205,7 +205,9 @@ class ReflectionZoneConfig:
 
     def __post_init__(self) -> None:
         if self.min_elevation_deg >= self.max_elevation_deg:
-            raise ValueError("geometry.reflection_zones[].min_elevation_deg must be smaller than max_elevation_deg")
+            raise ValueError(
+                "geometry.reflection_zones[].min_elevation_deg must be smaller than max_elevation_deg"
+            )
         if not self.azimuth_windows:
             raise ValueError("geometry.reflection_zones[].azimuth_windows must not be empty")
 
@@ -262,9 +264,12 @@ class EkfConfig:
             raise ValueError("ir.ekf.init_min_samples must be >= 3")
         if self.init_max_samples < self.init_min_samples:
             raise ValueError("ir.ekf.init_max_samples must be >= init_min_samples")
-        if self.rh_init_min_height_m is not None and self.rh_init_max_height_m is not None:
-            if self.rh_init_min_height_m >= self.rh_init_max_height_m:
-                raise ValueError("ir.ekf.rh_init_min_height_m must be < rh_init_max_height_m")
+        if (
+            self.rh_init_min_height_m is not None
+            and self.rh_init_max_height_m is not None
+            and self.rh_init_min_height_m >= self.rh_init_max_height_m
+        ):
+            raise ValueError("ir.ekf.rh_init_min_height_m must be < rh_init_max_height_m")
         if self.rh_init_min_samples < 3:
             raise ValueError("ir.ekf.rh_init_min_samples must be >= 3")
         if self.rh_init_min_arcs <= 0:
@@ -362,7 +367,9 @@ class ProductsConfig:
         if self.dynamic_sea_level_igg3_k0 <= 0:
             raise ValueError("products.dynamic_sea_level_igg3_k0 must be > 0")
         if self.dynamic_sea_level_igg3_k1 <= self.dynamic_sea_level_igg3_k0:
-            raise ValueError("products.dynamic_sea_level_igg3_k1 must be > dynamic_sea_level_igg3_k0")
+            raise ValueError(
+                "products.dynamic_sea_level_igg3_k1 must be > dynamic_sea_level_igg3_k0"
+            )
         if self.dynamic_sea_level_min_weight <= 0:
             raise ValueError("products.dynamic_sea_level_min_weight must be > 0")
         if self.dynamic_sea_level_regularization < 0:
@@ -490,8 +497,12 @@ def _load_reflection_zones(
     for index, zone_raw in enumerate(zones_raw, start=1):
         if not isinstance(zone_raw, dict):
             continue
-        min_elevation_deg = float(zone_raw.get("min_elevation_deg", processing_raw.get("min_elevation_deg", 5.0)))
-        max_elevation_deg = float(zone_raw.get("max_elevation_deg", processing_raw.get("max_elevation_deg", 30.0)))
+        min_elevation_deg = float(
+            zone_raw.get("min_elevation_deg", processing_raw.get("min_elevation_deg", 5.0))
+        )
+        max_elevation_deg = float(
+            zone_raw.get("max_elevation_deg", processing_raw.get("max_elevation_deg", 30.0))
+        )
         azimuth_windows = _parse_angle_windows(zone_raw.get("azimuth_windows"))
         if not azimuth_windows:
             azimuth_windows = _parse_angle_windows(zone_raw.get("azimuth_ranges"))
@@ -535,7 +546,9 @@ def load_config(path: str | Path) -> ReflectorConfig:
         input=InputConfig(
             constellations=[str(item) for item in _as_list(input_raw.get("constellations", []))],
             signals=[str(item) for item in _as_list(input_raw.get("signals", []))],
-            exclude_constellations=[str(item) for item in _as_list(input_raw.get("exclude_constellations", []))],
+            exclude_constellations=[
+                str(item) for item in _as_list(input_raw.get("exclude_constellations", []))
+            ],
             exclude_signals=[str(item) for item in _as_list(input_raw.get("exclude_signals", []))],
             sampling_interval=_optional_float(input_raw.get("sampling_interval"), default=30.0),
         ),
@@ -543,7 +556,9 @@ def load_config(path: str | Path) -> ReflectorConfig:
             min_elevation_deg=effective_min_elevation,
             max_elevation_deg=effective_max_elevation,
             live_arc_window_minutes=int(processing_raw.get("live_arc_window_minutes", 20)),
-            live_analysis_interval_seconds=int(processing_raw.get("live_analysis_interval_seconds", 20)),
+            live_analysis_interval_seconds=int(
+                processing_raw.get("live_analysis_interval_seconds", 20)
+            ),
             elevation_rate_mode=processing_raw.get("elevation_rate_mode", "monotonic"),
             min_arc_length=float(processing_raw.get("min_arc_length", 300.0)),
             max_time_gap_seconds=float(processing_raw.get("max_time_gap_seconds", 90.0)),
@@ -594,20 +609,34 @@ def load_config(path: str | Path) -> ReflectorConfig:
             enable_dynamic_sea_level_correction=bool(
                 products_raw.get("enable_dynamic_sea_level_correction", False)
             ),
-            dynamic_sea_level_window_hours=float(products_raw.get("dynamic_sea_level_window_hours", 4.0)),
+            dynamic_sea_level_window_hours=float(
+                products_raw.get("dynamic_sea_level_window_hours", 4.0)
+            ),
             dynamic_sea_level_min_points=int(products_raw.get("dynamic_sea_level_min_points", 6)),
-            dynamic_sea_level_max_iterations=int(products_raw.get("dynamic_sea_level_max_iterations", 12)),
-            dynamic_sea_level_tolerance=float(products_raw.get("dynamic_sea_level_tolerance", 1e-4)),
+            dynamic_sea_level_max_iterations=int(
+                products_raw.get("dynamic_sea_level_max_iterations", 12)
+            ),
+            dynamic_sea_level_tolerance=float(
+                products_raw.get("dynamic_sea_level_tolerance", 1e-4)
+            ),
             dynamic_sea_level_igg3_k0=float(products_raw.get("dynamic_sea_level_igg3_k0", 0.5)),
             dynamic_sea_level_igg3_k1=float(products_raw.get("dynamic_sea_level_igg3_k1", 2.0)),
-            dynamic_sea_level_min_weight=float(products_raw.get("dynamic_sea_level_min_weight", 1e-12)),
-            dynamic_sea_level_regularization=float(products_raw.get("dynamic_sea_level_regularization", 1e-12)),
-            dynamic_sea_level_normalize_design=bool(products_raw.get("dynamic_sea_level_normalize_design", True)),
+            dynamic_sea_level_min_weight=float(
+                products_raw.get("dynamic_sea_level_min_weight", 1e-12)
+            ),
+            dynamic_sea_level_regularization=float(
+                products_raw.get("dynamic_sea_level_regularization", 1e-12)
+            ),
+            dynamic_sea_level_normalize_design=bool(
+                products_raw.get("dynamic_sea_level_normalize_design", True)
+            ),
             snow_depth_reference_height=products_raw.get("snow_depth_reference_height"),
         ),
         output=OutputConfig(
             output_dir=output_raw.get("output_dir", "output/reflectometry"),
-            file_format=[str(item) for item in _as_list(output_raw.get("file_format", ["csv", "json"]))],
+            file_format=[
+                str(item) for item in _as_list(output_raw.get("file_format", ["csv", "json"]))
+            ],
             save_intermediate=bool(output_raw.get("save_intermediate", False)),
             save_arc_level_results=bool(output_raw.get("save_arc_level_results", True)),
             save_spectrum=bool(output_raw.get("save_spectrum", False)),

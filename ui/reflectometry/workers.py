@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
+import contextlib
 import logging
 import threading
+from copy import deepcopy
 
 from PySide6.QtCore import QObject, Signal
 
-from core.rinex_loader import FileEphemerisProvider, RinexObservationReader
-from core.reflectometry import BatchProcessor, ListObservationProvider, ProcessingRunResult, RealtimeProcessor
+from core.reflectometry import (
+    BatchProcessor,
+    ListObservationProvider,
+    ProcessingRunResult,
+    RealtimeProcessor,
+)
 from core.reflectometry.rinex_batch import build_observation_records_from_epoch
+from core.rinex_loader import FileEphemerisProvider, RinexObservationReader
 
 
 class ReflectometryBatchSignals(QObject):
@@ -50,7 +56,9 @@ class RinexBatchAnalysisThread(threading.Thread):
         self.active_systems = set(active_systems)
         self.target_systems = list(target_systems) if target_systems else None
         self.receiver_position = receiver_position
-        self.receiver_position_ecef = list(receiver_position_ecef) if receiver_position_ecef else None
+        self.receiver_position_ecef = (
+            list(receiver_position_ecef) if receiver_position_ecef else None
+        )
         self.station_id = station_id
         self.handler = handler
         self.logger = logger
@@ -72,34 +80,26 @@ class RinexBatchAnalysisThread(threading.Thread):
     def _emit_log(self, message: str) -> None:
         if self.signals is None:
             return
-        try:
+        with contextlib.suppress(RuntimeError):
             self.signals.log_signal.emit(message)
-        except RuntimeError:
-            pass
 
     def _emit_completed(self, payload: object) -> None:
         if self.signals is None:
             return
-        try:
+        with contextlib.suppress(RuntimeError):
             self.signals.completed.emit(payload)
-        except RuntimeError:
-            pass
 
     def _emit_failed(self, message: str) -> None:
         if self.signals is None:
             return
-        try:
+        with contextlib.suppress(RuntimeError):
             self.signals.failed.emit(message)
-        except RuntimeError:
-            pass
 
     def _emit_cancelled(self) -> None:
         if self.signals is None:
             return
-        try:
+        with contextlib.suppress(RuntimeError):
             self.signals.cancelled.emit()
-        except RuntimeError:
-            pass
 
     def _load_ephemeris_provider(self):
         file_path = str(self.eph_settings.get("file_path", "")).strip()
@@ -176,9 +176,11 @@ class RinexBatchAnalysisThread(threading.Thread):
                 observation_count += len(epoch_records)
                 pending_records.extend(sorted(epoch_records, key=lambda item: item.timestamp))
                 reference_time = pending_records[-1].timestamp
-                should_analyze = last_analysis_time is None or (
-                    reference_time - last_analysis_time
-                ).total_seconds() >= self.analysis_interval_seconds
+                should_analyze = (
+                    last_analysis_time is None
+                    or (reference_time - last_analysis_time).total_seconds()
+                    >= self.analysis_interval_seconds
+                )
                 if should_analyze:
                     result = processor.ingest(
                         pending_records,
@@ -208,7 +210,9 @@ class RinexBatchAnalysisThread(threading.Thread):
             return
 
         if observation_count == 0:
-            self._emit_failed("No reflectometry observations were extracted from the selected RINEX file.")
+            self._emit_failed(
+                "No reflectometry observations were extracted from the selected RINEX file."
+            )
             return
 
         if pending_records:
@@ -244,7 +248,11 @@ class RinexBatchAnalysisThread(threading.Thread):
         ordered_solutions = sorted(solutions_by_arc.values(), key=lambda item: item.timestamp_end)
         ordered_products = sorted(
             products_by_key.values(),
-            key=lambda item: (item.timestamp, item.product_type.value, str(item.metadata.get("arc_id", ""))),
+            key=lambda item: (
+                item.timestamp,
+                item.product_type.value,
+                str(item.metadata.get("arc_id", "")),
+            ),
         )
         if ordered_solutions:
             window_aggregates = processor.batch_processor.product_converter.aggregate(
@@ -327,7 +335,9 @@ class RinexBatchAnalysisThread(threading.Thread):
                 return
 
             if not observations:
-                self._emit_failed("No reflectometry observations were extracted from the selected RINEX file.")
+                self._emit_failed(
+                    "No reflectometry observations were extracted from the selected RINEX file."
+                )
                 return
 
             runtime_config = self._runtime_config()

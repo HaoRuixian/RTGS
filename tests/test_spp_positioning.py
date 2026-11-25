@@ -6,13 +6,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from core.broadcast_ephemeris import BroadcastEphemeris
 from core.BE2pos import SatPos_brdc, brdc2state
+from core.broadcast_ephemeris import BroadcastEphemeris
 from core.data_models import EpochObservation, SatelliteState, SignalData
 from core.geo_utils import ecef2lla
-from core.ssr import SsrClockCorrection, SsrCorrectionStore, SsrOrbitCorrection
 from core.spp_positioning import SPPPositioner
-
+from core.ssr import SsrClockCorrection, SsrCorrectionStore, SsrOrbitCorrection
 
 EARTH_ROTATION_RATE = 7.2921151467e-5
 LIGHT_SPEED = 299792458.0
@@ -34,7 +33,9 @@ def _ecef_to_enu_rotation(rec_ecef: np.ndarray) -> np.ndarray:
     )
 
 
-def _satellite_position(rec_ecef: np.ndarray, az_deg: float, el_deg: float, slant_range_m: float) -> np.ndarray:
+def _satellite_position(
+    rec_ecef: np.ndarray, az_deg: float, el_deg: float, slant_range_m: float
+) -> np.ndarray:
     az_rad = math.radians(az_deg)
     el_rad = math.radians(el_deg)
     enu = np.array(
@@ -77,9 +78,11 @@ def test_spp_positioner_solves_first_epoch_without_external_initial_guess():
     for sat_id, az_deg, el_deg, slant_range_m in geometry:
         sat_pos = _satellite_position(receiver_ecef, az_deg, el_deg, slant_range_m)
         geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
-        sagnac = EARTH_ROTATION_RATE * (
-            sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0]
-        ) / LIGHT_SPEED
+        sagnac = (
+            EARTH_ROTATION_RATE
+            * (sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0])
+            / LIGHT_SPEED
+        )
         sat = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))
         sat.signals["1C"] = _signal(geometric_range + sagnac + receiver_clock_bias_m)
         sat.sat_pos_ecef = sat_pos.tolist()
@@ -107,6 +110,101 @@ def test_spp_positioner_solves_first_epoch_without_external_initial_guess():
     assert abs(result.clock_bias - receiver_clock_bias_m) < 20.0
 
 
+def test_spp_rejects_large_code_outlier_with_default_threshold():
+    receiver_ecef = np.array([3875000.0, 332500.0, 5029000.0], dtype=float)
+    receiver_clock_bias_m = 12000.0
+    geometry = [
+        ("G01", 20.0, 65.0, 2.20e7),
+        ("G02", 120.0, 50.0, 2.18e7),
+        ("G03", 220.0, 55.0, 2.24e7),
+        ("G04", 310.0, 40.0, 2.16e7),
+        ("G05", 60.0, 30.0, 2.23e7),
+        ("G06", 180.0, 70.0, 2.21e7),
+        ("G07", 260.0, 35.0, 2.19e7),
+    ]
+    epoch = EpochObservation(gps_time=100000.0)
+
+    for index, (sat_id, az_deg, el_deg, slant_range_m) in enumerate(geometry):
+        sat_pos = _satellite_position(receiver_ecef, az_deg, el_deg, slant_range_m)
+        geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
+        sagnac = (
+            EARTH_ROTATION_RATE
+            * (sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0])
+            / LIGHT_SPEED
+        )
+        code_error = 350.0 if index == 0 else 0.0
+        satellite = SatelliteState(sys_id="G", prn=int(sat_id[1:]))
+        satellite.signals["1C"] = _signal(
+            geometric_range + sagnac + receiver_clock_bias_m + code_error
+        )
+        satellite.sat_pos_ecef = sat_pos.tolist()
+        satellite.sat_clk_corr = 0.0
+        satellite.sat_var = 1.0
+        epoch.satellites[sat_id] = satellite
+
+    positioner = SPPPositioner(
+        config={
+            "ionosphere_option": "SINGLE",
+            "troposphere_model": "None",
+            "gnss_systems": ["G"],
+            "cutoff_elevation_deg": 10.0,
+        }
+    )
+    result = positioner.process_epoch(epoch, receiver_ecef)
+
+    assert result is not None
+    assert np.linalg.norm(np.asarray(result.position_ecef) - receiver_ecef) < 1.0
+    assert positioner.last_diagnostics["excluded_outliers"][0][0] == "G01"
+
+
+def test_precomputed_satellite_state_still_receives_ssr_corrections():
+    epoch = EpochObservation(gps_time=100000.0)
+    satellite = SatelliteState(sys_id="G", prn=1)
+    satellite.signals["1C"] = _signal(22_000_000.0)
+    satellite.sat_pos_ecef = [20_000_000.0, 10_000_000.0, 15_000_000.0]
+    satellite.sat_vel_ecef = [0.0, 2_500.0, 1_000.0]
+    satellite.sat_clk_corr = 0.0
+    satellite.sat_var = 900.0
+    epoch.satellites["G01"] = satellite
+
+    ssr = SsrCorrectionStore()
+    ssr.update_orbit(
+        SsrOrbitCorrection(
+            satellite_id="G01",
+            epoch_time=99999.0,
+            update_interval=30,
+            iod_ssr=1,
+            delta_radial_m=0.25,
+        )
+    )
+    ssr.update_clock(
+        SsrClockCorrection(
+            satellite_id="G01",
+            epoch_time=99999.0,
+            update_interval=30,
+            iod_ssr=1,
+            delta_clock_m=0.40,
+        )
+    )
+    positioner = SPPPositioner(
+        ephemeris_handler=SimpleNamespace(ssr_corrections=ssr),
+        config={"require_ssr_corrections": True},
+    )
+
+    positioner._update_satellite_positions(epoch)
+
+    assert satellite.ssr_applied is True
+    assert satellite.sat_pos_source == "SSR"
+    assert satellite.sat_clk_corr == pytest.approx(0.40 / LIGHT_SPEED)
+    assert (
+        np.linalg.norm(
+            np.asarray(satellite.sat_pos_ecef)
+            - np.asarray([20_000_000.0, 10_000_000.0, 15_000_000.0])
+        )
+        > 1e-3
+    )
+
+
 def test_spp_positioner_prefers_gps_when_other_system_biases_are_unmodelled():
     receiver_ecef = np.array([3875000.0, 332500.0, 5029000.0], dtype=float)
     receiver_clock_bias_m = 25000.0
@@ -128,9 +226,11 @@ def test_spp_positioner_prefers_gps_when_other_system_biases_are_unmodelled():
     for sat_id, az_deg, el_deg, slant_range_m in gps_geometry:
         sat_pos = _satellite_position(receiver_ecef, az_deg, el_deg, slant_range_m)
         geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
-        sagnac = EARTH_ROTATION_RATE * (
-            sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0]
-        ) / LIGHT_SPEED
+        sagnac = (
+            EARTH_ROTATION_RATE
+            * (sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0])
+            / LIGHT_SPEED
+        )
         sat = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))
         sat.signals["1C"] = _signal(geometric_range + sagnac + receiver_clock_bias_m)
         sat.sat_pos_ecef = sat_pos.tolist()
@@ -141,9 +241,11 @@ def test_spp_positioner_prefers_gps_when_other_system_biases_are_unmodelled():
     for sat_id, az_deg, el_deg, slant_range_m, bias_m in biased_geometry:
         sat_pos = _satellite_position(receiver_ecef, az_deg, el_deg, slant_range_m)
         geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
-        sagnac = EARTH_ROTATION_RATE * (
-            sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0]
-        ) / LIGHT_SPEED
+        sagnac = (
+            EARTH_ROTATION_RATE
+            * (sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0])
+            / LIGHT_SPEED
+        )
         sat = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))
         sat.signals["1C"] = _signal(geometric_range + sagnac + receiver_clock_bias_m + bias_m)
         sat.sat_pos_ecef = sat_pos.tolist()
@@ -189,9 +291,11 @@ def test_spp_positioner_uses_selected_multi_gnss_by_default():
     for sat_id, az_deg, el_deg, slant_range_m in geometry:
         sat_pos = _satellite_position(receiver_ecef, az_deg, el_deg, slant_range_m)
         geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
-        sagnac = EARTH_ROTATION_RATE * (
-            sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0]
-        ) / LIGHT_SPEED
+        sagnac = (
+            EARTH_ROTATION_RATE
+            * (sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0])
+            / LIGHT_SPEED
+        )
         sat = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))
         sat.signals["1C"] = _signal(geometric_range + sagnac + receiver_clock_bias_m)
         sat.sat_pos_ecef = sat_pos.tolist()
@@ -239,9 +343,11 @@ def test_spp_positioner_excludes_broadcast_only_satellites_when_ssr_is_active():
     for sat_id, az_deg, el_deg, slant_range_m, ssr_applied, bias_m in geometry:
         sat_pos = _satellite_position(receiver_ecef, az_deg, el_deg, slant_range_m)
         geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
-        sagnac = EARTH_ROTATION_RATE * (
-            sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0]
-        ) / LIGHT_SPEED
+        sagnac = (
+            EARTH_ROTATION_RATE
+            * (sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0])
+            / LIGHT_SPEED
+        )
         sat = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))
         sat.signals["1C"] = _signal(geometric_range + sagnac + receiver_clock_bias_m + bias_m)
         sat.sat_pos_ecef = sat_pos.tolist()
@@ -289,9 +395,11 @@ def test_spp_positioner_solves_multi_gnss_when_gps_alone_is_insufficient():
     for sat_id, az_deg, el_deg, slant_range_m, system_bias_m in geometry:
         sat_pos = _satellite_position(receiver_ecef, az_deg, el_deg, slant_range_m)
         geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
-        sagnac = EARTH_ROTATION_RATE * (
-            sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0]
-        ) / LIGHT_SPEED
+        sagnac = (
+            EARTH_ROTATION_RATE
+            * (sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0])
+            / LIGHT_SPEED
+        )
         sat = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))
         sat.signals["1C"] = _signal(
             geometric_range + sagnac + receiver_clock_bias_m + system_bias_m
@@ -341,9 +449,11 @@ def test_spp_positioner_bootstraps_multi_gnss_before_elevation_mask_with_bad_ini
     for sat_id, az_deg, el_deg, slant_range_m, system_bias_m in geometry:
         sat_pos = _satellite_position(receiver_ecef, az_deg, el_deg, slant_range_m)
         geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
-        sagnac = EARTH_ROTATION_RATE * (
-            sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0]
-        ) / LIGHT_SPEED
+        sagnac = (
+            EARTH_ROTATION_RATE
+            * (sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0])
+            / LIGHT_SPEED
+        )
         sat = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))
         sat.signals["1C"] = _signal(
             geometric_range + sagnac + receiver_clock_bias_m + system_bias_m
@@ -445,9 +555,11 @@ def test_spp_positioner_estimates_multi_gnss_system_offsets():
     for sat_id, az_deg, el_deg, slant_range_m, system_bias_m in geometry:
         sat_pos = _satellite_position(receiver_ecef, az_deg, el_deg, slant_range_m)
         geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
-        sagnac = EARTH_ROTATION_RATE * (
-            sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0]
-        ) / LIGHT_SPEED
+        sagnac = (
+            EARTH_ROTATION_RATE
+            * (sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0])
+            / LIGHT_SPEED
+        )
         sat = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))
         sat.signals["1C"] = _signal(
             geometric_range + sagnac + receiver_clock_bias_m + system_bias_m
@@ -621,10 +733,10 @@ def test_spp_code_variance_uses_precise_iflc_sigma_and_glonass_deweighting():
     elevation_rad = math.radians(30.0)
     elevation_factor = 1.0 + abs(90.0 - 30.0) ** 3 * 0.000004
     assert positioner.var_err("G01", elevation_rad, code_variance=code_variance) == pytest.approx(
-        expected_if_variance * elevation_factor ** 2
+        expected_if_variance * elevation_factor**2
     )
     assert positioner.var_err("R01", elevation_rad, code_variance=1.0) == pytest.approx(
-        25.0 * elevation_factor ** 2
+        25.0 * elevation_factor**2
     )
 
 
@@ -645,9 +757,11 @@ def test_spp_positioner_does_not_hide_numeric_multi_gnss_solution_with_gps_fallb
     for sat_id, az_deg, el_deg, slant_range_m, system_bias_m in geometry:
         sat_pos = _satellite_position(receiver_ecef, az_deg, el_deg, slant_range_m)
         geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
-        sagnac = EARTH_ROTATION_RATE * (
-            sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0]
-        ) / LIGHT_SPEED
+        sagnac = (
+            EARTH_ROTATION_RATE
+            * (sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0])
+            / LIGHT_SPEED
+        )
         sat = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))
         sat.signals["1C"] = _signal(
             geometric_range + sagnac + receiver_clock_bias_m + system_bias_m
@@ -695,9 +809,11 @@ def test_spp_positioner_enforces_rank_requirement_for_multi_gnss_offsets():
     for sat_id, az_deg, el_deg, slant_range_m, system_bias_m in geometry:
         sat_pos = _satellite_position(receiver_ecef, az_deg, el_deg, slant_range_m)
         geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
-        sagnac = EARTH_ROTATION_RATE * (
-            sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0]
-        ) / LIGHT_SPEED
+        sagnac = (
+            EARTH_ROTATION_RATE
+            * (sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0])
+            / LIGHT_SPEED
+        )
         sat = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))
         sat.signals["1C"] = _signal(
             geometric_range + sagnac + receiver_clock_bias_m + system_bias_m
@@ -721,7 +837,10 @@ def test_spp_positioner_enforces_rank_requirement_for_multi_gnss_offsets():
     result = positioner.process_epoch(epoch, approx_position=None)
 
     assert result is None
-    assert "underdetermined system: rows 6 < states 7" in positioner.last_diagnostics["solver_failure_reason"]
+    assert (
+        "underdetermined system: rows 6 < states 7"
+        in positioner.last_diagnostics["solver_failure_reason"]
+    )
 
 
 def test_spp_positioner_rejects_non_finite_multi_gnss_observations():
@@ -742,9 +861,11 @@ def test_spp_positioner_rejects_non_finite_multi_gnss_observations():
     for sat_id, az_deg, el_deg, slant_range_m, system_bias_m in geometry:
         sat_pos = _satellite_position(receiver_ecef, az_deg, el_deg, slant_range_m)
         geometric_range = np.linalg.norm(sat_pos - receiver_ecef)
-        sagnac = EARTH_ROTATION_RATE * (
-            sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0]
-        ) / LIGHT_SPEED
+        sagnac = (
+            EARTH_ROTATION_RATE
+            * (sat_pos[0] * receiver_ecef[1] - sat_pos[1] * receiver_ecef[0])
+            / LIGHT_SPEED
+        )
         sat = SatelliteState(sys_id=sat_id[0], prn=int(sat_id[1:]))
         pseudorange = geometric_range + sagnac + receiver_clock_bias_m + system_bias_m
         sat.signals["1C"] = _signal(pseudorange)
@@ -783,7 +904,9 @@ def test_spp_positioner_rejects_non_finite_multi_gnss_observations():
 def test_spp_troposphere_wrapper_handles_out_of_model_height():
     positioner = SPPPositioner(config={"troposphere_model": "Sastamoinen"})
 
-    delay, variance = positioner._calculate_tropospheric_delay((0.0, 0.0, -200.0), (0.0, math.radians(30.0)))
+    delay, variance = positioner._calculate_tropospheric_delay(
+        (0.0, 0.0, -200.0), (0.0, math.radians(30.0))
+    )
 
     assert delay == 0.0
     assert variance == 0.0

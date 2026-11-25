@@ -4,20 +4,19 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import chain
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from core.gnss_time import GNSSTime
 from core.rinex3_writer import RINEX3Writer
 from core.rinex_loader import RinexObservationReader, read_rinex_observation_header
-from core.gnss_time import GNSSTime
 from utils.split_rinex_hourly import (
     _estimate_interval_seconds,
     _normalize_utc_datetime,
@@ -39,7 +38,13 @@ def _iter_input_files(inputs: Iterable[str | Path]) -> list[Path]:
     for item in inputs:
         path = Path(item)
         if path.is_dir():
-            resolved.extend(sorted(child for child in path.iterdir() if child.is_file() and child.suffix.lower() == ".rnx"))
+            resolved.extend(
+                sorted(
+                    child
+                    for child in path.iterdir()
+                    if child.is_file() and child.suffix.lower() == ".rnx"
+                )
+            )
         elif path.is_file() and path.suffix.lower() == ".rnx":
             resolved.append(path)
 
@@ -71,7 +76,7 @@ def _select_aligned_epoch_time(
     target_interval_seconds: float,
     *,
     alignment_time_system: str = "UTC",
-    return_time_system: Optional[str] = None,
+    return_time_system: str | None = None,
     tolerance_seconds: float = 0.01,
 ) -> datetime | None:
     alignment_epoch = _convert_output_time(epoch_time, alignment_time_system)
@@ -79,7 +84,9 @@ def _select_aligned_epoch_time(
     if abs((alignment_epoch - rounded).total_seconds()) > max(0.001, float(tolerance_seconds)):
         return None
 
-    result_time_system = str(return_time_system or alignment_time_system).strip().upper() or alignment_time_system
+    result_time_system = (
+        str(return_time_system or alignment_time_system).strip().upper() or alignment_time_system
+    )
     if result_time_system == str(alignment_time_system or "UTC").strip().upper():
         return rounded
 
@@ -126,14 +133,15 @@ def merge_rinex_daily_files(
     receiver_type: str,
     receiver_serial: str = "",
     receiver_version: str = "",
-    station_code: Optional[str] = None,
+    station_code: str | None = None,
     receiver_number: str = "00",
     country_code: str = "CHN",
     antenna_type: str = "UNKNOWN",
     antenna_number: str = "",
     datatype: str = "MO",
-    output_interval_seconds: Optional[float] = None,
+    output_interval_seconds: float | None = None,
     time_system: str = "UTC",
+    daily_bucket_utc: datetime | None = None,
 ) -> MergeResult:
     source_files = _iter_input_files(inputs)
     if not source_files:
@@ -149,7 +157,11 @@ def merge_rinex_daily_files(
     for path in source_files:
         metadata = read_rinex_observation_header(path)
         _merge_sys_obs_types(combined_sys_obs_types, metadata.sys_obs_types)
-        if metadata_interval is None and metadata.interval_seconds and metadata.interval_seconds > 0:
+        if (
+            metadata_interval is None
+            and metadata.interval_seconds
+            and metadata.interval_seconds > 0
+        ):
             metadata_interval = float(metadata.interval_seconds)
         if approx_position is None and metadata.approx_position_ecef:
             approx_position = tuple(float(value) for value in metadata.approx_position_ecef[:3])
@@ -166,7 +178,11 @@ def merge_rinex_daily_files(
         raise ValueError("No observation epochs found in the input RINEX files.")
 
     source_interval_seconds = _estimate_interval_seconds(
-        [_normalize_utc_datetime(epoch.utc_datetime) for epoch in buffered_epochs if epoch.utc_datetime is not None],
+        [
+            _normalize_utc_datetime(epoch.utc_datetime)
+            for epoch in buffered_epochs
+            if epoch.utc_datetime is not None
+        ],
         fallback=float(metadata_interval or 1.0),
     )
     target_interval_seconds = max(
@@ -176,13 +192,14 @@ def merge_rinex_daily_files(
 
     derived_station_code = station_code or derive_station_code(marker_name)
     output_files: list[Path] = []
-    writer: Optional[RINEX3Writer] = None
-    current_bucket: Optional[datetime] = None
-    last_written_time: Optional[datetime] = None
-    alignment_time_system = "GPS" if str(time_system or "UTC").strip().upper() == "GPS" else "UTC"
+    writer: RINEX3Writer | None = None
+    current_bucket: datetime | None = None
+    last_written_time: datetime | None = None
+    output_time_system = str(time_system or "UTC").strip().upper() or "UTC"
+    alignment_time_system = "GPS" if output_time_system == "GPS" else "UTC"
 
     def open_writer(bucket_start: datetime) -> RINEX3Writer:
-        file_time = _convert_output_time(bucket_start, time_system)
+        file_time = _convert_output_time(bucket_start, output_time_system)
         daily_writer = RINEX3Writer(
             str(output_dir),
             marker_name=marker_name,
@@ -225,14 +242,18 @@ def merge_rinex_daily_files(
                 epoch.utc_datetime,
                 target_interval_seconds,
                 alignment_time_system=alignment_time_system,
-                return_time_system="UTC",
+                return_time_system=output_time_system,
             )
             if selected_time is None:
                 continue
             if last_written_time is not None and selected_time == last_written_time:
                 continue
 
-            bucket = _day_bucket(selected_time)
+            bucket = daily_bucket_utc or (
+                _day_bucket(selected_time)
+                if output_time_system == "GPS"
+                else _day_bucket(_convert_time_to_utc(selected_time, output_time_system))
+            )
 
             if writer is None or bucket != current_bucket:
                 if writer is not None:
@@ -240,9 +261,10 @@ def merge_rinex_daily_files(
                 writer = open_writer(bucket)
                 current_bucket = bucket
 
-            output_time = _convert_output_time(selected_time, time_system)
-            if not writer.write_observation(output_time, epoch.satellites):
-                raise OSError(f"Failed to write daily observation epoch at {output_time.isoformat()}")
+            if not writer.write_observation(selected_time, epoch.satellites):
+                raise OSError(
+                    f"Failed to write daily observation epoch at {selected_time.isoformat()}"
+                )
             last_written_time = selected_time
     finally:
         if writer is not None:
@@ -266,15 +288,31 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Input hourly RINEX files or directories containing .rnx files.",
     )
     parser.add_argument("output_dir", type=Path, help="Directory for daily output files.")
-    parser.add_argument("--marker-name", required=True, help="Marker name to write into the daily headers.")
-    parser.add_argument("--receiver-type", required=True, help="Receiver type string for the daily headers.")
-    parser.add_argument("--receiver-serial", default="", help="Receiver serial number for the daily headers.")
-    parser.add_argument("--receiver-version", default="", help="Receiver firmware/version for the daily headers.")
-    parser.add_argument("--station-code", default=None, help="Optional 4-character station code for long filenames.")
-    parser.add_argument("--receiver-number", default="00", help="Receiver number for long filenames.")
+    parser.add_argument(
+        "--marker-name", required=True, help="Marker name to write into the daily headers."
+    )
+    parser.add_argument(
+        "--receiver-type", required=True, help="Receiver type string for the daily headers."
+    )
+    parser.add_argument(
+        "--receiver-serial", default="", help="Receiver serial number for the daily headers."
+    )
+    parser.add_argument(
+        "--receiver-version", default="", help="Receiver firmware/version for the daily headers."
+    )
+    parser.add_argument(
+        "--station-code", default=None, help="Optional 4-character station code for long filenames."
+    )
+    parser.add_argument(
+        "--receiver-number", default="00", help="Receiver number for long filenames."
+    )
     parser.add_argument("--country-code", default="CHN", help="Country code for long filenames.")
-    parser.add_argument("--antenna-type", default="UNKNOWN", help="Antenna type string for the daily headers.")
-    parser.add_argument("--antenna-number", default="", help="Antenna serial number for the daily headers.")
+    parser.add_argument(
+        "--antenna-type", default="UNKNOWN", help="Antenna type string for the daily headers."
+    )
+    parser.add_argument(
+        "--antenna-number", default="", help="Antenna serial number for the daily headers."
+    )
     parser.add_argument("--datatype", default="MO", help="RINEX datatype code.")
     parser.add_argument(
         "--interval",
@@ -291,7 +329,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 

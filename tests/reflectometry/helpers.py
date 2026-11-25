@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
 import math
+from datetime import datetime, timedelta
 
 import numpy as np
 
@@ -56,12 +56,16 @@ def generate_synthetic_observations(
         azimuths = azimuth_start + np.linspace(0.0, 12.0, samples_per_arc)
         sin_elevation = np.sin(np.deg2rad(elevations))
         spectral_phase = 2.0 * np.pi * rng.uniform(0.0, 1.0)
-        oscillation = amplitude_db * np.cos((4.0 * np.pi * reflector_height_m / wavelength) * sin_elevation + spectral_phase)
+        oscillation = amplitude_db * np.cos(
+            (4.0 * np.pi * reflector_height_m / wavelength) * sin_elevation + spectral_phase
+        )
         trend = trend_bias_db + 3.0 * sin_elevation - 1.5 * np.square(sin_elevation)
         snr = trend + oscillation + rng.normal(0.0, noise_std_db, samples_per_arc)
 
         for sample_index in range(samples_per_arc):
-            timestamp = arc_start + timedelta(seconds=sample_index * float(sampling_interval_seconds))
+            timestamp = arc_start + timedelta(
+                seconds=sample_index * float(sampling_interval_seconds)
+            )
             phase = 100_000.0 + sample_index * 0.25 + math.sin(sample_index / 5.0)
             records.append(
                 ObservationRecord(
@@ -75,7 +79,9 @@ def generate_synthetic_observations(
                     elevation_deg=float(elevations[sample_index]),
                     pseudorange_m=23_000_000.0 + 50.0 * sample_index,
                     carrier_phase_cycles=float(phase),
-                    multipath_indicator=float(abs(oscillation[sample_index]) / max(amplitude_db, 1e-6)),
+                    multipath_indicator=float(
+                        abs(oscillation[sample_index]) / max(amplitude_db, 1e-6)
+                    ),
                     receiver_position=receiver_position,
                 )
             )

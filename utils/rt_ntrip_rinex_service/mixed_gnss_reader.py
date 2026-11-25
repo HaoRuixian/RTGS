@@ -24,7 +24,6 @@ from .unicore import (
     UnicoreParseError,
 )
 
-
 RTCM_PREAMBLE = 0xD3
 UBX_SYNC1 = 0xB5
 UBX_SYNC2 = 0x62
@@ -228,10 +227,7 @@ class MixedGNSSReader:
         if num_words < 8:
             return None
 
-        words = [
-            int.from_bytes(payload[8 + i * 4 : 12 + i * 4], "little")
-            for i in range(8)
-        ]
+        words = [int.from_bytes(payload[8 + i * 4 : 12 + i * 4], "little") for i in range(8)]
         buff = bytearray(32)
         for i, word in enumerate(words):
             setbitu(buff, 32 * i, 32, word)

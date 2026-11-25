@@ -7,10 +7,10 @@ import signal
 import sys
 import threading
 import time
+from collections.abc import Callable
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
-
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -76,14 +76,10 @@ def main(argv: list[str] | None = None) -> int:
     for sig_name in ("SIGINT", "SIGTERM"):
         sig = getattr(signal, sig_name, None)
         if sig is not None:
-            try:
+            with suppress(ValueError):
                 signal.signal(sig, _request_stop)
-            except ValueError:
-                pass
 
-    logger(
-        f"Loaded {len(service.workers)} station(s) from {Path(config.config_path).name}"
-    )
+    logger(f"Loaded {len(service.workers)} station(s) from {Path(config.config_path).name}")
     service.start()
 
     try:

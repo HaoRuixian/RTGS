@@ -144,7 +144,10 @@ def test_product_converter_adds_second_order_dynamic_sea_level_products():
     assert round(latest_rate.value, 6) == round(velocity_mps, 6)
     assert round(latest_acceleration.value, 8) == round(acceleration_mps2, 8)
     assert latest_corrected.metadata["dynamic_model_order"] == 2
-    assert latest_corrected.metadata["dynamic_design_matrix"] == "1, roc_plus_dt, roc_times_dt_plus_dt_squared"
+    assert (
+        latest_corrected.metadata["dynamic_design_matrix"]
+        == "1, roc_plus_dt, roc_times_dt_plus_dt_squared"
+    )
     assert latest_corrected.metadata["dynamic_sample_count"] == 6
     assert latest_corrected.metadata["signal"] == "Combined"
 

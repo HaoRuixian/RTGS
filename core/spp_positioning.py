@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+import math
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-import logging
-import math
-from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -14,16 +13,16 @@ from core.BE2pos import brdc2state
 from core.broadcast_ephemeris import get_var_ura
 from core.geo_utils import calculate_az_el, ecef2lla, get_freq, ionospheric_model, tropsphere_model
 from core.ssr import ephemeris_iod_for_ssr
+from rtgs.infrastructure import get_logger
 
-
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 EARTH_ROTATION_RATE = 7.2921151467e-5
 WGS84_SEMI_MAJOR_AXIS_M = 6378137.0
 GPS_L1_FREQUENCY_HZ = 1575.42e6
 MIN_ERROR_ELEVATION_RAD = math.radians(5.0)
 DEFAULT_CLOCK_CONSTRAINT_VARIANCE = 0.01
-BANCROFT_BLUNDER_THRESHOLD_M = 1500.0
+DEFAULT_GROSS_OUTLIER_THRESHOLD_M = 100.0
 STANDARD_CODE_SIGMA_M = 1.0
 MAX_GDOP = 30.0
 SECONDS_PER_WEEK = 604800.0
@@ -60,7 +59,7 @@ GNSS_SYSTEM_ALIASES = {
 MULTI_GNSS_OFFSET_ORDER = ("R", "E", "C", "I", "J")
 
 
-def _finite_float(value, default: Optional[float] = None) -> Optional[float]:
+def _finite_float(value, default: float | None = None) -> float | None:
     try:
         result = float(value)
     except (TypeError, ValueError, OverflowError):
@@ -68,7 +67,7 @@ def _finite_float(value, default: Optional[float] = None) -> Optional[float]:
     return result if math.isfinite(result) else default
 
 
-def _finite_vector3(values) -> Optional[np.ndarray]:
+def _finite_vector3(values) -> np.ndarray | None:
     try:
         arr = np.asarray(values, dtype=float).reshape(-1)
     except Exception:
@@ -97,12 +96,12 @@ class PositioningResult:
     timestamp: float
     epoch_time: datetime
 
-    position_ecef: List[float]
+    position_ecef: list[float]
     clock_bias: float
     clock_bias_seconds: float
 
     num_satellites: int
-    residuals: List[float]
+    residuals: list[float]
     variance: float
     std_dev_north: float
     std_dev_east: float
@@ -121,10 +120,10 @@ class PositioningResult:
 
     convergence: bool
     solution_status: str
-    time_offsets: Dict[str, float] = field(default_factory=dict)
-    used_satellites: List[str] = field(default_factory=list)
-    used_system_counts: Dict[str, int] = field(default_factory=dict)
-    candidate_system_counts: Dict[str, int] = field(default_factory=dict)
+    time_offsets: dict[str, float] = field(default_factory=dict)
+    used_satellites: list[str] = field(default_factory=list)
+    used_system_counts: dict[str, int] = field(default_factory=dict)
+    candidate_system_counts: dict[str, int] = field(default_factory=dict)
     solution_source: str = ""
     fallback_reason: str = ""
     quality_reason: str = ""
@@ -154,8 +153,8 @@ class SPPPositioner:
     CONVERGENCE_THRESHOLD = 1e-4
 
     @staticmethod
-    def normalize_gnss_systems(systems) -> List[str]:
-        normalized: List[str] = []
+    def normalize_gnss_systems(systems) -> list[str]:
+        normalized: list[str] = []
         for item in systems or []:
             text = str(item).strip().upper()
             if not text:
@@ -165,10 +164,10 @@ class SPPPositioner:
                 normalized.append(system)
         return normalized or ["G"]
 
-    def __init__(self, ephemeris_handler=None, config: Optional[Dict] = None):
+    def __init__(self, ephemeris_handler=None, config: dict | None = None):
         self.handler = ephemeris_handler
-        self.last_solution: Optional[PositioningResult] = None
-        self.logger = logging.getLogger(__name__)
+        self.last_solution: PositioningResult | None = None
+        self.logger = logger
 
         if config is None:
             config = {}
@@ -192,21 +191,25 @@ class SPPPositioner:
             str(system).upper(): float(factor)
             for system, factor in dict(config.get("system_code_weight_factors", {"R": 5.0})).items()
         }
-        self.gnss_systems = self.normalize_gnss_systems(config.get("gnss_systems", ["G", "R", "E", "C", "J", "I"]))
+        self.gnss_systems = self.normalize_gnss_systems(
+            config.get("gnss_systems", ["G", "R", "E", "C", "J", "I"])
+        )
         self.prefer_gps_only = bool(config.get("prefer_gps_only", self.DEFAULT_PREFER_GPS_ONLY))
         self.allow_gps_fallback = bool(config.get("allow_gps_fallback", False))
         self.require_ssr_corrections = bool(config.get("require_ssr_corrections", True))
         self.gross_outlier_threshold_m = float(
-            config.get("gross_outlier_threshold_m", BANCROFT_BLUNDER_THRESHOLD_M)
+            config.get("gross_outlier_threshold_m", DEFAULT_GROSS_OUTLIER_THRESHOLD_M)
         )
         self.uncertain_std_pos = float(config.get("uncertain_std_pos", 5.0))
         self.fixed_std_pos = float(config.get("fixed_std_pos", 2.5))
         self.max_pdop = float(config.get("max_pdop", self.DEFAULT_MAX_PDOP))
-        self.last_diagnostics: Dict[str, object] = {}
-        self._last_extract_reject_counts: Dict[str, int] = {}
+        self.last_diagnostics: dict[str, object] = {}
+        self._last_extract_reject_counts: dict[str, int] = {}
         self._last_solver_failure_reason = ""
 
-    def _find_signal(self, pr_list: List[Tuple[str, float]], priorities: List[str]) -> Tuple[Optional[str], float]:
+    def _find_signal(
+        self, pr_list: list[tuple[str, float]], priorities: list[str]
+    ) -> tuple[str | None, float]:
         for priority in priorities:
             if len(priority) > 1:
                 for sig_id, value in pr_list:
@@ -218,7 +221,9 @@ class SPPPositioner:
                     return sig_id, float(value)
         return None, 0.0
 
-    def _select_primary_signal(self, sat_key: str, pr_list: List[Tuple[str, float]]) -> Tuple[Optional[str], float]:
+    def _select_primary_signal(
+        self, sat_key: str, pr_list: list[tuple[str, float]]
+    ) -> tuple[str | None, float]:
         system = sat_key[0]
         primary_priorities = {
             "G": ["1C", "1W", "1P", "1S", "1L", "1X", "1"],
@@ -285,11 +290,11 @@ class SPPPositioner:
 
     def _calculate_ionospheric_delay(
         self,
-        rec_lla_rad: Tuple[float, float, float],
-        azel_rad: Tuple[float, float],
+        rec_lla_rad: tuple[float, float, float],
+        azel_rad: tuple[float, float],
         gps_time_sow: float,
         freq_hz: float = GPS_L1_FREQUENCY_HZ,
-    ) -> Tuple[float, float]:
+    ) -> tuple[float, float]:
         if self.ionosphere_option == "IFLC":
             return 0.0, 0.0
 
@@ -308,13 +313,15 @@ class SPPPositioner:
             if freq_hz > 0.0:
                 scale = (GPS_L1_FREQUENCY_HZ / float(freq_hz)) ** 2
                 ion_delay *= scale
-                ion_var *= scale ** 2
+                ion_var *= scale**2
             return ion_delay, ion_var
         except Exception as exc:
             self.logger.debug("Ionospheric correction failed: %s", exc)
             return 0.0, 0.0
 
-    def calculate_prange(self, sat_key: str, pr_list: List[Tuple[str, float]], fcn: int = 0) -> Tuple[float, float]:
+    def calculate_prange(
+        self, sat_key: str, pr_list: list[tuple[str, float]], fcn: int = 0
+    ) -> tuple[float, float]:
         """Return corrected pseudorange and measurement variance."""
         system = sat_key[0]
 
@@ -344,19 +351,19 @@ class SPPPositioner:
 
         if self.ionosphere_option != "IFLC":
             tgd = self.get_tgd_for_sys(system, sat_key, sig1_id)
-            return p1 - tgd, self.code_sigma_m ** 2
+            return p1 - tgd, self.code_sigma_m**2
 
         sig2_id, p2 = self._find_signal(pr_list, secondary_priorities.get(system, ["2"]))
         if sig2_id is None or p2 <= 0.0:
             tgd = self.get_tgd_for_sys(system, sat_key, sig1_id)
-            return p1 - tgd, self.code_sigma_m ** 2
+            return p1 - tgd, self.code_sigma_m**2
         p2 += self._get_code_bias(sat_key, sig2_id)
 
         f1, _ = get_freq(sig1_id, sat_key, fcn)
         f2, _ = get_freq(sig2_id, sat_key, fcn)
         if f1 <= 0.0 or f2 <= 0.0 or abs(f1 - f2) < 1e-9:
             tgd = self.get_tgd_for_sys(system, sat_key, sig1_id)
-            return p1 - tgd, self.code_sigma_m ** 2
+            return p1 - tgd, self.code_sigma_m**2
 
         gamma = (f1 / f2) ** 2
         coeff1 = -gamma / (1.0 - gamma)
@@ -368,10 +375,8 @@ class SPPPositioner:
                 bgd_e5a = eph.get("BGD_E5aE1")
                 bgd_e5b = eph.get("BGD_E5bE1")
                 if bgd_e5a is not None and bgd_e5b is not None:
-                    try:
+                    with suppress(TypeError, ValueError):
                         p2 -= (float(bgd_e5a) - float(bgd_e5b)) * self.CLIGHT
-                    except (TypeError, ValueError):
-                        pass
 
         p_if = (p2 - gamma * p1) / (1.0 - gamma)
 
@@ -380,15 +385,15 @@ class SPPPositioner:
             tgd2 = self.get_tgd_for_sys(system, sat_key, sig2_id)
             p_if -= (tgd2 - gamma * tgd1) / (1.0 - gamma)
 
-        code_variance = (coeff1 * coeff1 + coeff2 * coeff2) * self.code_sigma_m ** 2
+        code_variance = (coeff1 * coeff1 + coeff2 * coeff2) * self.code_sigma_m**2
         return p_if, code_variance
 
-    def _fetch_ephemeris(self, satellite_id: str) -> Optional[Dict]:
+    def _fetch_ephemeris(self, satellite_id: str) -> dict | None:
         if self.handler is None:
             return None
 
         try:
-            if hasattr(self.handler, "get_ephemeris") and callable(getattr(self.handler, "get_ephemeris")):
+            if hasattr(self.handler, "get_ephemeris") and callable(self.handler.get_ephemeris):
                 return self.handler.get_ephemeris(satellite_id)
         except Exception:
             pass
@@ -398,7 +403,7 @@ class SPPPositioner:
             if (
                 broadcast_eph is not None
                 and hasattr(broadcast_eph, "get_ephemeris")
-                and callable(getattr(broadcast_eph, "get_ephemeris"))
+                and callable(broadcast_eph.get_ephemeris)
             ):
                 return broadcast_eph.get_ephemeris(satellite_id)
         except Exception:
@@ -406,7 +411,7 @@ class SPPPositioner:
 
         try:
             if hasattr(self.handler, "get_broadcast_eph_correction") and callable(
-                getattr(self.handler, "get_broadcast_eph_correction")
+                self.handler.get_broadcast_eph_correction
             ):
                 return self.handler.get_broadcast_eph_correction(satellite_id)
         except Exception:
@@ -414,7 +419,7 @@ class SPPPositioner:
 
         return None
 
-    def _geodist(self, rs: np.ndarray, rr: np.ndarray) -> Tuple[Optional[float], Optional[np.ndarray]]:
+    def _geodist(self, rs: np.ndarray, rr: np.ndarray) -> tuple[float | None, np.ndarray | None]:
         dr = rs - rr
         r2 = float(dr.dot(dr))
         if np.linalg.norm(rs) < WGS84_SEMI_MAJOR_AXIS_M:
@@ -432,9 +437,9 @@ class SPPPositioner:
         self,
         sat_key: str,
         elevation_rad: float,
-        snr: Optional[float] = None,
-        pstd: Optional[float] = None,
-        code_variance: Optional[float] = None,
+        snr: float | None = None,
+        pstd: float | None = None,
+        code_variance: float | None = None,
     ) -> float:
         """Return the PPP code-observation variance in square meters."""
         system = sat_key[0]
@@ -453,7 +458,7 @@ class SPPPositioner:
         elevation_deg = math.degrees(elevation_rad)
 
         if code_variance is None or code_variance <= 0.0 or not math.isfinite(float(code_variance)):
-            variance = self.code_sigma_m ** 2
+            variance = self.code_sigma_m**2
         else:
             variance = float(code_variance)
 
@@ -462,19 +467,19 @@ class SPPPositioner:
         elif self.WEIGHT_MODE == "elevation":
             # Cubic zenith-distance weighting for low-elevation observations.
             elevation_factor = 1.0 + abs(90.0 - elevation_deg) ** 3 * 0.000004
-            variance *= elevation_factor ** 2
+            variance *= elevation_factor**2
         else:
             if self.WEIGHT_MODE == "snr" and snr is not None and snr > 0.0:
                 snr_max = 52.0
                 snr_factor = 1.0
-                variance += snr_factor ** 2 * math.pow(10.0, 0.1 * max(snr_max - float(snr), 0.0))
+                variance += snr_factor**2 * math.pow(10.0, 0.1 * max(snr_max - float(snr), 0.0))
 
         if pstd is not None and pstd > 0.0:
             variance += float(pstd) ** 2
 
-        return (system_factor ** 2) * variance
+        return (system_factor**2) * variance
 
-    def _normalize_position_guess(self, approx_position: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    def _normalize_position_guess(self, approx_position: np.ndarray | None) -> np.ndarray | None:
         arr = _finite_vector3(approx_position)
         if arr is None:
             return None
@@ -482,7 +487,7 @@ class SPPPositioner:
             return None
         return arr
 
-    def _compute_initial_position(self, observations: List[Dict]) -> Optional[np.ndarray]:
+    def _compute_initial_position(self, observations: list[dict]) -> np.ndarray | None:
         if len(observations) < self.MIN_SATELLITES:
             return None
 
@@ -495,8 +500,8 @@ class SPPPositioner:
         clk_bias = 0.0
 
         for _ in range(10):
-            design_rows: List[List[float]] = []
-            residuals: List[float] = []
+            design_rows: list[list[float]] = []
+            residuals: list[float] = []
 
             for obs in observations:
                 sat_pos = obs["sat_pos"]
@@ -516,7 +521,9 @@ class SPPPositioner:
                         1.0,
                     ]
                 )
-                residuals.append(corrected_pr - (rho + clk_bias - self.CLIGHT * obs["sat_clock_correction_s"]))
+                residuals.append(
+                    corrected_pr - (rho + clk_bias - self.CLIGHT * obs["sat_clock_correction_s"])
+                )
 
             if len(design_rows) < 4:
                 return None
@@ -541,15 +548,15 @@ class SPPPositioner:
 
         return x_curr
 
-    def _system_counts(self, observations: List[Dict]) -> Dict[str, int]:
-        counts: Dict[str, int] = {}
+    def _system_counts(self, observations: list[dict]) -> dict[str, int]:
+        counts: dict[str, int] = {}
         for obs in observations:
             system = str(obs["sat_key"])[0]
             counts[system] = counts.get(system, 0) + 1
         return counts
 
-    def _count_satellite_keys(self, satellite_keys) -> Dict[str, int]:
-        counts: Dict[str, int] = {}
+    def _count_satellite_keys(self, satellite_keys) -> dict[str, int]:
+        counts: dict[str, int] = {}
         for sat_key in satellite_keys or []:
             key = str(sat_key)
             if not key:
@@ -558,7 +565,7 @@ class SPPPositioner:
             counts[system] = counts.get(system, 0) + 1
         return counts
 
-    def _select_initial_observations(self, observations: List[Dict]) -> List[Dict]:
+    def _select_initial_observations(self, observations: list[dict]) -> list[dict]:
         """Use one internally consistent constellation for the first coarse fix when possible."""
         counts = self._system_counts(observations)
         if counts.get("G", 0) >= self.MIN_SATELLITES:
@@ -572,9 +579,9 @@ class SPPPositioner:
 
     def _resolve_initial_guess(
         self,
-        observations: List[Dict],
-        approx_position: Optional[np.ndarray],
-    ) -> Optional[np.ndarray]:
+        observations: list[dict],
+        approx_position: np.ndarray | None,
+    ) -> np.ndarray | None:
         initial_guess = self._normalize_position_guess(approx_position)
         if initial_guess is None and self.last_solution is not None:
             initial_guess = self._normalize_position_guess(self.last_solution.position_ecef)
@@ -587,7 +594,7 @@ class SPPPositioner:
             initial_guess = self._compute_initial_position(observations)
         return initial_guess
 
-    def _select_reference_system(self, observations: List[Dict]) -> str:
+    def _select_reference_system(self, observations: list[dict]) -> str:
         counts = self._system_counts(observations)
         if counts.get("G", 0) > 0:
             return "G"
@@ -602,14 +609,14 @@ class SPPPositioner:
 
         return "G"
 
-    def _build_state_layout(self, observations: List[Dict]) -> Tuple[str, Dict[str, int], int]:
+    def _build_state_layout(self, observations: list[dict]) -> tuple[str, dict[str, int], int]:
         # Estimate only inter-system clock offsets that are observable in this
         # epoch.  Keeping absent constellations out of the state vector avoids
         # forcing mixed-GNSS epochs back to GPS-only just because I/J/R/E/C were
         # configured but not all present in the measurements.
         reference_system = self._select_reference_system(observations)
         counts = self._system_counts(observations)
-        state_indices: Dict[str, int] = {}
+        state_indices: dict[str, int] = {}
         next_index = 4
         for system in MULTI_GNSS_OFFSET_ORDER:
             if system == reference_system:
@@ -622,19 +629,19 @@ class SPPPositioner:
 
     def _solve_observation_set(
         self,
-        observations: List[Dict],
-        approx_position: Optional[np.ndarray],
+        observations: list[dict],
+        approx_position: np.ndarray | None,
         epoch_obs,
-    ) -> Optional[PositioningResult]:
+    ) -> PositioningResult | None:
         initial_guess = self._resolve_initial_guess(observations, approx_position)
         if initial_guess is None:
             self._last_solver_failure_reason = "initial position unavailable"
             return None
 
         working_observations = list(observations)
-        excluded_outliers: List[Tuple[str, float]] = []
+        excluded_outliers: list[tuple[str, float]] = []
         max_attempts = max(1, len(working_observations) - self.MIN_SATELLITES + 1)
-        solution: Optional[PositioningResult] = None
+        solution: PositioningResult | None = None
 
         for _ in range(max_attempts):
             solution = self._solve_least_squares(working_observations, initial_guess, epoch_obs)
@@ -646,21 +653,46 @@ class SPPPositioner:
                 break
 
             residual_abs = [abs(float(value)) for value in solution.residuals]
-            max_index = int(np.argmax(residual_abs))
-            max_residual_abs = residual_abs[max_index]
-            if max_residual_abs <= threshold:
+            if max(residual_abs) <= threshold:
                 break
 
-            sat_to_remove = solution.used_satellites[max_index]
-            candidate_observations = [
-                obs for obs in working_observations if str(obs["sat_key"]) != sat_to_remove
+            current_rms = math.sqrt(float(np.mean(np.square(solution.residuals))))
+            candidate_options = sorted(
+                zip(solution.used_satellites, solution.residuals, strict=False),
+                key=lambda item: abs(float(item[1])),
+                reverse=True,
+            )[: min(3, len(solution.used_satellites))]
+            best_candidate = None
+            best_rms = current_rms
+            best_satellite = ""
+            best_residual = 0.0
+            for sat_to_remove, residual in candidate_options:
+                candidate_observations = [
+                    obs for obs in working_observations if str(obs["sat_key"]) != str(sat_to_remove)
+                ]
+                _, _, candidate_state_count = self._build_state_layout(candidate_observations)
+                if len(candidate_observations) < max(self.MIN_SATELLITES, candidate_state_count):
+                    continue
+                candidate = self._solve_least_squares(
+                    candidate_observations, initial_guess, epoch_obs
+                )
+                if candidate is None or not candidate.residuals:
+                    continue
+                candidate_rms = math.sqrt(float(np.mean(np.square(candidate.residuals))))
+                if candidate_rms < best_rms:
+                    best_candidate = candidate
+                    best_rms = candidate_rms
+                    best_satellite = str(sat_to_remove)
+                    best_residual = float(residual)
+
+            if best_candidate is None:
+                break
+
+            excluded_outliers.append((best_satellite, best_residual))
+            working_observations = [
+                obs for obs in working_observations if str(obs["sat_key"]) != best_satellite
             ]
-            _, _, candidate_state_count = self._build_state_layout(candidate_observations)
-            if len(candidate_observations) < max(self.MIN_SATELLITES, candidate_state_count):
-                break
-
-            excluded_outliers.append((sat_to_remove, float(solution.residuals[max_index])))
-            working_observations = candidate_observations
+            solution = best_candidate
 
         if solution is not None and excluded_outliers:
             details = ", ".join(f"{sat}:{residual:.1f}m" for sat, residual in excluded_outliers)
@@ -671,7 +703,9 @@ class SPPPositioner:
             self.last_diagnostics["excluded_outliers"] = excluded_outliers
         return solution
 
-    def _solution_source_for_observations(self, observations: List[Dict], original_count: int) -> str:
+    def _solution_source_for_observations(
+        self, observations: list[dict], original_count: int
+    ) -> str:
         counts = self._system_counts(observations)
         if self.prefer_gps_only and set(counts) == {"G"} and len(observations) < original_count:
             return "GPS-only preference"
@@ -682,11 +716,13 @@ class SPPPositioner:
     def process_epoch(
         self,
         epoch_obs,
-        approx_position: Optional[np.ndarray] = None,
-    ) -> Optional[PositioningResult]:
+        approx_position: np.ndarray | None = None,
+    ) -> PositioningResult | None:
         try:
             self._update_satellite_positions(epoch_obs)
-            raw_system_counts = self._count_satellite_keys(getattr(epoch_obs, "satellites", {}).keys())
+            raw_system_counts = self._count_satellite_keys(
+                getattr(epoch_obs, "satellites", {}).keys()
+            )
             observations = self._extract_observations(epoch_obs)
             extracted_system_counts = self._system_counts(observations)
             self.last_diagnostics = {
@@ -715,12 +751,18 @@ class SPPPositioner:
 
             solution = self._solve_observation_set(observations, approx_position, epoch_obs)
             self.last_diagnostics["solver_failure_reason"] = self._last_solver_failure_reason
-            solution_source = self._solution_source_for_observations(observations, original_observation_count)
+            solution_source = self._solution_source_for_observations(
+                observations, original_observation_count
+            )
             fallback_reason = ""
             if solution is None and self.allow_gps_fallback:
                 gps_observations = [obs for obs in observations if obs["sat_key"].startswith("G")]
-                if len(gps_observations) >= self.MIN_SATELLITES and len(gps_observations) < len(observations):
-                    fallback_solution = self._solve_observation_set(gps_observations, approx_position, epoch_obs)
+                if len(gps_observations) >= self.MIN_SATELLITES and len(gps_observations) < len(
+                    observations
+                ):
+                    fallback_solution = self._solve_observation_set(
+                        gps_observations, approx_position, epoch_obs
+                    )
                     if fallback_solution is not None:
                         solution = fallback_solution
                         solution_source = "GPS fallback"
@@ -743,7 +785,7 @@ class SPPPositioner:
             self.logger.error("SPP processing error: %s", exc, exc_info=True)
             return None
 
-    def _select_solution_observations(self, observations: List[Dict]) -> List[Dict]:
+    def _select_solution_observations(self, observations: list[dict]) -> list[dict]:
         """
         Choose the observation set used by the basic SPP solver.
 
@@ -760,7 +802,7 @@ class SPPPositioner:
             return gps_observations
         return observations
 
-    def _build_be2pos_input(self, eph: Dict) -> Optional[Tuple[str, Dict]]:
+    def _build_be2pos_input(self, eph: dict) -> tuple[str, dict] | None:
         sat_id = str(eph.get("satellite_id", ""))
         if not sat_id:
             return None
@@ -827,8 +869,10 @@ class SPPPositioner:
             )
         return sys_type, payload
 
-    def _compute_satellite_clock_correction(self, eph: Dict, transmit_time: float) -> float:
-        if str(eph.get("satellite_id", "")).startswith("R") or str(eph.get("system", "")).upper().startswith("GLO"):
+    def _compute_satellite_clock_correction(self, eph: dict, transmit_time: float) -> float:
+        if str(eph.get("satellite_id", "")).startswith("R") or str(
+            eph.get("system", "")
+        ).upper().startswith("GLO"):
             tau_n = float(eph.get("tau_n", 0.0) or 0.0)
             gamma_n = float(eph.get("gamma_n", 0.0) or 0.0)
             tb = float(eph.get("tb") or eph.get("toc") or eph.get("Toc") or 0.0)
@@ -850,10 +894,16 @@ class SPPPositioner:
         m0 = eph.get("M0")
         delta_n = eph.get("delta_n")
         toe = eph.get("toe")
-        if sqrt_a and ecc is not None and m0 is not None and delta_n is not None and toe is not None:
+        if (
+            sqrt_a
+            and ecc is not None
+            and m0 is not None
+            and delta_n is not None
+            and toe is not None
+        ):
             try:
                 semi_major_axis = float(sqrt_a) ** 2
-                mean_motion = math.sqrt(3.986005e14 / (semi_major_axis ** 3)) + float(delta_n)
+                mean_motion = math.sqrt(3.986005e14 / (semi_major_axis**3)) + float(delta_n)
                 tk = _wrapped_time_difference(transmit_time, float(toe))
                 mean_anomaly = float(m0) + mean_motion * tk
                 eccentric_anomaly = mean_anomaly
@@ -863,7 +913,9 @@ class SPPPositioner:
                         eccentric_anomaly = next_value
                         break
                     eccentric_anomaly = next_value
-                clock_bias -= 4.442807633e-10 * float(ecc) * float(sqrt_a) * math.sin(eccentric_anomaly)
+                clock_bias -= (
+                    4.442807633e-10 * float(ecc) * float(sqrt_a) * math.sin(eccentric_anomaly)
+                )
             except (TypeError, ValueError, ZeroDivisionError):
                 pass
 
@@ -879,7 +931,7 @@ class SPPPositioner:
             if not signals:
                 continue
 
-            pr_list: List[Tuple[str, float]] = []
+            pr_list: list[tuple[str, float]] = []
             for sig_id, signal in signals.items():
                 if signal is None:
                     continue
@@ -889,9 +941,72 @@ class SPPPositioner:
             if not pr_list:
                 continue
 
-            if getattr(satellite, "sat_pos_ecef", None) is not None and getattr(satellite, "sat_clk_corr", None) is not None:
+            if (
+                getattr(satellite, "sat_pos_ecef", None) is not None
+                and getattr(satellite, "sat_clk_corr", None) is not None
+            ):
                 if not hasattr(satellite, "sat_var"):
-                    satellite.sat_var = 30.0 ** 2
+                    satellite.sat_var = 30.0**2
+                # Some replay/adapter inputs provide a broadcast or precise
+                # satellite state before the positioner sees the epoch.  Do
+                # not silently skip a fresh SSR state in that case: PPP needs
+                # the orbit/clock pair applied to the same transmit epoch.
+                if not bool(getattr(satellite, "ssr_applied", False)):
+                    ssr_store = getattr(self.handler, "ssr_corrections", None)
+                    has_ssr = False
+                    if ssr_store is not None:
+                        try:
+                            get_orbit = getattr(ssr_store, "get_orbit", None)
+                            get_clock = getattr(ssr_store, "get_clock", None)
+                            has_ssr = bool(
+                                callable(get_orbit)
+                                and callable(get_clock)
+                                and get_orbit(sat_key) is not None
+                                and get_clock(sat_key) is not None
+                            )
+                        except (AttributeError, TypeError, ValueError):
+                            has_ssr = False
+                    if has_ssr:
+                        primary_signal_id, primary_pr = self._select_primary_signal(
+                            sat_key, pr_list
+                        )
+                        if primary_signal_id is not None and primary_pr > 0.0:
+                            transmit_time = float(gps_time) - primary_pr / self.CLIGHT
+                            existing_position = _finite_vector3(satellite.sat_pos_ecef)
+                            existing_velocity = _finite_vector3(
+                                getattr(satellite, "sat_vel_ecef", None)
+                            )
+                            if existing_position is not None:
+                                if existing_velocity is None:
+                                    existing_velocity = np.zeros(3, dtype=float)
+                                corrected_state = ssr_store.apply_to_state(
+                                    sat_key,
+                                    existing_position,
+                                    existing_velocity,
+                                    clock_bias_s=float(satellite.sat_clk_corr),
+                                    transmit_time=transmit_time,
+                                )
+                                corrected_position = _finite_vector3(corrected_state.position_m)
+                                corrected_velocity = _finite_vector3(corrected_state.velocity_mps)
+                                if corrected_position is not None and corrected_state.applied:
+                                    satellite.sat_pos_ecef = corrected_position.tolist()
+                                    satellite.sat_vel_ecef = (
+                                        corrected_velocity.tolist()
+                                        if corrected_velocity is not None
+                                        else existing_velocity.tolist()
+                                    )
+                                    satellite.sat_clk_corr = float(corrected_state.clock_bias_s)
+                                    satellite.ssr_applied = True
+                                    satellite.sat_pos_source = "SSR"
+                                    get_ura = getattr(ssr_store, "get_ura", None)
+                                    if callable(get_ura):
+                                        ura = _finite_float(get_ura(sat_key))
+                                        if ura is not None and ura > 0.0:
+                                            satellite.sat_var = float(ura) ** 2
+                                else:
+                                    satellite.ssr_rejection_reason = str(
+                                        getattr(corrected_state, "rejection_reason", "") or ""
+                                    )
                 continue
 
             eph = self._fetch_ephemeris(sat_key)
@@ -953,9 +1068,9 @@ class SPPPositioner:
                     getattr(corrected_state, "rejection_reason", "") or ""
                 )
             sat_variance = get_var_ura(eph)
-            sat_variance = _finite_float(sat_variance, 30.0 ** 2)
+            sat_variance = _finite_float(sat_variance, 30.0**2)
             if sat_variance is None or sat_variance <= 0.0:
-                sat_variance = 30.0 ** 2
+                sat_variance = 30.0**2
             if ssr_state_sigma_m is not None:
                 sat_variance = float(ssr_state_sigma_m) ** 2
 
@@ -966,9 +1081,9 @@ class SPPPositioner:
             satellite.sat_pos_source = sat_pos_source
             satellite.ssr_applied = sat_pos_source == "SSR"
 
-    def _extract_observations(self, epoch_obs) -> List[Dict]:
-        observations: List[Dict] = []
-        reject_counts: Dict[str, int] = {}
+    def _extract_observations(self, epoch_obs) -> list[dict]:
+        observations: list[dict] = []
+        reject_counts: dict[str, int] = {}
         ssr_required = self._ssr_corrections_required()
 
         def reject(sat_key: str, reason: str) -> None:
@@ -986,8 +1101,8 @@ class SPPPositioner:
                 reject(sat_key, "no-signals")
                 continue
 
-            pr_list: List[Tuple[str, float]] = []
-            snr_by_signal: Dict[str, float] = {}
+            pr_list: list[tuple[str, float]] = []
+            snr_by_signal: dict[str, float] = {}
             for sig_id, signal in signals.items():
                 if signal is None:
                     continue
@@ -1013,7 +1128,11 @@ class SPPPositioner:
                 continue
 
             primary_signal_id, raw_pseudorange = self._select_primary_signal(sat_key, pr_list)
-            if primary_signal_id is None or raw_pseudorange <= 0.0 or not math.isfinite(raw_pseudorange):
+            if (
+                primary_signal_id is None
+                or raw_pseudorange <= 0.0
+                or not math.isfinite(raw_pseudorange)
+            ):
                 reject(sat_key, "no-primary-pseudorange")
                 continue
 
@@ -1024,9 +1143,9 @@ class SPPPositioner:
                     frequency_channel = int(eph.get("frequency_channel", 0) or 0)
                 except (TypeError, ValueError):
                     frequency_channel = 0
-            sat_var = _finite_float(getattr(satellite, "sat_var", 30.0 ** 2), 30.0 ** 2)
+            sat_var = _finite_float(getattr(satellite, "sat_var", 30.0**2), 30.0**2)
             if sat_var is None or sat_var <= 0.0:
-                sat_var = 30.0 ** 2
+                sat_var = 30.0**2
 
             observations.append(
                 {
@@ -1063,9 +1182,9 @@ class SPPPositioner:
 
     def _calculate_tropospheric_delay(
         self,
-        rec_lla_rad: Tuple[float, float, float],
-        azel_rad: Tuple[float, float],
-    ) -> Tuple[float, float]:
+        rec_lla_rad: tuple[float, float, float],
+        azel_rad: tuple[float, float],
+    ) -> tuple[float, float]:
         if self.troposphere_model in {"None", None}:
             return 0.0, 0.0
 
@@ -1083,7 +1202,7 @@ class SPPPositioner:
             try:
                 height_m = float(rec_lla_rad[2])
                 trop_delay = max(0.0, 2.3 - 0.0001 * height_m)
-                trop_var = 0.5 ** 2
+                trop_var = 0.5**2
                 return trop_delay, trop_var
             except Exception as exc:
                 self.logger.debug("HMSL troposphere model failed: %s", exc)
@@ -1094,14 +1213,14 @@ class SPPPositioner:
 
     def _build_measurement_model(
         self,
-        observations: List[Dict],
+        observations: list[dict],
         x_curr: np.ndarray,
         gps_time: float,
         iteration: int,
         reference_system: str,
-        system_state_indices: Dict[str, int],
+        system_state_indices: dict[str, int],
         nx: int,
-    ) -> Dict:
+    ) -> dict:
         rec_pos = x_curr[:3]
         rec_lla = None
         if np.linalg.norm(rec_pos) > WGS84_SEMI_MAJOR_AXIS_M * 0.5:
@@ -1110,14 +1229,14 @@ class SPPPositioner:
             except Exception:
                 rec_lla = None
 
-        residual_rows: List[float] = []
-        design_rows: List[np.ndarray] = []
-        variance_rows: List[float] = []
-        measurement_rows: List[np.ndarray] = []
-        measurement_residuals: List[float] = []
-        measurement_satellites: List[str] = []
+        residual_rows: list[float] = []
+        design_rows: list[np.ndarray] = []
+        variance_rows: list[float] = []
+        measurement_rows: list[np.ndarray] = []
+        measurement_residuals: list[float] = []
+        measurement_satellites: list[str] = []
         clock_mask_present = [False] * (nx - 3)
-        filter_counts: Dict[str, int] = {}
+        filter_counts: dict[str, int] = {}
         apply_elevation_mask = iteration > 0
 
         def reject(reason: str) -> None:
@@ -1163,9 +1282,13 @@ class SPPPositioner:
                         gps_time,
                         freq_hz=freq_hz or GPS_L1_FREQUENCY_HZ,
                     )
-                tropo_delay, tropo_var = self._calculate_tropospheric_delay(rec_lla, (az_rad, el_rad))
+                tropo_delay, tropo_var = self._calculate_tropospheric_delay(
+                    rec_lla, (az_rad, el_rad)
+                )
 
-            corrected_pr, code_bias_var = self.calculate_prange(obs["sat_key"], obs["pr_list"], obs["fcn"])
+            corrected_pr, code_bias_var = self.calculate_prange(
+                obs["sat_key"], obs["pr_list"], obs["fcn"]
+            )
             if corrected_pr <= 0.0 or not math.isfinite(corrected_pr):
                 reject("bad-prange")
                 continue
@@ -1237,7 +1360,9 @@ class SPPPositioner:
             "filter_counts": filter_counts,
         }
 
-    def _solve_least_squares(self, observations: List[Dict], approx_position: np.ndarray, epoch_obs) -> Optional[PositioningResult]:
+    def _solve_least_squares(
+        self, observations: list[dict], approx_position: np.ndarray, epoch_obs
+    ) -> PositioningResult | None:
         self._last_solver_failure_reason = ""
         reference_system, system_state_indices, nx = self._build_state_layout(observations)
         x_curr = np.zeros(nx, dtype=float)
@@ -1276,7 +1401,9 @@ class SPPPositioner:
                 )
                 return None
             if h_mat.shape[0] < nx:
-                self._last_solver_failure_reason = f"underdetermined system: rows {h_mat.shape[0]} < states {nx}"
+                self._last_solver_failure_reason = (
+                    f"underdetermined system: rows {h_mat.shape[0]} < states {nx}"
+                )
                 return None
 
             sigma = np.sqrt(np.maximum(variance_vec, 1e-6))
@@ -1370,7 +1497,9 @@ class SPPPositioner:
             self._last_solver_failure_reason = "solution coordinates are non-finite"
             return None
 
-        std_clock = math.sqrt(max(cov_matrix[3, 3], 0.0)) if cov_matrix is not None else float("inf")
+        std_clock = (
+            math.sqrt(max(cov_matrix[3, 3], 0.0)) if cov_matrix is not None else float("inf")
+        )
         if cov_matrix is not None:
             sin_lat = math.sin(lat_rad)
             cos_lat = math.cos(lat_rad)
@@ -1394,7 +1523,7 @@ class SPPPositioner:
             std_up = float("inf")
 
         gdop, pdop, hdop, vdop, tdop = self._compute_dop(x_curr[:3], measurement_h[:, :4])
-        std_pos_3d = math.sqrt(std_north ** 2 + std_east ** 2 + std_up ** 2)
+        std_pos_3d = math.sqrt(std_north**2 + std_east**2 + std_up**2)
 
         if not convergence:
             self._last_solver_failure_reason = "iteration divergent"
@@ -1404,7 +1533,7 @@ class SPPPositioner:
             return None
 
         solution_status = "No Fix"
-        quality_reasons: List[str] = []
+        quality_reasons: list[str] = []
         if pdop <= 0.0 or pdop > self.max_pdop:
             quality_reasons.append(f"PDOP {pdop:.2f} outside limit {self.max_pdop:.2f}")
 
@@ -1455,7 +1584,9 @@ class SPPPositioner:
             quality_reason="; ".join(quality_reasons),
         )
 
-    def _compute_dop(self, position: np.ndarray, geometry_matrix: np.ndarray) -> Tuple[float, float, float, float, float]:
+    def _compute_dop(
+        self, position: np.ndarray, geometry_matrix: np.ndarray
+    ) -> tuple[float, float, float, float, float]:
         if geometry_matrix is None or geometry_matrix.shape[0] < 4:
             return 0.0, 0.0, 0.0, 0.0, 0.0
 

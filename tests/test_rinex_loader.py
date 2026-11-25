@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import gzip
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -38,10 +38,14 @@ def _require_fixture(path: Path) -> Path:
     return path
 
 
-def _write_sample_obs(path: Path, approx_position=(3875000.0, 332500.0, 5029000.0), interval=15.0) -> Path:
+def _write_sample_obs(
+    path: Path, approx_position=(3875000.0, 332500.0, 5029000.0), interval=15.0
+) -> Path:
     lines = [
         _header_line("     3.04           OBSERVATION DATA    M: MIXED", "RINEX VERSION / TYPE"),
-        _header_line("RTGS TESTER         OPENAI              20260323 000000 UTC", "PGM / RUN BY / DATE"),
+        _header_line(
+            "RTGS TESTER         OPENAI              20260323 000000 UTC", "PGM / RUN BY / DATE"
+        ),
         _header_line("G    4 C1C L1C D1C S1C", "SYS / # / OBS TYPES"),
         _header_line(
             f"{approx_position[0]:14.4f}{approx_position[1]:14.4f}{approx_position[2]:14.4f}",
@@ -60,7 +64,9 @@ def _write_sample_obs(path: Path, approx_position=(3875000.0, 332500.0, 5029000.
 
 
 class _DummyEphemerisProvider:
-    def get_state(self, satellite_id: str, gps_week: int, gps_sow: float, pseudorange_m: float | None = None):
+    def get_state(
+        self, satellite_id: str, gps_week: int, gps_sow: float, pseudorange_m: float | None = None
+    ):
         assert satellite_id == "G01"
         assert pseudorange_m is not None
         return SatelliteEphemerisState(
@@ -140,7 +146,9 @@ def test_rinex_observation_reader_handles_long_rinex3_records(tmp_path):
     obs_path = tmp_path / "long_record.obs"
     lines = [
         _header_line("     3.04           OBSERVATION DATA    M: MIXED", "RINEX VERSION / TYPE"),
-        _header_line("RTGS TESTER         OPENAI              20260323 000000 UTC", "PGM / RUN BY / DATE"),
+        _header_line(
+            "RTGS TESTER         OPENAI              20260323 000000 UTC", "PGM / RUN BY / DATE"
+        ),
         _header_line(
             "G   12 C1C L1C D1C S1C C2W L2W D2W S2W C5Q L5Q D5Q S5Q",
             "SYS / # / OBS TYPES",

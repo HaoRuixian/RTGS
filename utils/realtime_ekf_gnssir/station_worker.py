@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 import csv
-from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
 import json
 import math
+import time
+from collections.abc import Callable, Iterable
+from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Lock, RLock, Thread
-import time
-from typing import Any, Callable, Iterable
+from typing import Any
 
 import yaml
 
+from ._vendor.core.geo_utils import ecef2lla
+from ._vendor.core.reflectometry.config import ReflectorConfig, load_config
+from ._vendor.core.reflectometry.models import ProcessingRunResult, ProductResult
+from ._vendor.core.reflectometry.outputs import ResultSerializer
+from ._vendor.core.reflectometry.rinex_batch import build_observation_records_from_epoch
+from ._vendor.core.reflectometry.services.geometry import matches_reflection_zones
+from ._vendor.core.reflectometry.services.realtime import RealtimeProcessor
 from ._vendor.rt_ntrip_rinex_service.data_models import EpochObservation
 from ._vendor.rt_ntrip_rinex_service.global_config import update_general_settings
 from ._vendor.rt_ntrip_rinex_service.rtcm_handler import RTCMHandler
@@ -24,17 +32,7 @@ from ._vendor.rt_ntrip_rinex_service.service import (
     _epoch_key_millis,
     _merge_epoch_data,
 )
-
-from ._vendor.core.geo_utils import ecef2lla
-from ._vendor.core.reflectometry.config import ReflectorConfig, load_config
-from ._vendor.core.reflectometry.models import ProcessingRunResult, ProductResult
-from ._vendor.core.reflectometry.outputs import ResultSerializer
-from ._vendor.core.reflectometry.rinex_batch import build_observation_records_from_epoch
-from ._vendor.core.reflectometry.services.geometry import matches_reflection_zones
-from ._vendor.core.reflectometry.services.realtime import RealtimeProcessor
-
 from .config import REFLECTOMETRY_CONFIG_WRITE_LOCK, StationConfig, StorageConfig, StreamConfig
-
 
 _RTCM_GLOBAL_CONFIG_LOCK = Lock()
 
@@ -137,18 +135,8 @@ class RealtimeEkfStationWorker(Thread):
 
     def stop(self) -> None:
         self.stop_event.set()
-        stream = self._stream
-        eph_stream = self._eph_stream
-        if stream is not None:
-            try:
-                stream.close()
-            except Exception:
-                pass
-        if eph_stream is not None:
-            try:
-                eph_stream.close()
-            except Exception:
-                pass
+        self._close_stream()
+        self._close_eph_stream()
 
     def run(self) -> None:
         self._set_state("starting")
@@ -227,7 +215,9 @@ class RealtimeEkfStationWorker(Thread):
                     "settings": _stream_snapshot(self.station.eph_settings),
                     "last_message_time": _iso(self._last_eph_message_time),
                     "last_error": self._last_eph_error,
-                    "message_age_seconds": _age_seconds(datetime.now(timezone.utc), self._last_eph_message_time),
+                    "message_age_seconds": _age_seconds(
+                        datetime.now(timezone.utc), self._last_eph_message_time
+                    ),
                 },
                 "epoch_summary": dict(self._last_epoch_summary),
                 "skyplot": [dict(item) for item in self._latest_skyplot],
@@ -265,13 +255,19 @@ class RealtimeEkfStationWorker(Thread):
         if not _stream_enabled(self.station.eph_settings):
             self._set_eph_state("disabled")
             return
-        self._eph_thread = Thread(target=self._run_ephemeris_loop, name=f"RealtimeEkfGNSSIR-Eph-{self.station.name}", daemon=True)
+        self._eph_thread = Thread(
+            target=self._run_ephemeris_loop,
+            name=f"RealtimeEkfGNSSIR-Eph-{self.station.name}",
+            daemon=True,
+        )
         self._eph_thread.start()
 
     def _run_ephemeris_loop(self) -> None:
         ntrip = self._to_ntrip_source(self.station.eph_settings)
         endpoint = f"{ntrip.host}:{ntrip.port}/{ntrip.mountpoint}"
-        self._eph_handler = RTCMHandler(reference_utc=datetime.now(timezone.utc), compute_geometry=False)
+        self._eph_handler = RTCMHandler(
+            reference_utc=datetime.now(timezone.utc), compute_geometry=False
+        )
         while not self.stop_event.is_set():
             try:
                 self._set_eph_state("connecting")
@@ -280,7 +276,7 @@ class RealtimeEkfStationWorker(Thread):
                 self._set_eph_state("running")
                 self._set_eph_error("")
                 reader = self.reader_factory(self._eph_stream)
-                for raw, msg in reader:
+                for _raw, msg in reader:
                     if self.stop_event.is_set():
                         break
                     if msg is None or self._eph_handler is None:
@@ -326,7 +322,9 @@ class RealtimeEkfStationWorker(Thread):
 
         msg_id = _message_identity(msg)
         if msg_id in {"1005", "1006"} and self._handler.last_station_coords is not None:
-            self._apply_rtcm_receiver_position(self._handler.last_station_coords, message_type=msg_id)
+            self._apply_rtcm_receiver_position(
+                self._handler.last_station_coords, message_type=msg_id
+            )
 
         if epoch_data is None:
             return
@@ -385,7 +383,9 @@ class RealtimeEkfStationWorker(Thread):
                 self._latest_system_counts = epoch_summary.get("system_counts", {})
                 self._latest_signal_counts = epoch_summary.get("signal_counts", {})
                 self._latest_record_samples = []
-                self._last_filter_warning = epoch_summary.get("warning", "No reflectometry records passed filters")
+                self._last_filter_warning = epoch_summary.get(
+                    "warning", "No reflectometry records passed filters"
+                )
             return
 
         if not self._should_ingest_reflectometry_epoch(epoch_time):
@@ -522,7 +522,9 @@ class RealtimeEkfStationWorker(Thread):
         coordinates = _valid_receiver_xyz(xyz)
         if coordinates is None:
             with self.status_lock:
-                self._coordinate_error = f"RTCM {message_type} contained invalid station coordinates"
+                self._coordinate_error = (
+                    f"RTCM {message_type} contained invalid station coordinates"
+                )
             return False
 
         position = config.station.receiver_position
@@ -578,16 +580,24 @@ class RealtimeEkfStationWorker(Thread):
     def _validate_stream_config(self) -> None:
         obs = self.station.obs_settings
         if not _is_ntrip(obs):
-            raise ValueError(f"OBS source_type must be NTRIP Server for realtime EKF mode, got {obs.source_type!r}")
+            raise ValueError(
+                f"OBS source_type must be NTRIP Server for realtime EKF mode, got {obs.source_type!r}"
+            )
         if not obs.enabled:
             raise ValueError("OBS stream is disabled")
         if not obs.host or not obs.mountpoint:
-            raise ValueError("OBS NTRIP host and mountpoint are required before starting this station")
+            raise ValueError(
+                "OBS NTRIP host and mountpoint are required before starting this station"
+            )
         eph = self.station.eph_settings
         if eph.enabled and not _is_ntrip(eph):
-            raise ValueError(f"EPH source_type must be NTRIP Server for realtime EKF mode, got {eph.source_type!r}")
+            raise ValueError(
+                f"EPH source_type must be NTRIP Server for realtime EKF mode, got {eph.source_type!r}"
+            )
         if eph.enabled and (not eph.host or not eph.mountpoint):
-            raise ValueError("EPH NTRIP host and mountpoint are required when EPH stream is enabled")
+            raise ValueError(
+                "EPH NTRIP host and mountpoint are required when EPH stream is enabled"
+            )
 
     def _update_initialization_status(self) -> None:
         processor = self._processor
@@ -607,7 +617,9 @@ class RealtimeEkfStationWorker(Thread):
         epoch_age = _age_seconds(now, self._last_epoch_time)
         if self._last_error:
             label = "error"
-        elif self._state in {"connecting", "running", "waiting"} and self._last_message_time is None:
+        elif (
+            self._state in {"connecting", "running", "waiting"} and self._last_message_time is None
+        ):
             label = "waiting_stream"
         elif message_age is not None and message_age > 30.0:
             label = "stale_messages"
@@ -630,7 +642,9 @@ class RealtimeEkfStationWorker(Thread):
         processor = self._processor
         ekf = getattr(processor, "ekf_processor", None) if processor is not None else None
         if ekf is None:
-            waiting_for_coordinates = _receiver_xyz(self._reflector_config) is None if self._reflector_config else False
+            waiting_for_coordinates = (
+                _receiver_xyz(self._reflector_config) is None if self._reflector_config else False
+            )
             return {
                 "mode": "waiting_coordinate" if waiting_for_coordinates else "not_ekf",
                 "rh_initialized": False,
@@ -657,8 +671,16 @@ class RealtimeEkfStationWorker(Thread):
             detrended_count = len(detrended_samples)
             sample_count = len(getattr(arc_state, "samples", []) or [])
             initialized = bool(getattr(arc_state, "initialized", False))
-            sin_values = [float(item[2]) for item in detrended_samples if len(item) > 2 and _is_finite(item[2])]
-            sin_span = max([0.0] + [abs(value - sin_values[0]) for value in sin_values]) if sin_values else 0.0
+            sin_values = [
+                float(item[2])
+                for item in detrended_samples
+                if len(item) > 2 and _is_finite(item[2])
+            ]
+            sin_span = (
+                max([0.0] + [abs(value - sin_values[0]) for value in sin_values])
+                if sin_values
+                else 0.0
+            )
             wavelength_m = _optional_float(getattr(arc_state, "wavelength_m", None))
             required_sin_span = (
                 required_cycles * wavelength_m / (2.0 * max(max_init_height, 0.5))
@@ -700,7 +722,9 @@ class RealtimeEkfStationWorker(Thread):
                 group["signals"].append(signal)
                 group["signal_count"] = len(group["signals"])
             group["sample_count"] = max(int(group["sample_count"]), sample_count)
-            group["detrended_sample_count"] = max(int(group["detrended_sample_count"]), detrended_count)
+            group["detrended_sample_count"] = max(
+                int(group["detrended_sample_count"]), detrended_count
+            )
             group["initialized"] = bool(group["initialized"] or initialized)
             group["sample_ready"] = bool(group["sample_ready"] or sample_ready)
             group["ready_lsp"] = bool(group["ready_lsp"] or lsp_ready)
@@ -709,9 +733,13 @@ class RealtimeEkfStationWorker(Thread):
                 group["lsp_required_sin_span"] = required_sin_span
                 group["lsp_cycle_progress"] = cycle_progress
             last_timestamp = _iso(getattr(arc_state, "last_timestamp", None))
-            if last_timestamp and (not group["last_timestamp"] or last_timestamp > group["last_timestamp"]):
+            if last_timestamp and (
+                not group["last_timestamp"] or last_timestamp > group["last_timestamp"]
+            ):
                 group["last_timestamp"] = last_timestamp
-                group["last_elevation_deg"] = _optional_float(getattr(arc_state, "last_elevation_deg", None))
+                group["last_elevation_deg"] = _optional_float(
+                    getattr(arc_state, "last_elevation_deg", None)
+                )
                 group["direction"] = _direction_label(getattr(arc_state, "direction_sign", None))
         arcs = list(arc_groups.values())
         for arc in arcs:
@@ -720,7 +748,9 @@ class RealtimeEkfStationWorker(Thread):
         sample_ready_count = sum(1 for arc in arcs if arc.get("sample_ready"))
         initialized_arc_count = sum(1 for arc in arcs if arc.get("initialized"))
         max_lsp_samples = max([0] + [int(arc.get("detrended_sample_count") or 0) for arc in arcs])
-        max_cycle_progress = max([0.0] + [float(arc.get("lsp_cycle_progress") or 0.0) for arc in arcs])
+        max_cycle_progress = max(
+            [0.0] + [float(arc.get("lsp_cycle_progress") or 0.0) for arc in arcs]
+        )
         arcs.sort(key=lambda item: item.get("last_timestamp") or "", reverse=True)
         rh_initialized = bool(getattr(ekf, "rh_initialized", False))
         waiting_reason = ""
@@ -729,11 +759,15 @@ class RealtimeEkfStationWorker(Thread):
         elif self._last_message_time is None:
             waiting_reason = "No RTCM message has arrived"
         elif self._last_epoch_time is None:
-            waiting_reason = "RTCM messages are arriving, but no complete observation epoch has been decoded"
+            waiting_reason = (
+                "RTCM messages are arriving, but no complete observation epoch has been decoded"
+            )
         elif not self._latest_skyplot:
             waiting_reason = "Epochs are decoded, but azimuth/elevation geometry is missing"
         elif not self._latest_record_samples:
-            waiting_reason = self._last_filter_warning or "No SNR records passed reflectometry filters"
+            waiting_reason = (
+                self._last_filter_warning or "No SNR records passed reflectometry filters"
+            )
         elif not arcs:
             waiting_reason = "Reflectometry records exist, waiting for EKF arc tracking"
         elif sample_ready_count <= 0:
@@ -770,7 +804,9 @@ class RealtimeEkfStationWorker(Thread):
         ready = _receiver_xyz(config) is not None if config is not None else False
         return {
             **values,
-            "status": "ready" if ready else ("waiting_rtcm" if config is not None else "not_loaded"),
+            "status": (
+                "ready" if ready else ("waiting_rtcm" if config is not None else "not_loaded")
+            ),
             "source": self._coordinate_source,
             "rtcm_message_type": self._coordinate_message_type or None,
             "acquired_at": _iso(self._coordinate_acquired_at),
@@ -803,8 +839,8 @@ class RealtimeEkfStationWorker(Thread):
             return
         try:
             stream.close()
-        except Exception:
-            pass
+        except (AttributeError, OSError, RuntimeError) as exc:
+            self._log(f"Observation stream close failed: {exc}")
 
     def _close_eph_stream(self) -> None:
         stream = self._eph_stream
@@ -813,8 +849,8 @@ class RealtimeEkfStationWorker(Thread):
             return
         try:
             stream.close()
-        except Exception:
-            pass
+        except (AttributeError, OSError, RuntimeError) as exc:
+            self._log(f"Ephemeris stream close failed: {exc}")
 
     @staticmethod
     def _to_ntrip_source(config: StreamConfig) -> NtripSourceConfig:
@@ -844,7 +880,9 @@ def _normalize_product_arc_metadata(row: dict[str, Any]) -> None:
         metadata = {}
         row["metadata"] = metadata
     if "active_satellite_arc_count" not in metadata:
-        metadata["active_satellite_arc_count"] = metadata.get("active_arc_count", row.get("source_arc_count"))
+        metadata["active_satellite_arc_count"] = metadata.get(
+            "active_arc_count", row.get("source_arc_count")
+        )
 
 
 def _receiver_xyz(config: ReflectorConfig) -> list[float] | None:
@@ -889,7 +927,7 @@ def _message_identity(msg: object) -> str:
 def _configured_coordinate_source(path: Path) -> str:
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        position = ((raw.get("station") or {}).get("receiver_position") or {})
+        position = (raw.get("station") or {}).get("receiver_position") or {}
         source = str(position.get("source") or "config").strip().lower()
         return source or "config"
     except Exception:
@@ -934,7 +972,9 @@ def _persist_receiver_position(
 
 
 def _active_systems(config: ReflectorConfig) -> list[str]:
-    systems = [str(item).strip().upper()[0] for item in config.input.constellations if str(item).strip()]
+    systems = [
+        str(item).strip().upper()[0] for item in config.input.constellations if str(item).strip()
+    ]
     return systems or ["G", "R", "E", "C", "J", "S", "I"]
 
 
@@ -1069,7 +1109,9 @@ def _reflection_zones(config: ReflectorConfig | None) -> list[dict[str, Any]]:
                 "name": zone.name,
                 "min_elevation_deg": float(zone.min_elevation_deg),
                 "max_elevation_deg": float(zone.max_elevation_deg),
-                "azimuth_windows": [[float(item[0]), float(item[1])] for item in zone.azimuth_windows],
+                "azimuth_windows": [
+                    [float(item[0]), float(item[1])] for item in zone.azimuth_windows
+                ],
             }
         )
     return zones

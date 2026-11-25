@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 
-from core.reflectometry.outputs import ResultSerializer
-from core.reflectometry.outputs import OutputManager
-from core.reflectometry.providers import ObservationProvider
 from core.reflectometry.config import ReflectorConfig
-from core.reflectometry.models import ArcDirection
-from core.reflectometry.models import ArcSolution, ObservationRequest, ProcessingRunResult, SnrSeries
 from core.reflectometry.logging_utils import configure_logging
+from core.reflectometry.models import (
+    ArcDirection,
+    ArcSolution,
+    ObservationRequest,
+    ProcessingRunResult,
+    SnrSeries,
+)
+from core.reflectometry.outputs import OutputManager, ResultSerializer
+from core.reflectometry.providers import ObservationProvider
 from core.reflectometry.services.arc_builder import ArcBuilder
 from core.reflectometry.services.ekf import EkfReflectometryProcessor
 from core.reflectometry.services.geometry import GeometryResolver
@@ -39,13 +43,17 @@ class BatchProcessor:
         if provider is None:
             raise ValueError("BatchProcessor now requires an explicit ObservationProvider.")
         self.provider = provider
-        self.geometry_resolver = GeometryResolver(config.geometry, processing_config=config.processing)
+        self.geometry_resolver = GeometryResolver(
+            config.geometry, processing_config=config.processing
+        )
         self.arc_builder = ArcBuilder(config.processing, config.ir, config.input.sampling_interval)
         self.preprocessor = SnrPreprocessor(config.processing, config.ir)
         self.spectrum_analyzer = SpectrumAnalyzer(config.ir)
         self.quality_controller = QualityController(config.processing, config.qc, config.ir)
         self.height_estimator = HeightEstimator(self.quality_controller)
-        self.product_converter = ProductConverter(config.products, environment_type=config.station.environment_type)
+        self.product_converter = ProductConverter(
+            config.products, environment_type=config.station.environment_type
+        )
         self.output_manager = OutputManager(config.output)
         self._series_by_arc: dict[str, SnrSeries] = {}
         self._spectra_by_arc: dict[str, tuple[list[float], list[float]]] = {}
@@ -54,7 +62,9 @@ class BatchProcessor:
         """Run the end-to-end batch pipeline and return structured results."""
         request = self._build_request()
         observations = self.provider.fetch_observations(request)
-        self.logger.info("Loaded %d observations from %s", len(observations), type(self.provider).__name__)
+        self.logger.info(
+            "Loaded %d observations from %s", len(observations), type(self.provider).__name__
+        )
 
         observations = self.geometry_resolver.filter_and_resolve(observations)
         if self.config.ir.estimation_mode == "ekf":
@@ -72,17 +82,30 @@ class BatchProcessor:
                 spectrum = self.spectrum_analyzer.analyze(series)
                 solution = self.height_estimator.solve(arc, series, spectrum)
                 self._series_by_arc[arc.arc_id] = series
-                self._spectra_by_arc[arc.arc_id] = (solution.spectrum_frequency, solution.spectrum_power)
+                self._spectra_by_arc[arc.arc_id] = (
+                    solution.spectrum_frequency,
+                    solution.spectrum_power,
+                )
             except Exception as exc:
-                self.logger.warning("Arc %s failed during preprocessing/estimation: %s", arc.arc_id, exc)
+                self.logger.warning(
+                    "Arc %s failed during preprocessing/estimation: %s", arc.arc_id, exc
+                )
                 solution = self._failed_solution(arc, str(exc))
             arc_solutions.append(solution)
 
         products = self.product_converter.convert(arc_solutions)
         aggregates = self.product_converter.aggregate(
             products,
-            window_start=arc_solutions[0].timestamp_start if arc_solutions else datetime.utcnow(),
-            window_end=arc_solutions[-1].timestamp_end if arc_solutions else datetime.utcnow(),
+            window_start=(
+                arc_solutions[0].timestamp_start
+                if arc_solutions
+                else datetime.now(timezone.utc).replace(tzinfo=None)
+            ),
+            window_end=(
+                arc_solutions[-1].timestamp_end
+                if arc_solutions
+                else datetime.now(timezone.utc).replace(tzinfo=None)
+            ),
         )
         result = ProcessingRunResult(
             station_id=self.config.station.station_id,
@@ -111,9 +134,11 @@ class BatchProcessor:
             start_time = products[0].timestamp
             end_time = products[-1].timestamp
         else:
-            start_time = datetime.utcnow()
+            start_time = datetime.now(timezone.utc).replace(tzinfo=None)
             end_time = start_time
-        aggregates = self.product_converter.aggregate(products, window_start=start_time, window_end=end_time)
+        aggregates = self.product_converter.aggregate(
+            products, window_start=start_time, window_end=end_time
+        )
         result = ProcessingRunResult(
             station_id=self.config.station.station_id,
             arc_solutions=[],
@@ -149,6 +174,7 @@ class BatchProcessor:
                     series.snr_db_hz,
                     series.snr_linear,
                     series.residual,
+                    strict=True,
                 ):
                     intermediate_rows.append(
                         {
@@ -169,8 +195,10 @@ class BatchProcessor:
         if self.config.output.save_spectrum and self._spectra_by_arc:
             spectrum_rows = []
             for arc_id, (frequency, power) in self._spectra_by_arc.items():
-                for freq_value, power_value in zip(frequency, power):
-                    spectrum_rows.append({"arc_id": arc_id, "frequency": freq_value, "power": power_value})
+                for freq_value, power_value in zip(frequency, power, strict=True):
+                    spectrum_rows.append(
+                        {"arc_id": arc_id, "frequency": freq_value, "power": power_value}
+                    )
             path = output_dir / "arc_spectra.csv"
             pd.DataFrame(spectrum_rows).to_csv(path, index=False)
             written.append(path)

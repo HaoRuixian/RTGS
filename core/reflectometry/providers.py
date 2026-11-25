@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterable
 from dataclasses import asdict
 from datetime import datetime, timezone
-from typing import Any, Callable, Iterable, Protocol
+from typing import Any, Protocol
 
 import numpy as np
 
-from core.reflectometry.models import ObservationRecord, ObservationRequest, ReceiverPosition, SnrUnit
+from core.reflectometry.models import (
+    ObservationRecord,
+    ObservationRequest,
+    ReceiverPosition,
+    SnrUnit,
+)
 from core.reflectometry.signal_utils import normalize_signal_id, signal_matches
 
 
@@ -34,7 +40,9 @@ class ListObservationProvider(ObservationProvider):
 class CacheReader(Protocol):
     """Protocol for upstream RTCM cache readers."""
 
-    def read_observations(self, request: ObservationRequest) -> Iterable[ObservationRecord | dict[str, Any]]:
+    def read_observations(
+        self, request: ObservationRequest
+    ) -> Iterable[ObservationRecord | dict[str, Any]]:
         """Return observations for a requested time window."""
 
 
@@ -43,7 +51,10 @@ class CacheObservationProvider(ObservationProvider):
 
     def __init__(
         self,
-        reader: CacheReader | Callable[[ObservationRequest], Iterable[ObservationRecord | dict[str, Any]]],
+        reader: (
+            CacheReader
+            | Callable[[ObservationRequest], Iterable[ObservationRecord | dict[str, Any]]]
+        ),
         station_id: str,
         receiver_position: ReceiverPosition | None = None,
     ) -> None:
@@ -52,7 +63,11 @@ class CacheObservationProvider(ObservationProvider):
         self.receiver_position = receiver_position
 
     def fetch_observations(self, request: ObservationRequest) -> list[ObservationRecord]:
-        raw_records = self.reader.read_observations(request) if hasattr(self.reader, "read_observations") else self.reader(request)
+        raw_records = (
+            self.reader.read_observations(request)
+            if hasattr(self.reader, "read_observations")
+            else self.reader(request)
+        )
         records = [self._normalize(item) for item in raw_records]
         records = [item for item in records if _matches_request(item, request)]
         return sorted(records, key=lambda item: item.timestamp)
@@ -77,7 +92,9 @@ class CacheObservationProvider(ObservationProvider):
             multipath_indicator=_optional_float(payload.get("multipath_indicator")),
             receiver_position=self.receiver_position,
             environment_metadata=dict(payload.get("environment_metadata", {})),
-            observation_metadata={key: value for key, value in payload.items() if key not in template_keys},
+            observation_metadata={
+                key: value for key, value in payload.items() if key not in template_keys
+            },
         )
 
     def _template(self) -> ObservationRecord:
@@ -97,7 +114,7 @@ class CacheObservationProvider(ObservationProvider):
         station_id: str,
         receiver_position: ReceiverPosition | None = None,
         timestamp_resolver: Callable[[Any], datetime] | None = None,
-    ) -> "CacheObservationProvider":
+    ) -> CacheObservationProvider:
         """Adapt the current UI rolling store without coupling the domain to it."""
 
         if timestamp_resolver is None:
@@ -125,7 +142,9 @@ class CacheObservationProvider(ObservationProvider):
         return cls(reader=reader, station_id=station_id, receiver_position=receiver_position)
 
 
-def _filter_records(records: list[ObservationRecord], request: ObservationRequest) -> list[ObservationRecord]:
+def _filter_records(
+    records: list[ObservationRecord], request: ObservationRequest
+) -> list[ObservationRecord]:
     filtered = records
     if request.start_time is not None:
         filtered = [item for item in filtered if item.timestamp >= request.start_time]
@@ -140,7 +159,9 @@ def _filter_records(records: list[ObservationRecord], request: ObservationReques
         blocked = set(request.exclude_constellations)
         filtered = [item for item in filtered if item.constellation not in blocked]
     if request.exclude_signals:
-        filtered = [item for item in filtered if not signal_matches(item.signal, request.exclude_signals)]
+        filtered = [
+            item for item in filtered if not signal_matches(item.signal, request.exclude_signals)
+        ]
     return filtered
 
 
@@ -155,16 +176,14 @@ def _matches_request(item: ObservationRecord, request: ObservationRequest) -> bo
         return False
     if request.exclude_constellations and item.constellation in set(request.exclude_constellations):
         return False
-    if request.exclude_signals and signal_matches(item.signal, request.exclude_signals):
-        return False
-    return True
+    return not (request.exclude_signals and signal_matches(item.signal, request.exclude_signals))
 
 
 def _coerce_datetime(value: Any) -> datetime:
     if isinstance(value, datetime):
         return value
     if isinstance(value, (int, float)):
-        return datetime.utcfromtimestamp(float(value))
+        return datetime.fromtimestamp(float(value), timezone.utc).replace(tzinfo=None)
     return datetime.fromisoformat(str(value))
 
 

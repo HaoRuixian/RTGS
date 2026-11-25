@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import math
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import logging
-import math
-from typing import Dict, List, Optional, Tuple
+from functools import lru_cache
 
 import numpy as np
 
@@ -23,17 +23,33 @@ from core.ppp_physical_models import (
     shapiro_delay,
     solid_earth_tide_displacement,
 )
+from core.ppp_resources import default_ppp_model_path
 from core.spp_positioning import (
-    DEFAULT_CLOCK_CONSTRAINT_VARIANCE,
-    GPS_L1_FREQUENCY_HZ,
-    SPPPositioner,
-    PositioningResult,
     WGS84_SEMI_MAJOR_AXIS_M,
+    PositioningResult,
+    SPPPositioner,
 )
+from rtgs.infrastructure import get_logger
 
-
-LOGGER = logging.getLogger(__name__)
+LOGGER = get_logger(__name__)
 LIGHT_SPEED = 299_792_458.0
+PPP_STABILITY_WINDOW_S = 60.0
+PPP_STABILITY_MAX_GAP_S = 45.0
+PPP_STABILITY_MAX_SHIFT_M = 0.10
+PPP_STABILITY_MAX_SIGMA_M = 0.30
+
+
+@lru_cache(maxsize=1)
+def _bundled_antex() -> AntexCalibration:
+    """Load the large built-in ANTEX catalog once per process."""
+    return AntexCalibration(default_ppp_model_path("antex"))
+
+
+@lru_cache(maxsize=1)
+def _bundled_blq() -> BlqOceanLoading:
+    """Load the built-in multi-station ocean-loading catalog once per process."""
+    return BlqOceanLoading(default_ppp_model_path("blq"))
+
 
 PRIMARY_PRIORITIES = {
     # Match BNC's CNES PPP-AR signal selection (G1C + G2W).  L1W is a
@@ -67,17 +83,30 @@ class _PppMeasurement:
     variance_m2: float
     sat_variance_m2: float
     sat_pos: np.ndarray
-    sat_vel: Optional[np.ndarray]
+    sat_vel: np.ndarray | None
     sat_clock_s: float
     system: str
-    snr: Optional[float]
+    snr: float | None
     fcn: int
-    ambiguity_name: Optional[str] = None
-    phase_pair: Optional[Tuple[str, str]] = None
-    ionosphere_name: Optional[str] = None
+    ambiguity_name: str | None = None
+    phase_pair: tuple[str, str] | None = None
+    ionosphere_name: str | None = None
     ionosphere_coefficient: float = 0.0
-    wide_lane_name: Optional[str] = None
+    wide_lane_name: str | None = None
     wide_lane_coefficient: float = 0.0
+
+
+@dataclass(slots=True)
+class _ReceiverGeometryContext:
+    position_ecef: np.ndarray
+    zhd_m: float
+    standard_zwd_m: float
+    latitude_rad: float | None
+    height_m: float | None
+    epoch: datetime | None
+    log_zwd_index: int | None
+    gradient_n_index: int | None
+    gradient_e_index: int | None
 
 
 @dataclass(slots=True)
@@ -87,7 +116,7 @@ class _MwTrack:
     count: int = 0
     mean_cycles: float = 0.0
     m2_cycles2: float = 0.0
-    last_time: Optional[float] = None
+    last_time: float | None = None
 
     def add(self, value: float, epoch_time: float) -> None:
         if self.last_time is not None and abs(float(epoch_time) - self.last_time) > 180.0:
@@ -107,7 +136,7 @@ class _MwTrack:
         return math.sqrt(max(self.m2_cycles2 / (self.count - 1), 0.0) / self.count)
 
 
-def _finite_float(value, default: Optional[float] = None) -> Optional[float]:
+def _finite_float(value, default: float | None = None) -> float | None:
     try:
         result = float(value)
     except (TypeError, ValueError, OverflowError):
@@ -115,7 +144,7 @@ def _finite_float(value, default: Optional[float] = None) -> Optional[float]:
     return result if math.isfinite(result) else default
 
 
-def _finite_vector3(values) -> Optional[np.ndarray]:
+def _finite_vector3(values) -> np.ndarray | None:
     try:
         arr = np.asarray(values, dtype=float).reshape(-1)
     except Exception:
@@ -137,7 +166,7 @@ class PPPPositioner:
     phase biases enable between-satellite PPP ambiguity resolution.
     """
 
-    def __init__(self, ephemeris_handler=None, config: Optional[Dict] = None):
+    def __init__(self, ephemeris_handler=None, config: dict | None = None):
         config = dict(config or {})
         ppp_config = dict(config)
         ppp_config["prefer_gps_only"] = False
@@ -148,9 +177,9 @@ class PPPPositioner:
         self.logger = LOGGER
 
         self.phase_sigma_m = float(config.get("ppp_phase_sigma_m", 0.01))
-        observation_model = str(
-            config.get("ppp_observation_model", "IFLC") or "IFLC"
-        ).strip().upper()
+        observation_model = (
+            str(config.get("ppp_observation_model", "IFLC") or "IFLC").strip().upper()
+        )
         self.observation_model = (
             "UNCOMBINED" if observation_model in {"UNCOMBINED", "UC"} else "IFLC"
         )
@@ -158,9 +187,7 @@ class PPPPositioner:
         # A standalone PPP run is normally seeded from an SPP solution.  That
         # seed must remain weak even when the operator selected a very tight
         # sigma for an explicitly configured station coordinate.
-        self.spp_bootstrap_position_sigma_m = float(
-            config.get("ppp_spp_bootstrap_sigma_m", 100.0)
-        )
+        self.spp_bootstrap_position_sigma_m = float(config.get("ppp_spp_bootstrap_sigma_m", 100.0))
         # Independent mode is a hard safety boundary: RTCM 1005/1006,
         # configured truth coordinates, and arbitrary external seeds are never
         # allowed to initialize or constrain the PPP state.
@@ -168,23 +195,24 @@ class PPPPositioner:
         # SPP is the normal PPP bootstrap.  RTCM 1005/1006 can be opted into
         # explicitly through ``ppp_use_station_apriori``.
         self.use_station_apriori = (
-            bool(config.get("ppp_use_station_apriori", False))
-            and not self.independent_mode
+            bool(config.get("ppp_use_station_apriori", False)) and not self.independent_mode
         )
         self.station_apriori_sigma_m = float(config.get("ppp_station_apriori_sigma_m", 0.05))
         self.initial_clock_sigma_m = float(config.get("ppp_initial_clock_sigma_m", 1000.0))
         self.initial_trop_sigma_m = float(config.get("ppp_initial_trop_sigma_m", 0.1))
         self.initial_ambiguity_sigma_m = float(config.get("ppp_initial_ambiguity_sigma_m", 1000.0))
-        self.initial_ionosphere_sigma_m = float(
-            config.get("ppp_initial_ionosphere_sigma_m", 30.0)
-        )
+        self.initial_ionosphere_sigma_m = float(config.get("ppp_initial_ionosphere_sigma_m", 30.0))
         self.ionosphere_process_noise_mps = float(
             config.get("ppp_ionosphere_process_noise_mps", 0.001)
         )
-        position_noise = config.get("ppp_position_process_noise_mps", config.get("random_walk", 0.0))
+        position_noise = config.get(
+            "ppp_position_process_noise_mps", config.get("random_walk", 0.0)
+        )
         self.position_process_noise_mps = float(0.0 if position_noise is None else position_noise)
         self.clock_process_noise_m = float(config.get("ppp_clock_process_noise_m", 100.0))
-        self.system_clock_process_noise_m = float(config.get("ppp_system_clock_process_noise_m", 30.0))
+        self.system_clock_process_noise_m = float(
+            config.get("ppp_system_clock_process_noise_m", 30.0)
+        )
         # Physical ZWD random-walk amplitude in m/sqrt(s).  The historical
         # ``_mps`` key is retained for configuration compatibility.
         self.trop_process_noise_mps = float(config.get("ppp_trop_process_noise_mps", 5e-5))
@@ -240,12 +268,8 @@ class PPPPositioner:
         self.auto_ssr_apc_reference = bool(config.get("ppp_auto_ssr_apc_reference", True))
         self.ssr_apc_reference = bool(config.get("ppp_ssr_apc_reference", False))
         self.ssr_mountpoint = str(config.get("ppp_ssr_mountpoint", "") or "").strip()
-        self.postfit_enabled = bool(
-            config.get("ppp_postfit_enabled", self.precise_model_enabled)
-        )
-        self.max_code_postfit_residual_m = float(
-            config.get("ppp_max_code_postfit_residual_m", 3.0)
-        )
+        self.postfit_enabled = bool(config.get("ppp_postfit_enabled", self.precise_model_enabled))
+        self.max_code_postfit_residual_m = float(config.get("ppp_max_code_postfit_residual_m", 3.0))
         self.max_phase_postfit_residual_m = float(
             config.get("ppp_max_phase_postfit_residual_m", 0.03)
         )
@@ -260,7 +284,7 @@ class PPPPositioner:
         self._windup_model = PhaseWindupModel()
         self._antex = AntexCalibration()
         self._ocean_loading = BlqOceanLoading()
-        self._model_config_errors: List[str] = []
+        self._model_config_errors: list[str] = []
         self._load_external_models()
 
         # PPP-AR is deliberately opt-in at the measurement level: a float
@@ -269,9 +293,9 @@ class PPPPositioner:
         # conservative validation settings while allowing noisy real-time MW data to
         # converge before a constraint is attempted.
         self.ar_enabled = bool(config.get("ppp_ar_enabled", True))
-        self.ar_systems = tuple(str(item).upper()[0] for item in config.get(
-            "ppp_ar_systems", ["G", "E", "C", "J"]
-        ))
+        self.ar_systems = tuple(
+            str(item).upper()[0] for item in config.get("ppp_ar_systems", ["G", "E", "C", "J"])
+        )
         self.ar_min_epochs = int(config.get("ppp_ar_min_epochs", 30))
         self.ar_min_satellites = int(config.get("ppp_ar_min_satellites", 5))
         self.ar_min_elevation_deg = float(config.get("ppp_ar_min_elevation_deg", 10.0))
@@ -287,48 +311,65 @@ class PPPPositioner:
         # bare positioner; the application defaults enable the stricter mode.
         self.ar_require_full_group = bool(config.get("ppp_ar_require_full_group", False))
 
-        self.state_names: List[str] = []
+        self.state_names: list[str] = []
         self.x = np.zeros(0, dtype=float)
         self.P = np.zeros((0, 0), dtype=float)
-        self.last_time: Optional[float] = None
-        self.last_solution: Optional[PositioningResult] = None
-        self.last_diagnostics: Dict[str, object] = {}
-        self._amb_meta: Dict[str, Tuple[int, int]] = {}
+        self.last_time: float | None = None
+        self.last_solution: PositioningResult | None = None
+        self.last_diagnostics: dict[str, object] = {}
+        self._amb_meta: dict[str, tuple[int, int]] = {}
         self._last_spp_failure = ""
         self._position_apriori_source = ""
         self._pending_initial_position_sigma_m = self.initial_position_sigma_m
         self._pending_initial_clock_m = 0.0
-        self._pending_system_offsets_m: Dict[str, float] = {}
-        self._mw_tracks: Dict[str, _MwTrack] = {}
-        self._uncombined_ar_tracks: Dict[str, _MwTrack] = {}
-        self._uncombined_ar_observations: List[dict] = []
-        self._phase_bias_meta: Dict[str, tuple] = {}
-        self._ar_observations: List[dict] = []
+        self._pending_system_offsets_m: dict[str, float] = {}
+        self._mw_tracks: dict[str, _MwTrack] = {}
+        self._uncombined_ar_tracks: dict[str, _MwTrack] = {}
+        self._uncombined_ar_observations: list[dict] = []
+        self._phase_bias_meta: dict[str, tuple] = {}
+        self._ar_observations: list[dict] = []
         self._current_epoch_time: float = 0.0
-        self._current_epoch_datetime: Optional[datetime] = None
+        self._current_epoch_datetime: datetime | None = None
         self._solid_tide_ecef = np.zeros(3, dtype=float)
         self._ocean_tide_ecef = np.zeros(3, dtype=float)
         self._antenna_eccentricity_ecef = np.zeros(3, dtype=float)
-        self._last_filter_measurements: List[_PppMeasurement] = []
+        self._last_filter_measurements: list[_PppMeasurement] = []
+        self._position_history: deque[tuple[float, np.ndarray]] = deque()
 
     def _load_external_models(self) -> None:
         self._model_config_errors = []
         self._antex = AntexCalibration()
         self._ocean_loading = BlqOceanLoading()
+        self._antex_source = "disabled"
+        self._blq_source = "disabled"
         if self.antex_file:
+            self._antex_source = "configured"
             try:
                 self._antex.load(self._resolve_model_path(self.antex_file))
                 if not self._antex.loaded:
                     self._model_config_errors.append("ANTEX contains no supported antennas")
             except (OSError, ValueError) as exc:
                 self._model_config_errors.append(f"ANTEX: {exc}")
+        elif self.precise_model_enabled:
+            try:
+                self._antex = _bundled_antex()
+                self._antex_source = "built-in"
+            except (OSError, ValueError) as exc:
+                self._model_config_errors.append(f"built-in ANTEX: {exc}")
         if self.blq_file:
+            self._blq_source = "configured"
             try:
                 self._ocean_loading.load(self._resolve_model_path(self.blq_file))
                 if not self._ocean_loading.stations:
                     self._model_config_errors.append("BLQ contains no station records")
             except (OSError, ValueError) as exc:
                 self._model_config_errors.append(f"BLQ: {exc}")
+        elif self.precise_model_enabled and self.apply_ocean_loading:
+            try:
+                self._ocean_loading = _bundled_blq()
+                self._blq_source = "built-in"
+            except (OSError, ValueError) as exc:
+                self._model_config_errors.append(f"built-in BLQ: {exc}")
 
     @staticmethod
     def _resolve_model_path(path: str) -> str:
@@ -367,12 +408,15 @@ class PPPPositioner:
         self.last_diagnostics["model_config_errors"] = list(self._model_config_errors)
         self.last_diagnostics["antex_loaded"] = bool(self._antex.loaded)
         self.last_diagnostics["blq_loaded"] = bool(self._ocean_loading.stations)
+        self.last_diagnostics["antex_source"] = self._antex_source
+        self.last_diagnostics["blq_source"] = self._blq_source
         self.last_diagnostics["receiver_antenna"] = self._resolve_receiver_antenna()
         self.last_diagnostics["ssr_apc_reference"] = self._ssr_apc_reference_enabled()
         self.last_diagnostics["ssr_reference_point"] = (
             "APC" if self._ssr_apc_reference_enabled() else "CoM"
         )
         self.last_diagnostics["receiver_coordinate_reference"] = "ARP"
+        self.last_diagnostics.pop("ocean_loading_status", None)
         missing_models = []
         if not self._antex.loaded:
             missing_models.append("ANTEX unavailable: antenna PCO/PCV disabled")
@@ -413,6 +457,7 @@ class PPPPositioner:
                     )
                     if found:
                         self._ocean_tide_ecef = displacement
+                        self.last_diagnostics["ocean_loading_status"] = "applied"
                     else:
                         self.last_diagnostics["ocean_loading_status"] = (
                             f"station {station_id} not found"
@@ -428,22 +473,20 @@ class PPPPositioner:
             np.linalg.norm(self._ocean_tide_ecef)
         )
 
-    def update_config(self, settings: Dict) -> None:
+    def update_config(self, settings: dict) -> None:
         """Apply live positioning settings."""
         self.spp.MIN_SATELLITES = int(settings.get("min_satellites", self.spp.MIN_SATELLITES))
         if "cutoff_elevation_deg" in settings or "min_elevation" in settings:
-            self.spp.MIN_ELEVATION = float(settings.get("cutoff_elevation_deg", settings.get("min_elevation")))
+            self.spp.MIN_ELEVATION = float(
+                settings.get("cutoff_elevation_deg", settings.get("min_elevation"))
+            )
         if "max_pdop" in settings:
             self.spp.max_pdop = float(settings["max_pdop"])
         if "troposphere_model" in settings:
             self.spp.troposphere_model = settings["troposphere_model"]
         if "ppp_observation_model" in settings:
             configured_model = str(settings["ppp_observation_model"] or "IFLC").strip().upper()
-            observation_model = (
-                "UNCOMBINED"
-                if configured_model in {"UNCOMBINED", "UC"}
-                else "IFLC"
-            )
+            observation_model = "UNCOMBINED" if configured_model in {"UNCOMBINED", "UC"} else "IFLC"
             if observation_model != self.observation_model:
                 self.observation_model = observation_model
                 self.reset_filter()
@@ -473,8 +516,7 @@ class PPPPositioner:
                 self.reset_filter()
         if "ppp_use_station_apriori" in settings:
             use_station_apriori = (
-                bool(settings["ppp_use_station_apriori"])
-                and not self.independent_mode
+                bool(settings["ppp_use_station_apriori"]) and not self.independent_mode
             )
             if use_station_apriori != self.use_station_apriori:
                 self.use_station_apriori = use_station_apriori
@@ -545,16 +587,11 @@ class PPPPositioner:
                 model_changed = model_changed or value != getattr(self, attr)
                 setattr(self, attr, value)
         if "ppp_estimate_trop_gradients" in settings:
-            self._estimate_trop_gradients_requested = bool(
-                settings["ppp_estimate_trop_gradients"]
-            )
+            self._estimate_trop_gradients_requested = bool(settings["ppp_estimate_trop_gradients"])
         estimate_trop_gradients = (
             self.precise_model_enabled and self._estimate_trop_gradients_requested
         )
-        model_changed = (
-            model_changed
-            or estimate_trop_gradients != self.estimate_trop_gradients
-        )
+        model_changed = model_changed or estimate_trop_gradients != self.estimate_trop_gradients
         self.estimate_trop_gradients = estimate_trop_gradients
         for attr, key, default in (
             ("apply_phase_windup", "ppp_apply_phase_windup", True),
@@ -597,10 +634,7 @@ class PPPPositioner:
             self.antenna_eccentricity_neu_m = eccentricity
         if "ppp_ssr_mountpoint" in settings:
             self.ssr_mountpoint = str(settings["ppp_ssr_mountpoint"] or "").strip()
-        model_changed = (
-            model_changed
-            or previous_apc_reference != self._ssr_apc_reference_enabled()
-        )
+        model_changed = model_changed or previous_apc_reference != self._ssr_apc_reference_enabled()
         if external_changed:
             self._load_external_models()
         if model_changed or external_changed:
@@ -627,16 +661,19 @@ class PPPPositioner:
         self._ar_observations.clear()
         self._windup_model.clear()
         self._last_filter_measurements.clear()
+        self._position_history.clear()
 
     @property
-    def gnss_systems(self) -> List[str]:
+    def gnss_systems(self) -> list[str]:
         return self.spp.gnss_systems
 
     @gnss_systems.setter
     def gnss_systems(self, systems) -> None:
         self.spp.gnss_systems = SPPPositioner.normalize_gnss_systems(systems)
 
-    def process_epoch(self, epoch_obs, approx_position: Optional[np.ndarray] = None) -> Optional[PositioningResult]:
+    def process_epoch(
+        self, epoch_obs, approx_position: np.ndarray | None = None
+    ) -> PositioningResult | None:
         try:
             self._current_epoch_time = float(epoch_obs.gps_time)
             epoch_datetime = getattr(epoch_obs, "utc_datetime", None)
@@ -647,7 +684,9 @@ class PPPPositioner:
             else:
                 self._current_epoch_datetime = None
             self.spp._update_satellite_positions(epoch_obs)
-            raw_system_counts = self.spp._count_satellite_keys(getattr(epoch_obs, "satellites", {}).keys())
+            raw_system_counts = self.spp._count_satellite_keys(
+                getattr(epoch_obs, "satellites", {}).keys()
+            )
             observations = self.spp._extract_observations(epoch_obs)
             extracted_system_counts = self.spp._system_counts(observations)
             observations = self.spp._select_solution_observations(observations)
@@ -688,9 +727,11 @@ class PPPPositioner:
             self.last_diagnostics["position_apriori_source"] = self._position_apriori_source
             self._prepare_epoch_models(initial)
 
-            ppp_measurements, phase_names, ionosphere_names, wide_lane_names = self._collect_measurements(
-                observations,
-                initial,
+            ppp_measurements, phase_names, ionosphere_names, wide_lane_names = (
+                self._collect_measurements(
+                    observations,
+                    initial,
+                )
             )
             measurement_satellites = {measurement.sat_key for measurement in ppp_measurements}
             if len(measurement_satellites) < self.spp.MIN_SATELLITES:
@@ -740,12 +781,14 @@ class PPPPositioner:
                 post_var,
             )
             if fixed_applied:
-                fixed_h, fixed_v, fixed_var, fixed_sats, fixed_geometry = self._build_filter_matrices(
-                    filtered_measurements,
-                    reference_system,
-                    system_state_names,
-                    initialise_ambiguities=False,
-                    gate_outliers=False,
+                fixed_h, fixed_v, fixed_var, fixed_sats, fixed_geometry = (
+                    self._build_filter_matrices(
+                        filtered_measurements,
+                        reference_system,
+                        system_state_names,
+                        initialise_ambiguities=False,
+                        gate_outliers=False,
+                    )
                 )
                 fixed_postfit = self._weighted_rms(fixed_v, fixed_var)
                 position_shift = float(np.linalg.norm(self.x[:3] - float_position))
@@ -764,13 +807,19 @@ class PPPPositioner:
                     )
                 else:
                     post_h, post_v, post_var, post_sats, code_geometry = (
-                        fixed_h, fixed_v, fixed_var, fixed_sats, fixed_geometry
+                        fixed_h,
+                        fixed_v,
+                        fixed_var,
+                        fixed_sats,
+                        fixed_geometry,
                     )
                     self.last_diagnostics["ar_position_shift_m"] = position_shift
                     self.last_diagnostics["ar_postfit_rms_m"] = fixed_postfit
             if not fixed_applied:
                 self.last_diagnostics.setdefault("ar_status", "float")
-                self.last_diagnostics.setdefault("ar_rejection_reason", "no validated integer candidate")
+                self.last_diagnostics.setdefault(
+                    "ar_rejection_reason", "no validated integer candidate"
+                )
             if len(set(post_sats)) < self.spp.MIN_SATELLITES:
                 self.last_diagnostics["failure_reason"] = "not enough PPP postfit measurements"
                 return None
@@ -796,7 +845,7 @@ class PPPPositioner:
             self.last_diagnostics["failure_reason"] = f"PPP exception: {exc}"
             return None
 
-    def _station_apriori_position(self) -> Optional[np.ndarray]:
+    def _station_apriori_position(self) -> np.ndarray | None:
         if self.independent_mode or not self.use_station_apriori:
             return None
         arr = _finite_vector3(getattr(self.handler, "last_station_coords", None))
@@ -810,7 +859,7 @@ class PPPPositioner:
             return
         if not all(name in self.state_names for name in ("X", "Y", "Z")):
             return
-        for axis, value in zip(("X", "Y", "Z"), station_pos):
+        for axis, value in zip(("X", "Y", "Z"), station_pos, strict=False):
             idx = self.state_names.index(axis)
             self.x[idx] = float(value)
             self.P[idx, :] = 0.0
@@ -819,7 +868,9 @@ class PPPPositioner:
         self._position_apriori_source = "station-1006"
         self.last_diagnostics["rtcm_station_position_used"] = True
 
-    def _resolve_initial_state(self, epoch_obs, observations: List[Dict], approx_position) -> Optional[np.ndarray]:
+    def _resolve_initial_state(
+        self, epoch_obs, observations: list[dict], approx_position
+    ) -> np.ndarray | None:
         self._pending_initial_position_sigma_m = self.initial_position_sigma_m
         self._apply_station_apriori_to_existing_state()
         if self.x.size >= 3 and np.linalg.norm(self.x[:3]) > WGS84_SEMI_MAJOR_AXIS_M * 0.5:
@@ -856,9 +907,7 @@ class PPPPositioner:
             return None
         self._last_spp_failure = ""
         self._position_apriori_source = (
-            "spp-bootstrap-observation-only"
-            if self.independent_mode
-            else "spp-bootstrap"
+            "spp-bootstrap-observation-only" if self.independent_mode else "spp-bootstrap"
         )
         self._pending_initial_position_sigma_m = max(
             float(self.spp_bootstrap_position_sigma_m), 1e-3
@@ -882,7 +931,9 @@ class PPPPositioner:
             if _finite_float(offset_seconds) is not None
         }
 
-    def _find_signal(self, signals: Dict, priorities: List[str], *, require_phase: bool = False) -> Tuple[Optional[str], float, float]:
+    def _find_signal(
+        self, signals: dict, priorities: list[str], *, require_phase: bool = False
+    ) -> tuple[str | None, float, float]:
         for priority in priorities:
             for sig_id, signal in signals.items():
                 if len(priority) > 1 and sig_id != priority:
@@ -908,7 +959,7 @@ class PPPPositioner:
 
     def _signal_antenna_correction(
         self,
-        obs: Dict,
+        obs: dict,
         signal_id: str,
         receiver_position: np.ndarray,
     ) -> float:
@@ -993,7 +1044,7 @@ class PPPPositioner:
 
     def _phase_windup_cycles(
         self,
-        obs: Dict,
+        obs: dict,
         phase_bias_correction,
         receiver_position: np.ndarray,
     ) -> float:
@@ -1006,8 +1057,7 @@ class PPPPositioner:
         yaw = None
         sat_system = str(obs.get("sat_key", ""))[:1]
         yaw_enabled = self.use_ssr_yaw and (
-            not self.precise_model_enabled
-            or (self.ar_enabled and sat_system in self.ar_systems)
+            not self.precise_model_enabled or (self.ar_enabled and sat_system in self.ar_systems)
         )
         if yaw_enabled:
             yaw = propagated_ssr_yaw_deg(
@@ -1032,10 +1082,10 @@ class PPPPositioner:
 
     def _phase_if_measurement(
         self,
-        obs: Dict,
+        obs: dict,
         gps_time: float,
-        receiver_position: Optional[np.ndarray] = None,
-    ) -> Optional[Tuple[float, float, str, str, dict]]:
+        receiver_position: np.ndarray | None = None,
+    ) -> tuple[float, float, str, str, dict] | None:
         if receiver_position is None:
             receiver_position = self.x[:3] if self.x.size >= 3 else np.zeros(3, dtype=float)
         sat_key = str(obs["sat_key"])
@@ -1043,8 +1093,12 @@ class PPPPositioner:
         satellite = obs["satellite_ref"]
         signals = getattr(satellite, "signals", {}) or {}
 
-        sig1, _code1, phase1 = self._find_signal(signals, PRIMARY_PRIORITIES.get(system, ["1"]), require_phase=True)
-        sig2, _code2, phase2 = self._find_signal(signals, SECONDARY_PRIORITIES.get(system, ["2"]), require_phase=True)
+        sig1, _code1, phase1 = self._find_signal(
+            signals, PRIMARY_PRIORITIES.get(system, ["1"]), require_phase=True
+        )
+        sig2, _code2, phase2 = self._find_signal(
+            signals, SECONDARY_PRIORITIES.get(system, ["2"]), require_phase=True
+        )
         if sig1 is None or sig2 is None:
             return None
 
@@ -1074,11 +1128,19 @@ class PPPPositioner:
             if not compatible:
                 phase_bias_correction = None
                 raw_phase_bias_correction = None
-                self.last_diagnostics["phase_bias_set_mismatch_count"] = int(
-                    self.last_diagnostics.get("phase_bias_set_mismatch_count", 0)
-                ) + 1
-        bias1 = self._matching_phase_bias(phase_bias_correction, sig1) if phase_bias_correction else None
-        bias2 = self._matching_phase_bias(phase_bias_correction, sig2) if phase_bias_correction else None
+                self.last_diagnostics["phase_bias_set_mismatch_count"] = (
+                    int(self.last_diagnostics.get("phase_bias_set_mismatch_count", 0)) + 1
+                )
+        bias1 = (
+            self._matching_phase_bias(phase_bias_correction, sig1)
+            if phase_bias_correction
+            else None
+        )
+        bias2 = (
+            self._matching_phase_bias(phase_bias_correction, sig2)
+            if phase_bias_correction
+            else None
+        )
         integer_pair = (
             self.ar_enabled
             and system in self.ar_systems
@@ -1099,13 +1161,13 @@ class PPPPositioner:
             bias1 = None
             bias2 = None
         if phase_bias_pair:
-            self.last_diagnostics["phase_bias_pair_count"] = int(
-                self.last_diagnostics.get("phase_bias_pair_count", 0)
-            ) + 1
+            self.last_diagnostics["phase_bias_pair_count"] = (
+                int(self.last_diagnostics.get("phase_bias_pair_count", 0)) + 1
+            )
         if integer_pair:
-            self.last_diagnostics["integer_phase_bias_pair_count"] = int(
-                self.last_diagnostics.get("integer_phase_bias_pair_count", 0)
-            ) + 1
+            self.last_diagnostics["integer_phase_bias_pair_count"] = (
+                int(self.last_diagnostics.get("integer_phase_bias_pair_count", 0)) + 1
+            )
         bias1_m = float(getattr(bias1, "bias_m", 0.0) or 0.0)
         bias2_m = float(getattr(bias2, "bias_m", 0.0) or 0.0)
 
@@ -1128,11 +1190,9 @@ class PPPPositioner:
         coeff1 = f1 * f1 / denom
         coeff2 = -f2 * f2 / denom
         phase_if = coeff1 * l1_m + coeff2 * l2_m
-        windup_if_m = windup_cycles * (
-            coeff1 * LIGHT_SPEED / f1 + coeff2 * LIGHT_SPEED / f2
-        )
+        windup_if_m = windup_cycles * (coeff1 * LIGHT_SPEED / f1 + coeff2 * LIGHT_SPEED / f2)
         self._record_model_correction("phase_windup", windup_if_m)
-        phase_var = (coeff1 * coeff1 + coeff2 * coeff2) * self.phase_sigma_m ** 2
+        phase_var = (coeff1 * coeff1 + coeff2 * coeff2) * self.phase_sigma_m**2
         if not math.isfinite(phase_if) or phase_var <= 0.0:
             return None
 
@@ -1160,18 +1220,16 @@ class PPPPositioner:
             "dispersive_consistent": bool(
                 getattr(phase_bias_correction, "dispersive_consistency", False)
             ),
-            "mw_consistent": bool(
-                getattr(phase_bias_correction, "mw_consistency", False)
-            ),
+            "mw_consistent": bool(getattr(phase_bias_correction, "mw_consistency", False)),
             "windup_cycles": float(windup_cycles),
         }
         return phase_if, phase_var, sig1, sig2, ar_data
 
     def _code_if_measurement(
         self,
-        obs: Dict,
-        receiver_position: Optional[np.ndarray] = None,
-    ) -> Optional[Tuple[float, float, str, str]]:
+        obs: dict,
+        receiver_position: np.ndarray | None = None,
+    ) -> tuple[float, float, str, str] | None:
         """Build an SSR-corrected code IF without reapplying broadcast TGD/BGD."""
         if receiver_position is None:
             receiver_position = self.x[:3] if self.x.size >= 3 else np.zeros(3, dtype=float)
@@ -1196,7 +1254,7 @@ class PPPPositioner:
         coeff1 = f1 * f1 / denom
         coeff2 = -f2 * f2 / denom
         code_if = coeff1 * code1 + coeff2 * code2
-        code_var = (coeff1 * coeff1 + coeff2 * coeff2) * self.spp.code_sigma_m ** 2
+        code_var = (coeff1 * coeff1 + coeff2 * coeff2) * self.spp.code_sigma_m**2
         if not math.isfinite(code_if) or code_var <= 0.0:
             return None
         return code_if, code_var, sig1, sig2
@@ -1232,9 +1290,9 @@ class PPPPositioner:
                 compatible = False
             if not compatible:
                 correction = None
-                self.last_diagnostics["phase_bias_set_mismatch_count"] = int(
-                    self.last_diagnostics.get("phase_bias_set_mismatch_count", 0)
-                ) + 1
+                self.last_diagnostics["phase_bias_set_mismatch_count"] = (
+                    int(self.last_diagnostics.get("phase_bias_set_mismatch_count", 0)) + 1
+                )
         raw_correction = correction
         bias1 = self._matching_phase_bias(correction, sig1) if correction else None
         bias2 = self._matching_phase_bias(correction, sig2) if correction else None
@@ -1248,18 +1306,19 @@ class PPPPositioner:
         )
         phase_bias_pair = bias1 is not None and bias2 is not None
         if phase_bias_pair:
-            self.last_diagnostics["phase_bias_pair_count"] = int(
-                self.last_diagnostics.get("phase_bias_pair_count", 0)
-            ) + 1
+            self.last_diagnostics["phase_bias_pair_count"] = (
+                int(self.last_diagnostics.get("phase_bias_pair_count", 0)) + 1
+            )
         if integer_pair:
-            self.last_diagnostics["integer_phase_bias_pair_count"] = int(
-                self.last_diagnostics.get("integer_phase_bias_pair_count", 0)
-            ) + 1
-        if self.precise_model_enabled and not integer_pair:
-            correction = None
-            bias1 = None
-            bias2 = None
-        elif not self.precise_model_enabled and not phase_bias_pair:
+            self.last_diagnostics["integer_phase_bias_pair_count"] = (
+                int(self.last_diagnostics.get("integer_phase_bias_pair_count", 0)) + 1
+            )
+        if (
+            self.precise_model_enabled
+            and not integer_pair
+            or not self.precise_model_enabled
+            and not phase_bias_pair
+        ):
             correction = None
             bias1 = None
             bias2 = None
@@ -1267,10 +1326,10 @@ class PPPPositioner:
 
     def _append_uncombined_ar_observations(
         self,
-        obs: Dict,
-        signals: Tuple[str, str],
-        frequencies: Tuple[float, float],
-        ambiguity_names: Tuple[str, str],
+        obs: dict,
+        signals: tuple[str, str],
+        frequencies: tuple[float, float],
+        ambiguity_names: tuple[str, str],
         correction,
         biases: tuple,
     ) -> None:
@@ -1281,6 +1340,7 @@ class PPPPositioner:
             frequencies,
             ambiguity_names,
             biases,
+            strict=True,
         ):
             track = self._uncombined_ar_tracks.setdefault(
                 ambiguity_name,
@@ -1297,9 +1357,7 @@ class PPPPositioner:
                     "frequency_hz": float(frequency_hz),
                     "wavelength_m": float(LIGHT_SPEED / frequency_hz),
                     "track": track,
-                    "integer_ready": bool(
-                        getattr(bias, "integer_indicator", False)
-                    ),
+                    "integer_ready": bool(getattr(bias, "integer_indicator", False)),
                     "provider_key": (
                         getattr(correction, "provider_id", None),
                         getattr(correction, "solution_id", None),
@@ -1310,17 +1368,15 @@ class PPPPositioner:
 
     def _collect_uncombined_measurements(
         self,
-        observations: List[Dict],
+        observations: list[dict],
         receiver_position: np.ndarray,
-    ) -> Tuple[List[_PppMeasurement], List[str], List[str]]:
-        measurements: List[_PppMeasurement] = []
-        ambiguity_names: List[str] = []
-        ionosphere_names: List[str] = []
+    ) -> tuple[list[_PppMeasurement], list[str], list[str]]:
+        measurements: list[_PppMeasurement] = []
+        ambiguity_names: list[str] = []
+        ionosphere_names: list[str] = []
         self._ar_observations = []
         self._uncombined_ar_observations = []
-        reject_counts: Dict[str, int] = dict(
-            self.last_diagnostics.get("reject_counts", {})
-        )
+        reject_counts: dict[str, int] = dict(self.last_diagnostics.get("reject_counts", {}))
 
         def reject(system: str, reason: str) -> None:
             key = f"{system}:{reason}"
@@ -1343,12 +1399,7 @@ class PPPPositioner:
             )
             sat_pos = _finite_vector3(obs.get("sat_pos"))
             sat_clock = _finite_float(obs.get("sat_clock_correction_s"))
-            if (
-                sig1 is None
-                or sig2 is None
-                or sat_pos is None
-                or sat_clock is None
-            ):
+            if sig1 is None or sig2 is None or sat_pos is None or sat_clock is None:
                 reject(system, "ppp-no-uncombined-pair")
                 continue
             f1, _wavelength1 = get_freq(sig1, sat_key, int(obs["fcn"]))
@@ -1389,19 +1440,10 @@ class PPPPositioner:
                 float(code2) + self.spp._get_code_bias(sat_key, sig2) - antenna2,
             )
             corrected_phases = (
-                float(phase1) * wavelength1
-                + bias1_m
-                - antenna1
-                - windup_cycles * wavelength1,
-                float(phase2) * wavelength2
-                + bias2_m
-                - antenna2
-                - windup_cycles * wavelength2,
+                float(phase1) * wavelength1 + bias1_m - antenna1 - windup_cycles * wavelength1,
+                float(phase2) * wavelength2 + bias2_m - antenna2 - windup_cycles * wavelength2,
             )
-            if not all(
-                math.isfinite(value)
-                for value in (*corrected_codes, *corrected_phases)
-            ):
+            if not all(math.isfinite(value) for value in (*corrected_codes, *corrected_phases)):
                 reject(system, "ppp-invalid-uncombined-observable")
                 continue
 
@@ -1425,7 +1467,7 @@ class PPPPositioner:
 
             gamma = (f1 / f2) ** 2
             sat_variance = max(
-                float(_finite_float(obs.get("sat_var"), 30.0 ** 2) or 30.0 ** 2),
+                float(_finite_float(obs.get("sat_var"), 30.0**2) or 30.0**2),
                 0.0,
             )
             common = dict(
@@ -1440,12 +1482,16 @@ class PPPPositioner:
                 phase_pair=(sig1, sig2),
                 ionosphere_name=ionosphere_name,
             )
-            for value, coefficient in zip(corrected_codes, (1.0, gamma)):
+            for value, coefficient in zip(
+                corrected_codes,
+                (1.0, gamma),
+                strict=True,
+            ):
                 measurements.append(
                     _PppMeasurement(
                         kind="code",
                         value_m=float(value),
-                        variance_m2=max(self.spp.code_sigma_m ** 2, 1e-6),
+                        variance_m2=max(self.spp.code_sigma_m**2, 1e-6),
                         ionosphere_coefficient=float(coefficient),
                         **common,
                     )
@@ -1454,12 +1500,13 @@ class PPPPositioner:
                 corrected_phases,
                 (-1.0, -gamma),
                 (amb1, amb2),
+                strict=True,
             ):
                 measurements.append(
                     _PppMeasurement(
                         kind="phase",
                         value_m=float(value),
-                        variance_m2=max(self.phase_sigma_m ** 2, 1e-8),
+                        variance_m2=max(self.phase_sigma_m**2, 1e-8),
                         ambiguity_name=ambiguity_name,
                         ionosphere_coefficient=float(coefficient),
                         **common,
@@ -1480,9 +1527,9 @@ class PPPPositioner:
 
     def _collect_measurements(
         self,
-        observations: List[Dict],
+        observations: list[dict],
         receiver_position: np.ndarray,
-    ) -> Tuple[List[_PppMeasurement], List[str], List[str], List[str]]:
+    ) -> tuple[list[_PppMeasurement], list[str], list[str], list[str]]:
         if self.observation_model == "UNCOMBINED":
             return self._collect_uncombined_measurements(
                 observations,
@@ -1493,14 +1540,14 @@ class PPPPositioner:
 
     def _collect_if_measurements(
         self,
-        observations: List[Dict],
+        observations: list[dict],
         receiver_position: np.ndarray,
-    ) -> Tuple[List[_PppMeasurement], List[str], List[str], List[str]]:
-        measurements: List[_PppMeasurement] = []
-        phase_names: List[str] = []
-        wide_lane_names: List[str] = []
+    ) -> tuple[list[_PppMeasurement], list[str], list[str], list[str]]:
+        measurements: list[_PppMeasurement] = []
+        phase_names: list[str] = []
+        wide_lane_names: list[str] = []
         self._ar_observations = []
-        reject_counts: Dict[str, int] = dict(self.last_diagnostics.get("reject_counts", {}))
+        reject_counts: dict[str, int] = dict(self.last_diagnostics.get("reject_counts", {}))
 
         def reject(system: str, reason: str) -> None:
             key = f"{system}:{reason}"
@@ -1529,7 +1576,7 @@ class PPPPositioner:
                 continue
 
             code_value, code_variance, _code_sig1, _code_sig2 = code
-            sat_variance = _finite_float(obs.get("sat_var"), 30.0 ** 2) or 30.0 ** 2
+            sat_variance = _finite_float(obs.get("sat_var"), 30.0**2) or 30.0**2
             measurements.append(
                 _PppMeasurement(
                     sat_key=sat_key,
@@ -1551,16 +1598,13 @@ class PPPPositioner:
             amb_name = f"AMB:{sat_key}:{sig1}-{sig2}"
             wide_lane_name = None
             wide_lane_coefficient = 0.0
-            if (
-                ar_data.get("phase_bias_correction") is not None
-                and math.isfinite(float(ar_data.get("mw_cycles", math.nan)))
+            if ar_data.get("phase_bias_correction") is not None and math.isfinite(
+                float(ar_data.get("mw_cycles", math.nan))
             ):
                 wide_lane_name = f"WL:{amb_name}"
                 f1_hz = float(ar_data["f1_hz"])
                 f2_hz = float(ar_data["f2_hz"])
-                wide_lane_coefficient = LIGHT_SPEED * f2_hz / (
-                    (f1_hz - f2_hz) * (f1_hz + f2_hz)
-                )
+                wide_lane_coefficient = LIGHT_SPEED * f2_hz / ((f1_hz - f2_hz) * (f1_hz + f2_hz))
             self._update_phase_bias_continuity(amb_name, ar_data)
             self._reset_ambiguity_on_slip(amb_name, obs["satellite_ref"], sig1, sig2)
             if amb_name not in phase_names:
@@ -1607,7 +1651,9 @@ class PPPPositioner:
             self._uncombined_ar_tracks.pop(amb_name, None)
         self._phase_bias_meta[amb_name] = meta
 
-    def _update_ar_observation(self, amb_name: str, obs: Dict, sig1: str, sig2: str, ar_data: dict) -> None:
+    def _update_ar_observation(
+        self, amb_name: str, obs: dict, sig1: str, sig2: str, ar_data: dict
+    ) -> None:
         correction = ar_data.get("phase_bias_correction")
         bias1 = ar_data.get("bias1")
         bias2 = ar_data.get("bias2")
@@ -1631,9 +1677,7 @@ class PPPPositioner:
                 "integer_ready": bool(getattr(bias1, "integer_indicator", False))
                 and bool(getattr(bias2, "integer_indicator", False)),
                 "mw_consistent": bool(getattr(correction, "mw_consistency", False)),
-                "dispersive_consistent": bool(
-                    getattr(correction, "dispersive_consistency", False)
-                ),
+                "dispersive_consistent": bool(getattr(correction, "dispersive_consistency", False)),
                 "provider_key": (
                     getattr(correction, "provider_id", None),
                     getattr(correction, "solution_id", None),
@@ -1648,8 +1692,12 @@ class PPPPositioner:
         half_values = []
         for sig in (sig1, sig2):
             signal = signals.get(sig)
-            lock_values.append(int(getattr(signal, "lock_time", 0) or 0) if signal is not None else 0)
-            half_values.append(int(getattr(signal, "half_cycle", 0) or 0) if signal is not None else 0)
+            lock_values.append(
+                int(getattr(signal, "lock_time", 0) or 0) if signal is not None else 0
+            )
+            half_values.append(
+                int(getattr(signal, "half_cycle", 0) or 0) if signal is not None else 0
+            )
         meta = (min(lock_values), max(half_values))
         old_meta = self._amb_meta.get(amb_name)
         if old_meta is not None and (meta[0] < old_meta[0] or meta[1] != old_meta[1]):
@@ -1667,10 +1715,10 @@ class PPPPositioner:
         self.x = self.x[keep]
         self.P = self.P[np.ix_(keep, keep)]
 
-    def _system_clock_names(self, observations: List[Dict]) -> Tuple[str, Dict[str, str]]:
+    def _system_clock_names(self, observations: list[dict]) -> tuple[str, dict[str, str]]:
         counts = self.spp._system_counts(observations)
         reference = "G" if counts.get("G", 0) > 0 else next(iter(counts), "G")
-        names: Dict[str, str] = {}
+        names: dict[str, str] = {}
         for system in SYSTEM_OFFSET_ORDER:
             if system == reference:
                 continue
@@ -1680,11 +1728,11 @@ class PPPPositioner:
 
     def _state_names(
         self,
-        system_names: Dict[str, str],
-        phase_names: List[str],
-        ionosphere_names: Optional[List[str]] = None,
-        wide_lane_names: Optional[List[str]] = None,
-    ) -> List[str]:
+        system_names: dict[str, str],
+        phase_names: list[str],
+        ionosphere_names: list[str] | None = None,
+        wide_lane_names: list[str] | None = None,
+    ) -> list[str]:
         names = ["X", "Y", "Z", "CLK:G"]
         for system in SYSTEM_OFFSET_ORDER:
             name = system_names.get(system)
@@ -1699,7 +1747,9 @@ class PPPPositioner:
         names.extend(sorted(phase_names))
         return names
 
-    def _sync_state(self, required_names: List[str], initial_position: np.ndarray, gps_time: float) -> None:
+    def _sync_state(
+        self, required_names: list[str], initial_position: np.ndarray, gps_time: float
+    ) -> None:
         old_names = list(self.state_names)
         old_x = self.x.copy()
         old_p = self.P.copy()
@@ -1719,19 +1769,19 @@ class PPPPositioner:
 
             if name == "X":
                 x_new[i] = initial_position[0]
-                p_new[i, i] = self._pending_initial_position_sigma_m ** 2
+                p_new[i, i] = self._pending_initial_position_sigma_m**2
             elif name == "Y":
                 x_new[i] = initial_position[1]
-                p_new[i, i] = self._pending_initial_position_sigma_m ** 2
+                p_new[i, i] = self._pending_initial_position_sigma_m**2
             elif name == "Z":
                 x_new[i] = initial_position[2]
-                p_new[i, i] = self._pending_initial_position_sigma_m ** 2
+                p_new[i, i] = self._pending_initial_position_sigma_m**2
             elif name.startswith("CLK"):
                 if name == "CLK:G":
                     x_new[i] = self._pending_initial_clock_m
                 else:
                     x_new[i] = self._pending_system_offsets_m.get(name.split(":", 1)[1], 0.0)
-                p_new[i, i] = self.initial_clock_sigma_m ** 2
+                p_new[i, i] = self.initial_clock_sigma_m**2
             elif name == "LOG_ZWD":
                 _zhd, standard_zwd = self._standard_zenith_components(initial_position)
                 x_new[i] = 0.0
@@ -1748,9 +1798,9 @@ class PPPPositioner:
                 p_new[i, i] = max(self.initial_ambiguity_sigma_m, 1.0) ** 2
             elif name.startswith("AMB:"):
                 x_new[i] = 0.0
-                p_new[i, i] = self.initial_ambiguity_sigma_m ** 2
+                p_new[i, i] = self.initial_ambiguity_sigma_m**2
             else:
-                p_new[i, i] = 100.0 ** 2
+                p_new[i, i] = 100.0**2
 
         self.state_names = list(required_names)
         self.x = x_new
@@ -1761,7 +1811,11 @@ class PPPPositioner:
     def _predict(self, gps_time: float) -> None:
         if self.x.size == 0:
             return
-        dt = 1.0 if self.last_time is None else max(0.0, min(abs(float(gps_time) - float(self.last_time)), 30.0))
+        dt = (
+            1.0
+            if self.last_time is None
+            else max(0.0, min(abs(float(gps_time) - float(self.last_time)), 30.0))
+        )
         if "LOG_ZWD" in self.state_names:
             idx = self.state_names.index("LOG_ZWD")
             tau = float(self.zwd_correlation_time_s)
@@ -1773,25 +1827,25 @@ class PPPPositioner:
 
         for idx, name in enumerate(self.state_names):
             if name in {"X", "Y", "Z"}:
-                q = (self.position_process_noise_mps ** 2) * dt
+                q = (self.position_process_noise_mps**2) * dt
             elif name == "CLK:G":
-                q = self.clock_process_noise_m ** 2
+                q = self.clock_process_noise_m**2
             elif name.startswith("CLK:"):
-                q = self.system_clock_process_noise_m ** 2
+                q = self.system_clock_process_noise_m**2
             elif name == "LOG_ZWD":
                 _zhd, standard_zwd = self._standard_zenith_components(self.x[:3])
                 current_zwd = max(standard_zwd * math.exp(max(-20.0, min(20.0, self.x[idx]))), 0.02)
                 q = (self.trop_process_noise_mps / current_zwd) ** 2 * dt
             elif name in {"TROP_GRAD_N", "TROP_GRAD_E"}:
-                q = self.trop_gradient_process_noise_mps ** 2 * dt
+                q = self.trop_gradient_process_noise_mps**2 * dt
             elif name.startswith("ION:"):
-                q = self.ionosphere_process_noise_mps ** 2 * dt
+                q = self.ionosphere_process_noise_mps**2 * dt
             else:
                 q = 0.0
             self.P[idx, idx] += max(q, 0.0)
         self.P = 0.5 * (self.P + self.P.T)
 
-    def _zwd_state_bounds(self) -> Tuple[float, float]:
+    def _zwd_state_bounds(self) -> tuple[float, float]:
         lower_ratio = max(min(self.zwd_min_ratio, 1.0), 1e-3)
         upper_ratio = max(self.zwd_max_ratio, 1.0)
         return math.log(lower_ratio), math.log(upper_ratio)
@@ -1814,12 +1868,91 @@ class PPPPositioner:
             float(self.P[idx, idx]),
             (self.initial_trop_sigma_m / wet_scale) ** 2,
         )
-        self.last_diagnostics["zwd_state_guard_count"] = int(
-            self.last_diagnostics.get("zwd_state_guard_count", 0)
-        ) + 1
+        self.last_diagnostics["zwd_state_guard_count"] = (
+            int(self.last_diagnostics.get("zwd_state_guard_count", 0)) + 1
+        )
 
-    def _geometry_for_measurement(self, measurement: _PppMeasurement):
-        rec_pos = self.x[:3]
+    def _receiver_geometry_context(
+        self,
+        name_to_index: dict[str, int] | None = None,
+    ) -> _ReceiverGeometryContext:
+        indices = name_to_index or {name: index for index, name in enumerate(self.state_names)}
+        position_ecef = self.x[:3]
+        zhd_m, standard_zwd_m, _height_correction = self._standard_troposphere_components(
+            position_ecef
+        )
+        try:
+            latitude_rad, _longitude_rad, height_m = ecef2lla(position_ecef)
+        except (TypeError, ValueError, OverflowError, FloatingPointError):
+            latitude_rad = None
+            height_m = None
+        return _ReceiverGeometryContext(
+            position_ecef=position_ecef,
+            zhd_m=zhd_m,
+            standard_zwd_m=standard_zwd_m,
+            latitude_rad=latitude_rad,
+            height_m=height_m,
+            epoch=self._current_epoch_datetime,
+            log_zwd_index=indices.get("LOG_ZWD"),
+            gradient_n_index=indices.get("TROP_GRAD_N"),
+            gradient_e_index=indices.get("TROP_GRAD_E"),
+        )
+
+    def _measurement_troposphere(
+        self,
+        context: _ReceiverGeometryContext,
+        azimuth_rad: float,
+        elevation_rad: float,
+    ) -> tuple[float, float, float, float, float]:
+        sin_elevation = max(math.sin(elevation_rad), 0.1)
+        if (
+            context.epoch is not None
+            and context.latitude_rad is not None
+            and context.height_m is not None
+        ):
+            try:
+                hydro_mapping, wet_mapping = niell_mapping_factors(
+                    context.epoch,
+                    context.latitude_rad,
+                    context.height_m,
+                    elevation_rad,
+                )
+            except (TypeError, ValueError, OverflowError, FloatingPointError):
+                hydro_mapping = wet_mapping = 1.0 / sin_elevation
+        else:
+            hydro_mapping = wet_mapping = 1.0 / sin_elevation
+
+        if context.log_zwd_index is None:
+            return 0.0, wet_mapping, 0.0, 0.0, 0.0
+
+        log_zwd = float(self.x[context.log_zwd_index])
+        zwd = context.standard_zwd_m * math.exp(max(-20.0, min(20.0, log_zwd)))
+        hydrostatic_delay = hydro_mapping * context.zhd_m
+        wet_delay = zwd * wet_mapping
+        gradient_n_mapping = 0.0
+        gradient_e_mapping = 0.0
+        if context.gradient_n_index is not None and context.gradient_e_index is not None:
+            gradient_mapping = wet_mapping / max(math.tan(elevation_rad), 0.05)
+            gradient_n_mapping = gradient_mapping * math.cos(azimuth_rad)
+            gradient_e_mapping = gradient_mapping * math.sin(azimuth_rad)
+            wet_delay += gradient_n_mapping * float(
+                self.x[context.gradient_n_index]
+            ) + gradient_e_mapping * float(self.x[context.gradient_e_index])
+        return (
+            float(hydrostatic_delay + wet_delay),
+            wet_mapping,
+            float(zwd),
+            float(gradient_n_mapping),
+            float(gradient_e_mapping),
+        )
+
+    def _geometry_for_measurement(
+        self,
+        measurement: _PppMeasurement,
+        context: _ReceiverGeometryContext | None = None,
+    ):
+        receiver_context = context or self._receiver_geometry_context()
+        rec_pos = receiver_context.position_ecef
         rho, los = self.spp._geodist(measurement.sat_pos, rec_pos)
         if rho is None or los is None:
             return None
@@ -1830,44 +1963,13 @@ class PPPPositioner:
             return None
         az_rad = math.radians(float(az_deg))
         el_rad = math.radians(float(el_deg))
-        sin_el = max(math.sin(el_rad), 0.1)
-        zhd, standard_zwd, _height_correction = self._standard_troposphere_components(rec_pos)
-        try:
-            latitude, _longitude, height_m = ecef2lla(rec_pos)
-            if self._current_epoch_datetime is None:
-                raise ValueError("UTC epoch unavailable")
-            hydro_mapping, wet_mapping = niell_mapping_factors(
-                self._current_epoch_datetime,
-                latitude,
-                height_m,
-                el_rad,
-            )
-        except (TypeError, ValueError, OverflowError, FloatingPointError):
-            hydro_mapping = wet_mapping = 1.0 / sin_el
-        gradient_n_mapping = 0.0
-        gradient_e_mapping = 0.0
-        if "LOG_ZWD" in self.state_names:
-            log_zwd = float(self.x[self.state_names.index("LOG_ZWD")])
-            zwd = standard_zwd * math.exp(max(-20.0, min(20.0, log_zwd)))
-            hydrostatic_delay = hydro_mapping * zhd
-            wet_delay = zwd * wet_mapping
-            if all(
-                name in self.state_names
-                for name in ("TROP_GRAD_N", "TROP_GRAD_E")
-            ):
-                gradient_mapping = wet_mapping / max(math.tan(el_rad), 0.05)
-                gradient_n_mapping = gradient_mapping * math.cos(az_rad)
-                gradient_e_mapping = gradient_mapping * math.sin(az_rad)
-                wet_delay += (
-                    gradient_n_mapping
-                    * float(self.x[self.state_names.index("TROP_GRAD_N")])
-                    + gradient_e_mapping
-                    * float(self.x[self.state_names.index("TROP_GRAD_E")])
-                )
-        else:
-            hydrostatic_delay = 0.0
-            wet_delay = 0.0
-            zwd = 0.0
+        (
+            troposphere_delay,
+            wet_mapping,
+            zwd,
+            gradient_n_mapping,
+            gradient_e_mapping,
+        ) = self._measurement_troposphere(receiver_context, az_rad, el_rad)
         antenna_eccentricity = -float(self._antenna_eccentricity_ecef @ los)
         solid_tide = -float(self._solid_tide_ecef @ los)
         ocean_tide = -float(self._ocean_tide_ecef @ los)
@@ -1876,23 +1978,28 @@ class PPPPositioner:
         self._record_model_correction("solid_earth_tide", solid_tide)
         self._record_model_correction("ocean_loading", ocean_tide)
         self._record_model_correction("shapiro", relativity)
-        non_dispersive_correction = (
-            antenna_eccentricity + solid_tide + ocean_tide + relativity
-        )
+        non_dispersive_correction = antenna_eccentricity + solid_tide + ocean_tide + relativity
         return (
-            float(rho), los, el_rad, float(hydrostatic_delay + wet_delay),
-            0.0, wet_mapping, float(zwd), float(gradient_n_mapping),
-            float(gradient_e_mapping), float(non_dispersive_correction),
+            float(rho),
+            los,
+            el_rad,
+            troposphere_delay,
+            0.0,
+            wet_mapping,
+            zwd,
+            gradient_n_mapping,
+            gradient_e_mapping,
+            float(non_dispersive_correction),
         )
 
     @staticmethod
-    def _standard_zenith_components(position: np.ndarray) -> Tuple[float, float]:
+    def _standard_zenith_components(position: np.ndarray) -> tuple[float, float]:
         """Return standard-atmosphere ZHD and ZWD components."""
         zhd, zwd, _height_correction = PPPPositioner._standard_troposphere_components(position)
         return zhd, zwd
 
     @staticmethod
-    def _standard_troposphere_components(position: np.ndarray) -> Tuple[float, float, float]:
+    def _standard_troposphere_components(position: np.ndarray) -> tuple[float, float, float]:
         """Return zenith components and the low-elevation height term."""
         try:
             lat_rad, _lon_rad, height_m = ecef2lla(position)
@@ -1900,13 +2007,13 @@ class PPPPositioner:
             pressure_hpa = 1013.25 * (1.0 - 2.26e-5 * height_m) ** 5.225
             temperature_k = 18.0 - 6.5e-3 * height_m + 273.15
             humidity_pct = 50.0 * math.exp(-6.396e-4 * height_m)
-            vapour_hpa = humidity_pct / 100.0 * math.exp(
-                -37.2465 + 0.213166 * temperature_k - 0.000256908 * temperature_k ** 2
+            vapour_hpa = (
+                humidity_pct
+                / 100.0
+                * math.exp(-37.2465 + 0.213166 * temperature_k - 0.000256908 * temperature_k**2)
             )
             hydrostatic_denominator = (
-                1.0
-                - 0.00266 * math.cos(2.0 * lat_rad)
-                - 0.00028 * height_m / 1000.0
+                1.0 - 0.00266 * math.cos(2.0 * lat_rad) - 0.00028 * height_m / 1000.0
             )
             zhd = 0.0022768 * pressure_hpa / hydrostatic_denominator
             zwd = 0.002277 * (1255.0 / temperature_k + 0.05) * vapour_hpa
@@ -1920,7 +2027,7 @@ class PPPPositioner:
         except (TypeError, ValueError, OverflowError, FloatingPointError):
             return 0.0, 0.0, 0.0
 
-    def _estimated_zenith_troposphere(self) -> Tuple[float, float, float]:
+    def _estimated_zenith_troposphere(self) -> tuple[float, float, float]:
         """Resolve PPP's physical wet-delay state into ZTD, ZHD and ZWD."""
         if self.x.size < 3:
             return 0.0, 0.0, 0.0
@@ -1933,22 +2040,23 @@ class PPPPositioner:
 
     def _build_filter_matrices(
         self,
-        measurements: List[_PppMeasurement],
+        measurements: list[_PppMeasurement],
         reference_system: str,
-        system_state_names: Dict[str, str],
+        system_state_names: dict[str, str],
         *,
         initialise_ambiguities: bool,
         gate_outliers: bool = True,
     ):
         name_to_index = {name: idx for idx, name in enumerate(self.state_names)}
-        h_rows: List[np.ndarray] = []
-        residuals: List[float] = []
-        variances: List[float] = []
-        used_satellites: List[str] = []
-        code_geometry_rows: List[np.ndarray] = []
-        row_measurements: List[_PppMeasurement] = []
+        receiver_geometry = self._receiver_geometry_context(name_to_index)
+        h_rows: list[np.ndarray] = []
+        residuals: list[float] = []
+        variances: list[float] = []
+        used_satellites: list[str] = []
+        code_geometry_rows: list[np.ndarray] = []
+        row_measurements: list[_PppMeasurement] = []
         phase_gate_candidates = []
-        reject_counts: Dict[str, int] = dict(self.last_diagnostics.get("reject_counts", {}))
+        reject_counts: dict[str, int] = dict(self.last_diagnostics.get("reject_counts", {}))
 
         for measurement in measurements:
             if measurement.kind == "mw":
@@ -1970,7 +2078,7 @@ class PPPPositioner:
                 used_satellites.append(measurement.sat_key)
                 row_measurements.append(measurement)
                 continue
-            geom = self._geometry_for_measurement(measurement)
+            geom = self._geometry_for_measurement(measurement, receiver_geometry)
             if geom is None:
                 key = f"{measurement.system}:ppp-geometry"
                 reject_counts[key] = reject_counts.get(key, 0) + 1
@@ -2013,14 +2121,9 @@ class PPPPositioner:
             if "TROP_GRAD_E" in name_to_index:
                 row[name_to_index["TROP_GRAD_E"]] = gradient_e_mapping
 
-            if (
-                measurement.ionosphere_name
-                and measurement.ionosphere_name in name_to_index
-            ):
+            if measurement.ionosphere_name and measurement.ionosphere_name in name_to_index:
                 ionosphere_index = name_to_index[measurement.ionosphere_name]
-                ionosphere_coefficient = float(
-                    measurement.ionosphere_coefficient
-                )
+                ionosphere_coefficient = float(measurement.ionosphere_coefficient)
                 row[ionosphere_index] = ionosphere_coefficient
                 predicted += ionosphere_coefficient * self.x[ionosphere_index]
 
@@ -2033,10 +2136,16 @@ class PPPPositioner:
             new_ambiguity = False
             predicted_without_ambiguity = predicted
             if measurement.kind == "phase":
-                if not measurement.ambiguity_name or measurement.ambiguity_name not in name_to_index:
+                if (
+                    not measurement.ambiguity_name
+                    or measurement.ambiguity_name not in name_to_index
+                ):
                     continue
                 amb_idx = name_to_index[measurement.ambiguity_name]
-                if initialise_ambiguities and self.P[amb_idx, amb_idx] >= self.initial_ambiguity_sigma_m ** 2 * 0.9:
+                if (
+                    initialise_ambiguities
+                    and self.P[amb_idx, amb_idx] >= self.initial_ambiguity_sigma_m**2 * 0.9
+                ):
                     self.x[amb_idx] = measurement.value_m - predicted
                     new_ambiguity = True
                 row[amb_idx] = 1.0
@@ -2046,11 +2155,14 @@ class PPPPositioner:
             if not math.isfinite(residual):
                 continue
 
-            if gate_outliers:
-                if measurement.kind == "code" and abs(residual) > self.max_code_prefit_residual_m:
-                    key = f"{measurement.system}:ppp-code-prefit"
-                    reject_counts[key] = reject_counts.get(key, 0) + 1
-                    continue
+            if (
+                gate_outliers
+                and measurement.kind == "code"
+                and abs(residual) > self.max_code_prefit_residual_m
+            ):
+                key = f"{measurement.system}:ppp-code-prefit"
+                reject_counts[key] = reject_counts.get(key, 0) + 1
+                continue
             variance = measurement.sat_variance_m2 + trop_var
             if measurement.kind == "code":
                 variance += self.spp.var_err(
@@ -2071,7 +2183,7 @@ class PPPPositioner:
                     measurement.system,
                     2.0 if measurement.system == "C" else 1.0,
                 )
-                variance += measurement.variance_m2 * elevation_factor ** 2 * system_factor ** 2
+                variance += measurement.variance_m2 * elevation_factor**2 * system_factor**2
 
             h_rows.append(row)
             residuals.append(float(residual))
@@ -2098,7 +2210,7 @@ class PPPPositioner:
                 [candidate[4] for candidate in phase_gate_candidates], dtype=float
             )
             global_common = float(np.median(all_phase_residuals))
-            grouped_candidates: Dict[str, List[tuple]] = {}
+            grouped_candidates: dict[str, list[tuple]] = {}
             for candidate in phase_gate_candidates:
                 grouped_candidates.setdefault(candidate[1].system, []).append(candidate)
 
@@ -2118,10 +2230,16 @@ class PPPPositioner:
                 gate = max(self.max_phase_prefit_residual_m, 6.0 * robust_sigma)
                 common_by_system[system] = common_residual
                 gate_by_system[system] = float(gate)
-                for candidate, deviation in zip(candidates, absolute_deviations):
+                for candidate, deviation in zip(
+                    candidates,
+                    absolute_deviations,
+                    strict=True,
+                ):
                     if float(deviation) <= gate:
                         continue
-                    row_index, measurement, amb_idx, predicted_without_ambiguity, _residual = candidate
+                    row_index, measurement, amb_idx, predicted_without_ambiguity, _residual = (
+                        candidate
+                    )
                     # Retain the constellation clock innovation while
                     # reinitialising only the affected ambiguity in place.
                     self.x[amb_idx] = (
@@ -2129,7 +2247,7 @@ class PPPPositioner:
                     )
                     self.P[amb_idx, :] = 0.0
                     self.P[:, amb_idx] = 0.0
-                    self.P[amb_idx, amb_idx] = self.initial_ambiguity_sigma_m ** 2
+                    self.P[amb_idx, amb_idx] = self.initial_ambiguity_sigma_m**2
                     residuals[row_index] = common_residual
                     key = f"{measurement.system}:ppp-phase-slip"
                     reject_counts[key] = reject_counts.get(key, 0) + 1
@@ -2140,7 +2258,13 @@ class PPPPositioner:
 
         self.last_diagnostics["reject_counts"] = reject_counts
         self._last_filter_measurements = row_measurements
-        return h_rows, residuals, variances, used_satellites, np.asarray(code_geometry_rows, dtype=float).reshape((-1, 4))
+        return (
+            h_rows,
+            residuals,
+            variances,
+            used_satellites,
+            np.asarray(code_geometry_rows, dtype=float).reshape((-1, 4)),
+        )
 
     def _postfit_residual_limit(self, measurement: _PppMeasurement) -> float:
         """Return the linear-combination residual limit in meters."""
@@ -2170,8 +2294,8 @@ class PPPPositioner:
         prior_state: np.ndarray,
         prior_covariance: np.ndarray,
         reference_system: str,
-        system_state_names: Dict[str, str],
-    ) -> Tuple[np.ndarray, np.ndarray]:
+        system_state_names: dict[str, str],
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Reset one ambiguity in the saved epoch prior."""
         ambiguity_name = measurement.ambiguity_name
         if not ambiguity_name or ambiguity_name not in self.state_names:
@@ -2182,7 +2306,7 @@ class PPPPositioner:
         self.x[index] = 0.0
         self.P[index, :] = 0.0
         self.P[:, index] = 0.0
-        self.P[index, index] = self.initial_ambiguity_sigma_m ** 2
+        self.P[index, index] = self.initial_ambiguity_sigma_m**2
         self._build_filter_matrices(
             [measurement],
             reference_system,
@@ -2194,9 +2318,9 @@ class PPPPositioner:
 
     def _robust_filter_update(
         self,
-        measurements: List[_PppMeasurement],
+        measurements: list[_PppMeasurement],
         reference_system: str,
-        system_state_names: Dict[str, str],
+        system_state_names: dict[str, str],
     ):
         """Repeat the epoch update from one prior until residual tests pass."""
         initial_matrices = self._build_filter_matrices(
@@ -2231,9 +2355,9 @@ class PPPPositioner:
             return initial_measurements, *post_matrices
 
         active_measurements = list(initial_measurements)
-        rejected_satellites: List[str] = []
-        reset_ambiguities: List[str] = []
-        outlier_log: List[dict] = []
+        rejected_satellites: list[str] = []
+        reset_ambiguities: list[str] = []
+        outlier_log: list[dict] = []
         final_matrices = initial_matrices
         max_iterations = max(len(active_measurements), 1) + 1
         for iteration in range(max_iterations):
@@ -2265,7 +2389,11 @@ class PPPPositioner:
             _post_h, post_v, _post_var, _post_sats, _post_geometry = final_matrices
             post_measurements = list(self._last_filter_measurements)
             candidates = []
-            for measurement, residual in zip(post_measurements, post_v):
+            for measurement, residual in zip(
+                post_measurements,
+                post_v,
+                strict=True,
+            ):
                 limit = self._postfit_residual_limit(measurement)
                 if limit > 0.0 and abs(float(residual)) > limit:
                     candidates.append((abs(float(residual)), measurement, float(residual), limit))
@@ -2300,7 +2428,8 @@ class PPPPositioner:
                 key = f"{outlier.system}:ppp-phase-postfit"
             else:
                 active_measurements = [
-                    measurement for measurement in active_measurements
+                    measurement
+                    for measurement in active_measurements
                     if measurement.sat_key != outlier.sat_key
                 ]
                 if outlier.sat_key not in rejected_satellites:
@@ -2337,9 +2466,9 @@ class PPPPositioner:
                 scale = max_step / abs(float(dx[zwd_idx]))
                 gain[zwd_idx, :] *= scale
                 dx[zwd_idx] *= scale
-                self.last_diagnostics["zwd_step_limit_count"] = int(
-                    self.last_diagnostics.get("zwd_step_limit_count", 0)
-                ) + 1
+                self.last_diagnostics["zwd_step_limit_count"] = (
+                    int(self.last_diagnostics.get("zwd_step_limit_count", 0)) + 1
+                )
         self.x = self.x + dx
         identity = np.eye(self.P.shape[0])
         kh = gain @ h_mat
@@ -2362,7 +2491,7 @@ class PPPPositioner:
         covariance: np.ndarray,
         *,
         max_nodes: int = 250_000,
-    ) -> Optional[Tuple[np.ndarray, float, np.ndarray, float, int]]:
+    ) -> tuple[np.ndarray, float, np.ndarray, float, int] | None:
         """Return the two nearest integer vectors using a small LAMBDA search.
 
         This decorrelated LAMBDA/BIE search avoids rounding each ambiguity
@@ -2415,7 +2544,7 @@ class PPPPositioner:
         seed_metrics.sort()
         radius2 = max(seed_metrics[1], seed_metrics[0] + 1e-12)
         radius2 = radius2 * (1.0 + 1e-10) + 1e-12
-        vectors: List[Tuple[float, np.ndarray]] = []
+        vectors: list[tuple[float, np.ndarray]] = []
         candidate = np.zeros(a.size, dtype=np.int64)
         nodes = 0
 
@@ -2471,7 +2600,7 @@ class PPPPositioner:
     @staticmethod
     def _lambda_decorrelate(
         covariance: np.ndarray,
-    ) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    ) -> tuple[np.ndarray, np.ndarray] | None:
         """Return integer decorrelation and back-transformation matrices."""
         q_mat = np.asarray(covariance, dtype=float)
         if q_mat.ndim != 2 or q_mat.shape[0] != q_mat.shape[1] or q_mat.size == 0:
@@ -2488,9 +2617,7 @@ class PPPPositioner:
             lower[row, : row + 1] = working[row, : row + 1] / root
             for previous_row in range(row):
                 for column in range(previous_row + 1):
-                    working[previous_row, column] -= (
-                        lower[row, column] * lower[row, previous_row]
-                    )
+                    working[previous_row, column] -= lower[row, column] * lower[row, previous_row]
                     working[column, previous_row] = working[previous_row, column]
             lower[row, : row + 1] /= lower[row, row]
 
@@ -2524,10 +2651,13 @@ class PPPPositioner:
                     diagonal[column + 1] = delta
                     if column > 0:
                         block = lower[column : column + 2, :column].copy()
-                        lower[column : column + 2, :column] = np.array(
-                            [[-coefficient, 1.0], [eta, lambda_value]],
-                            dtype=float,
-                        ) @ block
+                        lower[column : column + 2, :column] = (
+                            np.array(
+                                [[-coefficient, 1.0], [eta, lambda_value]],
+                                dtype=float,
+                            )
+                            @ block
+                        )
                     lower[column + 1, column] = lambda_value
                     if column + 2 < size:
                         lower[column + 2 :, [column, column + 1]] = lower[
@@ -2556,7 +2686,7 @@ class PPPPositioner:
         *,
         candidate_count: int = 100,
         max_nodes: int = 750_000,
-    ) -> Optional[Tuple[np.ndarray, np.ndarray, float, float, float, int]]:
+    ) -> tuple[np.ndarray, np.ndarray, float, float, float, int] | None:
         """Return a 100-candidate best integer equivariant estimate."""
         values = np.asarray(float_vector, dtype=float).reshape(-1)
         q_mat = np.asarray(covariance, dtype=float)
@@ -2595,7 +2725,7 @@ class PPPPositioner:
             return None
 
         nearest = np.rint(search_values).astype(np.int64)
-        candidates: Dict[Tuple[int, ...], float] = {}
+        candidates: dict[tuple[int, ...], float] = {}
 
         def add_candidate(integer_vector: np.ndarray) -> None:
             key = tuple(int(item) for item in integer_vector)
@@ -2729,7 +2859,7 @@ class PPPPositioner:
             )
             return False
 
-        groups: Dict[tuple, List[dict]] = {}
+        groups: dict[tuple, list[dict]] = {}
         for item in eligible:
             try:
                 _azimuth, elevation = calculate_az_el(item["sat_pos"], self.x[:3])
@@ -2765,10 +2895,13 @@ class PPPPositioner:
 
             wavelength = float(candidates[0]["wavelength_m"])
 
-            def reference_score(item: dict) -> Tuple[float, float]:
+            def reference_score(
+                item: dict,
+                group_candidates: list[dict] = candidates,
+            ) -> tuple[float, float]:
                 index = self.state_names.index(item["amb_name"])
                 variance_sum = 0.0
-                for other in candidates:
+                for other in group_candidates:
                     other_index = self.state_names.index(other["amb_name"])
                     variance_sum += float(
                         self.P[index, index]
@@ -2790,9 +2923,9 @@ class PPPPositioner:
                 meter_rows.append(row)
                 float_cycles.append(float(row @ self.x) / wavelength)
             transform_m = np.asarray(meter_rows, dtype=float)
-            covariance_cycles = (
-                transform_m @ self.P @ transform_m.T
-            ) / max(wavelength * wavelength, 1e-12)
+            covariance_cycles = (transform_m @ self.P @ transform_m.T) / max(
+                wavelength * wavelength, 1e-12
+            )
             bie_search = self._integer_bie(
                 np.asarray(float_cycles, dtype=float),
                 covariance_cycles,
@@ -2804,19 +2937,15 @@ class PPPPositioner:
                 continue
             bie, bie_covariance, _best, _second, best_weight, search_nodes = bie_search
             bie_sigmas = np.sqrt(np.maximum(np.diag(bie_covariance), 0.0))
-            fixable = (
-                np.abs(bie - np.rint(bie)) <= self.ar_max_nl_fraction
-            ) & (bie_sigmas <= self.ar_max_nl_sigma_cycles)
+            fixable = (np.abs(bie - np.rint(bie)) <= self.ar_max_nl_fraction) & (
+                bie_sigmas <= self.ar_max_nl_sigma_cycles
+            )
             fixed_in_group = int(np.count_nonzero(fixable))
             required = (
-                len(candidates) - 1
-                if self.ar_require_full_group
-                else self.ar_min_satellites - 1
+                len(candidates) - 1 if self.ar_require_full_group else self.ar_min_satellites - 1
             )
             group_diag["bie_sigma_max"] = float(np.max(bie_sigmas))
-            group_diag["bie_fraction_max"] = float(
-                np.max(np.abs(bie - np.rint(bie)))
-            )
+            group_diag["bie_fraction_max"] = float(np.max(np.abs(bie - np.rint(bie))))
             group_diag["bie_fixable_count"] = fixed_in_group
             if fixed_in_group < required:
                 group_diag["status"] = "bie-validation-failed"
@@ -2854,7 +2983,7 @@ class PPPPositioner:
                 row.reshape(1, -1),
                 np.asarray([residual], dtype=float),
                 np.asarray(
-                    [max(self.ar_constraint_sigma_m ** 2, 1e-10)],
+                    [max(self.ar_constraint_sigma_m**2, 1e-10)],
                     dtype=float,
                 ),
             )
@@ -2875,20 +3004,26 @@ class PPPPositioner:
             return False
         if self.observation_model == "UNCOMBINED":
             return self._attempt_uncombined_ambiguity_resolution()
-        eligible = [item for item in self._ar_observations if (
-            item["system"] in self.ar_systems
-            and item["integer_ready"]
-            and (not self.ar_require_mw_consistency or item["mw_consistent"])
-            and item["track"].count >= self.ar_min_epochs
-            and item["amb_name"] in self.state_names
-        )]
+        eligible = [
+            item
+            for item in self._ar_observations
+            if (
+                item["system"] in self.ar_systems
+                and item["integer_ready"]
+                and (not self.ar_require_mw_consistency or item["mw_consistent"])
+                and item["track"].count >= self.ar_min_epochs
+                and item["amb_name"] in self.state_names
+            )
+        ]
         self.last_diagnostics["ar_candidate_count"] = len(eligible)
         if not eligible:
             self.last_diagnostics["ar_status"] = "waiting"
-            self.last_diagnostics["ar_rejection_reason"] = "no fresh integer-compatible phase biases"
+            self.last_diagnostics["ar_rejection_reason"] = (
+                "no fresh integer-compatible phase biases"
+            )
             return False
 
-        groups: Dict[tuple, List[dict]] = {}
+        groups: dict[tuple, list[dict]] = {}
         for item in eligible:
             pair = tuple(item["signals"])
             key = (
@@ -2930,10 +3065,13 @@ class PPPPositioner:
             # minimises the summed variance of all between-satellite
             # differences in the group.  Elevation and MW stability only
             # break numerical ties.
-            def reference_score(item: dict) -> Tuple[float, float, float]:
+            def reference_score(
+                item: dict,
+                group_candidates: list[dict] = candidates,
+            ) -> tuple[float, float, float]:
                 index = self.state_names.index(item["amb_name"])
                 variance_sum = 0.0
-                for other in candidates:
+                for other in group_candidates:
                     other_index = self.state_names.index(other["amb_name"])
                     variance_sum += float(
                         self.P[index, index]
@@ -2976,7 +3114,9 @@ class PPPPositioner:
                     )
                 else:
                     wl_float = item["track"].mean_cycles - reference["track"].mean_cycles
-                    wl_sigma = math.hypot(item["track"].sigma_mean_cycles, reference["track"].sigma_mean_cycles)
+                    wl_sigma = math.hypot(
+                        item["track"].sigma_mean_cycles, reference["track"].sigma_mean_cycles
+                    )
                 wl_int = int(round(wl_float))
                 group_diag["wl_fraction_max"] = max(
                     float(group_diag["wl_fraction_max"]),
@@ -2987,7 +3127,10 @@ class PPPPositioner:
                         float(group_diag["wl_sigma_max"]),
                         float(wl_sigma),
                     )
-                if abs(wl_float - wl_int) > self.ar_max_wl_fraction or wl_sigma > self.ar_max_wl_sigma_cycles:
+                if (
+                    abs(wl_float - wl_int) > self.ar_max_wl_fraction
+                    or wl_sigma > self.ar_max_wl_sigma_cycles
+                ):
                     continue
                 idx = self.state_names.index(item["amb_name"])
                 ref_idx = self.state_names.index(reference["amb_name"])
@@ -3014,9 +3157,7 @@ class PPPPositioner:
                 difference_row[ref_idx] = -1.0
                 rows.append((item, wl_int, difference_row))
                 difference_rows.append(difference_row)
-                group_diag["wl_accepted_count"] = int(
-                    group_diag["wl_accepted_count"]
-                ) + 1
+                group_diag["wl_accepted_count"] = int(group_diag["wl_accepted_count"]) + 1
             if len(rows) < self.ar_min_satellites - 1:
                 group_diag["status"] = "wide-lane-validation-failed"
                 group_diagnostics.append(group_diag)
@@ -3034,33 +3175,26 @@ class PPPPositioner:
                 float(self.x[reference_index]) - k_wl * reference_wl_int
             ) / lambda_n
             reference_nl_int = int(round(reference_nl_float))
-            reference_target_m = (
-                lambda_n * reference_nl_int + k_wl * reference_wl_int
-            )
-            reference_residual_m = reference_target_m - float(
-                self.x[reference_index]
-            )
+            reference_target_m = lambda_n * reference_nl_int + k_wl * reference_wl_int
+            reference_residual_m = reference_target_m - float(self.x[reference_index])
             reference_covariance_m2 = max(
                 float(self.P[reference_index, reference_index])
-                + max(self.ar_constraint_sigma_m ** 2, 1e-10),
+                + max(self.ar_constraint_sigma_m**2, 1e-10),
                 1e-10,
             )
             cross_covariance_m2 = transform @ self.P[:, reference_index]
             difference_m = transform @ self.x
             conditioned_difference_m = difference_m + (
-                cross_covariance_m2 * reference_residual_m
-                / reference_covariance_m2
+                cross_covariance_m2 * reference_residual_m / reference_covariance_m2
             )
             covariance_m2 = (
                 transform @ self.P @ transform.T
-                - np.outer(cross_covariance_m2, cross_covariance_m2)
-                / reference_covariance_m2
+                - np.outer(cross_covariance_m2, cross_covariance_m2) / reference_covariance_m2
             )
             covariance_m2 = 0.5 * (covariance_m2 + covariance_m2.T)
             float_vec = np.asarray(
                 [
-                    (conditioned_difference_m[index] - k_wl * wl_int)
-                    / lambda_n
+                    (conditioned_difference_m[index] - k_wl * wl_int) / lambda_n
                     for index, (_item, wl_int, _row) in enumerate(rows)
                 ],
                 dtype=float,
@@ -3073,13 +3207,15 @@ class PPPPositioner:
                     group_diag["status"] = "bie-search-failed"
                     group_diagnostics.append(group_diag)
                     continue
-                best_nl, bie_covariance, best_score, second_score, best_weight, search_nodes = bie_search
+                best_nl, bie_covariance, best_score, second_score, best_weight, search_nodes = (
+                    bie_search
+                )
                 bie_sigmas = np.sqrt(np.maximum(np.diag(bie_covariance), 0.0))
                 fixable = np.ones(best_nl.size, dtype=bool)
                 if self.ar_max_nl_fraction > 0.0 and self.ar_max_nl_sigma_cycles > 0.0:
-                    fixable = (
-                        np.abs(best_nl - np.rint(best_nl)) <= self.ar_max_nl_fraction
-                    ) & (bie_sigmas <= self.ar_max_nl_sigma_cycles)
+                    fixable = (np.abs(best_nl - np.rint(best_nl)) <= self.ar_max_nl_fraction) & (
+                        bie_sigmas <= self.ar_max_nl_sigma_cycles
+                    )
                 fixed_in_group = int(np.count_nonzero(fixable))
                 required_fix_count = (
                     len(candidates) - 1
@@ -3113,9 +3249,7 @@ class PPPPositioner:
             else:
                 try:
                     precision = np.linalg.pinv(covariance)
-                    conditional_sigma = 1.0 / np.sqrt(
-                        np.maximum(np.diag(precision), 1e-12)
-                    )
+                    conditional_sigma = 1.0 / np.sqrt(np.maximum(np.diag(precision), 1e-12))
                 except (ValueError, np.linalg.LinAlgError, FloatingPointError):
                     continue
                 max_conditional_sigma = float(np.max(conditional_sigma))
@@ -3153,9 +3287,9 @@ class PPPPositioner:
         self.last_diagnostics["ar_groups"] = group_diagnostics
         self.last_diagnostics["ar_fixed_count"] = fixed_count
         self.last_diagnostics["ar_ratio"] = (
-            min(bie_fix_ratios) if self.precise_model_enabled and bie_fix_ratios
-            else min(ratios) if ratios
-            else 0.0
+            min(bie_fix_ratios)
+            if self.precise_model_enabled and bie_fix_ratios
+            else min(ratios) if ratios else 0.0
         )
         if not constraints:
             self.last_diagnostics["ar_status"] = "waiting"
@@ -3167,21 +3301,51 @@ class PPPPositioner:
             self._kalman_update(
                 row.reshape(1, -1),
                 np.asarray([residual], dtype=float),
-                np.asarray([max(self.ar_constraint_sigma_m ** 2, 1e-10)], dtype=float),
+                np.asarray([max(self.ar_constraint_sigma_m**2, 1e-10)], dtype=float),
             )
         self.last_diagnostics["ar_status"] = "fixed"
         self.last_diagnostics["ar_rejection_reason"] = ""
         return True
 
+    def _is_position_stable(self, epoch_time: float, std_pos: float) -> bool:
+        history = self._position_history
+        if history:
+            dt = (epoch_time - history[-1][0] + 302400.0) % 604800.0 - 302400.0
+            if not 0.0 <= dt <= PPP_STABILITY_MAX_GAP_S:
+                history.clear()
+            else:
+                epoch_time = history[-1][0] + dt
+                if dt == 0.0:
+                    history.pop()
+        history.append((epoch_time, self.x[:3].copy()))
+        cutoff = epoch_time - PPP_STABILITY_WINDOW_S
+        while len(history) > 1 and history[1][0] <= cutoff:
+            history.popleft()
+
+        elapsed = epoch_time - history[0][0]
+        offsets = np.asarray([position for _, position in history]) - self.x[:3]
+        excursion_m = float(np.max(np.linalg.norm(offsets, axis=1)))
+        self.last_diagnostics.update(
+            position_stability_span_s=elapsed,
+            position_stability_excursion_m=excursion_m,
+            position_sigma_3d_m=std_pos,
+        )
+        return (
+            len(history) >= 3
+            and elapsed >= PPP_STABILITY_WINDOW_S
+            and excursion_m <= PPP_STABILITY_MAX_SHIFT_M
+            and std_pos <= PPP_STABILITY_MAX_SIGMA_M
+        )
+
     def _make_result(
         self,
         epoch_obs,
         reference_system: str,
-        system_state_names: Dict[str, str],
-        h_rows: List[np.ndarray],
-        residuals: List[float],
-        variances: List[float],
-        used_satellites: List[str],
+        system_state_names: dict[str, str],
+        h_rows: list[np.ndarray],
+        residuals: list[float],
+        variances: list[float],
+        used_satellites: list[str],
         code_geometry: np.ndarray,
         ar_fixed: bool = False,
     ) -> PositioningResult:
@@ -3205,7 +3369,8 @@ class PPPPositioner:
         std_up = math.sqrt(max(float(cov_enu[2, 2]), 0.0))
         clk_idx = self.state_names.index("CLK:G")
         std_clock = math.sqrt(max(float(self.P[clk_idx, clk_idx]), 0.0))
-        std_pos = math.sqrt(std_east ** 2 + std_north ** 2 + std_up ** 2)
+        std_pos = math.sqrt(std_east**2 + std_north**2 + std_up**2)
+        position_stable = self._is_position_stable(float(epoch_obs.gps_time), std_pos)
 
         gdop, pdop, hdop, vdop, tdop = self.spp._compute_dop(self.x[:3], code_geometry)
         ztd, zhd, zwd = self._estimated_zenith_troposphere()
@@ -3219,10 +3384,7 @@ class PPPPositioner:
             "Niell hydrostatic/wet" if self.precise_model_enabled else "sine"
         )
         self.last_diagnostics["troposphere_gradients_enabled"] = bool(
-            all(
-                name in self.state_names
-                for name in ("TROP_GRAD_N", "TROP_GRAD_E")
-            )
+            all(name in self.state_names for name in ("TROP_GRAD_N", "TROP_GRAD_E"))
         )
         if self.last_diagnostics["troposphere_gradients_enabled"]:
             self.last_diagnostics["troposphere_gradient_n_m"] = float(
@@ -3231,7 +3393,9 @@ class PPPPositioner:
             self.last_diagnostics["troposphere_gradient_e_m"] = float(
                 self.x[self.state_names.index("TROP_GRAD_E")]
             )
-        weighted = np.asarray(residuals, dtype=float) / np.sqrt(np.maximum(np.asarray(variances, dtype=float), 1e-8))
+        weighted = np.asarray(residuals, dtype=float) / np.sqrt(
+            np.maximum(np.asarray(variances, dtype=float), 1e-8)
+        )
         dof = max(1, len(residuals) - min(len(residuals), len(self.state_names)))
         variance_uow = float(weighted.dot(weighted) / dof) if weighted.size else 0.0
 
@@ -3239,8 +3403,8 @@ class PPPPositioner:
         quality = ["PPP AR fixed" if ar_fixed else "PPP float"]
         if self._position_apriori_source:
             quality.append(f"apriori={self._position_apriori_source}")
-        if not ar_fixed and math.isfinite(std_pos) and std_pos <= self.spp.fixed_std_pos:
-            quality.append("float covariance stable")
+        if position_stable:
+            quality.append("coordinates stable")
 
         time_offsets = {}
         for system, name in system_state_names.items():
@@ -3278,7 +3442,7 @@ class PPPPositioner:
             latitude=math.degrees(lat_rad),
             longitude=math.degrees(lon_rad),
             height=float(height_m),
-            convergence=True,
+            convergence=position_stable,
             solution_status=status,
             time_offsets=time_offsets,
             used_satellites=unique_used,
@@ -3288,5 +3452,5 @@ class PPPPositioner:
             quality_reason="; ".join(quality),
         )
 
-    def _ambiguity_names_in_state(self) -> List[str]:
+    def _ambiguity_names_in_state(self) -> list[str]:
         return [name for name in self.state_names if name.startswith("AMB:")]

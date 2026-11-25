@@ -6,7 +6,12 @@ from statistics import mean
 
 import numpy as np
 
-from core.reflectometry.config import IrConfig, ProcessingConfig, QcConfig, minimum_required_arc_samples
+from core.reflectometry.config import (
+    IrConfig,
+    ProcessingConfig,
+    QcConfig,
+    minimum_required_arc_samples,
+)
 from core.reflectometry.models import PeakCandidate, QualityMetrics, SatelliteArc, SnrSeries
 
 FATAL_QC_FLAGS = {
@@ -48,7 +53,10 @@ class QualityController:
             flags.append("high_gap_ratio")
         if arc.statistics.snr_amplitude_db_hz < self.qc_config.min_snr_amplitude:
             flags.append("low_snr_amplitude")
-        if candidate is None or candidate.peak_to_noise_ratio < self.qc_config.min_peak_to_noise_ratio:
+        if (
+            candidate is None
+            or candidate.peak_to_noise_ratio < self.qc_config.min_peak_to_noise_ratio
+        ):
             flags.append("low_peak_to_noise")
         if self._primary_peak_ratio(candidates) < self.qc_config.min_primary_peak_ratio:
             flags.append("ambiguous_spectrum")
@@ -78,23 +86,39 @@ class QualityController:
         flags: list[str],
     ) -> float:
         scores = [
-            min(1.0, arc.statistics.sample_count / max(minimum_required_arc_samples(self.processing_config) * 2.0, 1.0)),
-            min(1.0, arc.statistics.duration_seconds / max(self.qc_config.min_arc_duration * 2.0, 1.0)),
+            min(
+                1.0,
+                arc.statistics.sample_count
+                / max(minimum_required_arc_samples(self.processing_config) * 2.0, 1.0),
+            ),
+            min(
+                1.0,
+                arc.statistics.duration_seconds / max(self.qc_config.min_arc_duration * 2.0, 1.0),
+            ),
             max(0.0, 1.0 - arc.statistics.time_gap_ratio / max(self.qc_config.max_gap_ratio, 1e-6)),
-            min(1.0, arc.statistics.snr_amplitude_db_hz / max(self.qc_config.min_snr_amplitude * 2.0, 1e-6)),
+            min(
+                1.0,
+                arc.statistics.snr_amplitude_db_hz
+                / max(self.qc_config.min_snr_amplitude * 2.0, 1e-6),
+            ),
         ]
         if candidate is not None:
             scores.append(
                 min(
                     1.0,
-                    candidate.peak_to_noise_ratio / max(self.qc_config.min_peak_to_noise_ratio * 2.0, 1e-6),
+                    candidate.peak_to_noise_ratio
+                    / max(self.qc_config.min_peak_to_noise_ratio * 2.0, 1e-6),
                 )
             )
         penalty = max(0.0, 1.0 - 0.15 * sum(flag in FATAL_QC_FLAGS for flag in flags))
         return round(float(mean(scores)) * penalty, 4)
 
     def _has_multipath_outliers(self, arc: SatelliteArc) -> bool:
-        multipath = [obs.multipath_indicator for obs in arc.observations if obs.multipath_indicator is not None]
+        multipath = [
+            obs.multipath_indicator
+            for obs in arc.observations
+            if obs.multipath_indicator is not None
+        ]
         if len(multipath) < 5:
             return False
         values = np.asarray(multipath, dtype=float)
@@ -111,9 +135,10 @@ class QualityController:
             return False
         for other in candidates[1:]:
             ratio = other.reflector_height_m / max(candidate.reflector_height_m, 1e-6)
-            if abs(ratio - 2.0) < 0.15 or abs(ratio - 0.5) < 0.1:
-                if other.power >= 0.6 * candidate.power:
-                    return True
+            if (
+                abs(ratio - 2.0) < 0.15 or abs(ratio - 0.5) < 0.1
+            ) and other.power >= 0.6 * candidate.power:
+                return True
         return False
 
     @staticmethod
@@ -123,5 +148,3 @@ class QualityController:
         primary = max(candidates[0].power, 1e-12)
         secondary = max(candidates[1].power, 1e-12)
         return primary / secondary
-
-

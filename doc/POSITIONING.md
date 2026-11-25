@@ -43,7 +43,7 @@ Main controls and views:
 - **Coordinates** switches position-oriented views between latitude/longitude/height
   and ECEF XYZ.
 - **Start** begins both stream processing and positioning for the selected mode.
-- **OBS**, **EPH**, and **SSR/BASE** report input availability; **POS** reports the
+- **OBS**, **EPH**, and **SSR/BASE** report input availability. **POS** reports the
   current solution state.
 - **DOP** and **Atmosphere** show precision geometry and PPP troposphere estimates.
 - **Current solution**, **Position offsets**, **Solution history**, and **System log**
@@ -184,8 +184,9 @@ Interpret the status indicators as follows:
 | `EPH: ON` | A separate ephemeris source is active. It may remain off when navigation data arrives through OBS. |
 | `SSR: ON` | SSR corrections are active for SPP/PPP. |
 | `BASE: ON` | The base or network correction stream is active in RTK mode. |
-| `POS: FIXED` | PPP ambiguity resolution or native RTK reports a fixed solution; SPP uses its configured covariance quality threshold. |
-| `POS: UNFIXED` | A usable float, differential, or quality-limited solution is available. |
+| `POS: FIXED` | PPP coordinates have met the stability criteria. RTK uses the native fixed solution code. SPP uses its configured covariance quality threshold. |
+| `POS: CONVERGING` | PPP is producing coordinates and evaluating stability. |
+| `POS: UNFIXED` | SPP or RTK is producing a usable solution below its fixed quality threshold. |
 | `POS: NO FIX` | The solver cannot currently produce a usable position. |
 
 Do not judge solution quality from the status badge alone. Check satellite usage,
@@ -194,12 +195,21 @@ DOP, residuals, correction age, ambiguity ratio, convergence, and the system log
 ## 7. Inspect Results
 
 - **Position track** shows horizontal movement in latitude/longitude mode or coordinate
-  changes in ECEF mode. The follow control keeps the newest solution in view.
+  changes in ECEF mode. Satellite imagery is the default basemap. Select **Street map**
+  for OpenStreetMap. The follow control keeps the track in view.
 - **DOP** plots HDOP, VDOP, PDOP, and GDOP over time.
 - **Atmosphere** plots PPP ZTD, ZHD, and ZWD estimates. SPP and RTK do not normally
   populate these filter states.
 - **Current solution** lists coordinates, epoch, status, used systems and satellites,
   quality reason, DOP, processing time, and mode-specific diagnostics.
+  PPP evaluates at least 60 seconds and three epochs, with no gap above 45 seconds.
+  The current position must be within 0.10 m of every position in the window,
+  with a formal 3D standard deviation of at most 0.30 m. Stability measures
+  repeatability. Use the reference errors to check accuracy when a reference is available.
+  **PPP Ambiguities** shows the float, integer, or BIE constraint state.
+  **AR Constraints / Candidates** counts accepted between-satellite constraints
+  and eligible candidates. **AR Validation** shows the integer ratio or BIE accepted
+  fraction according to the solver path.
 - **Position offsets** shows errors when a reference coordinate is available and
   offsets from the first valid solution otherwise.
 - **Solution history** provides a compact chronological table for comparison.
@@ -234,6 +244,30 @@ DOP, residuals, correction age, ambiguity ratio, convergence, and the system log
 4. Press **Start** and monitor BASE status, differential age, ambiguity ratio, and the
    native RTK quality label.
 
+### SC02 replay benchmark
+
+The 24 November 2026 capture at 06:35:59–06:43:59 UTC contained 481 one-second
+observation epochs. Each PPP run started with an independent SPP bootstrap.
+The replay preloaded the captured broadcast ephemerides and matched the captured
+SSR messages by correction epoch. Errors are relative to the ECEF reference in
+`config/streams/SC02.yaml`. The streamed RTCM antenna reference point differed
+from this reference by 9 mm.
+
+| Solver | Horizontal RMS, all epochs | 3D RMS, all epochs | Horizontal RMS, final minute | 3D RMS, final minute | First PPP stable epoch |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| SPP, broadcast | 1.834 m | 2.659 m | 1.909 m | 4.077 m | — |
+| PPP, SC02 baseline | 0.098 m | 0.358 m | 0.046 m | 0.238 m | 251 s |
+| PPP, 7.5° elevation cutoff | 0.087 m | 0.372 m | 0.058 m | 0.163 m | 254 s |
+| PPP, troposphere gradients off | 0.104 m | 0.399 m | 0.057 m | 0.277 m | 242 s |
+| PPP, uncombined observations | 0.392 m | 0.436 m | 0.278 m | 0.279 m | 288 s |
+
+The baseline met the coordinate stability criteria in the final 230 epochs.
+Every PPP run remained float. A separate 185-epoch capture produced baseline
+final-minute RMS errors of 0.230 m horizontally and 0.319 m in 3D, with the 7.5°
+cutoff yielding 0.287 m and 0.320 m. The baseline's final-minute mean Up error
+in the longer run was +0.234 m. SC02 retains its 10° cutoff and existing AR
+validation thresholds.
+
 ## 9. Troubleshooting
 
 | Symptom | Recommendation |
@@ -241,7 +275,7 @@ DOP, residuals, correction age, ambiguity ratio, convergence, and the system log
 | OBS stays off | Check the source type, host, port, mountpoint, serial device, file path, credentials, and whether another process owns the serial port. |
 | EPH stays off | Confirm the separate stream is enabled and carries supported navigation messages, or verify the selected RINEX/SP3 file. EPH may remain off when navigation data is embedded in OBS. |
 | PPP reports missing SSR corrections | Disable **Require SSR orbit and clock corrections** only when broadcast fallback is intentional, or configure a compatible SSR stream. |
-| PPP remains unfixed | Check dual-frequency phase availability, cycle slips, SSR phase biases, satellite count, elevation mask, residual limits, and convergence time. Float PPP is expected when integer-compatible biases are unavailable. |
+| PPP remains converging | Review the coordinate excursion, window duration, and formal 3D standard deviation in **Current solution**. Inspect **AR Detail** for ambiguity validation. |
 | ANTEX or BLQ warning appears | Confirm the receiver antenna descriptor and BLQ station ID, or select appropriate external model files. |
 | RTK cannot start | Install `rtkrcv`, set `RTGS_RTKRCV`, and verify the rover and BASE formats and mountpoints. |
 | RTK remains float | Check base/network latency, correction age, ambiguity ratio, common satellites, frequencies, antenna metadata, and base coordinates. |

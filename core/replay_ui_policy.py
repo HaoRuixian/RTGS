@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from functools import lru_cache
 from pathlib import Path
-from typing import Mapping, Any
+from typing import Any
 
 from core.rinex_loader import read_rinex_observation_header
-
 
 HIGH_RATE_REPLAY_THRESHOLD_HZ = 1.0
 THROTTLED_GUI_INTERVAL_SECONDS = 0.5

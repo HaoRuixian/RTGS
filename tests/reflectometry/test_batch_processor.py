@@ -26,7 +26,11 @@ def test_batch_processor_recovers_reflector_height(example_config):
     processor = BatchProcessor(example_config, provider=ListObservationProvider(observations))
     result = processor.run()
 
-    successful = [item for item in result.arc_solutions if item.success and item.reflector_height_m is not None]
+    successful = [
+        item
+        for item in result.arc_solutions
+        if item.success and item.reflector_height_m is not None
+    ]
     assert len(successful) >= 3
     mean_height = sum(item.reflector_height_m for item in successful) / len(successful)
     assert abs(mean_height - 4.3) < 0.35

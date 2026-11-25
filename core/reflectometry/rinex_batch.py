@@ -36,9 +36,7 @@ def signal_enabled_for_reflectometry(
         return False
     if include_signals and not signal_matches(signal, include_signals):
         return False
-    if signal_matches(signal, exclude_signals):
-        return False
-    return True
+    return not signal_matches(signal, exclude_signals)
 
 
 def build_observation_records_from_epoch(

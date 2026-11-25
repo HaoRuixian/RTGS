@@ -2,47 +2,57 @@
 Positioning module UI widgets - map and charts for position visualization.
 """
 
+import contextlib
+import io
+import math
+import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from urllib.request import Request, urlopen
+
+import matplotlib.dates as mdates
+import numpy as np
+from matplotlib import patheffects
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.figure import Figure
+from matplotlib.ticker import FuncFormatter, ScalarFormatter
+from PySide6.QtCore import QObject, QStandardPaths, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QFrame,
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
-    QGridLayout,
+    QFrame,
+    QHBoxLayout,
     QHeaderView,
+    QLabel,
     QSizePolicy,
     QStyle,
-    QToolButton,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QLabel,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
 )
-from PySide6.QtCore import QObject, QStandardPaths, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-import matplotlib.dates as mdates
-from matplotlib.ticker import FuncFormatter, ScalarFormatter
-from datetime import datetime, timedelta, timezone
-import io
-import math
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
-from urllib.request import Request, urlopen
-import matplotlib.pyplot as plt
-import numpy as np
-from typing import List, Optional
 
 from core.positioning_models import PositioningMode
 
-
-MAX_HISTORY = 300
+MAP_HISTORY = 2_000
+TREND_SAMPLE_INTERVAL_SECONDS = 1.0
+MAX_TREND_POINTS = 6 * 60 * 60
 WEB_MERCATOR_RADIUS_M = 6_378_137.0
 WEB_MERCATOR_HALF_WORLD_M = math.pi * WEB_MERCATOR_RADIUS_M
+DEFAULT_MAP_LAYER = "satellite"
+ESRI_TILE_PATH = "/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+ESRI_TILE_HOST = "https://server.arcgisonline.com"
+MAP_ATTRIBUTIONS = {
+    "satellite": "© Esri, Maxar, Earthstar Geographics",
+    "osm": "© OpenStreetMap contributors",
+}
 
 
 def _lonlat_to_web_mercator(lon: float, lat: float) -> tuple[float, float]:
@@ -60,6 +70,12 @@ def _web_mercator_to_lonlat(x: float, y: float) -> tuple[float, float]:
 
 class _TileSignals(QObject):
     tiles_ready = Signal(int, object, object)
+
+
+class _MapLayerComboBox(QComboBox):
+    def wheelEvent(self, event):
+        # Layer changes are explicit. Wheel input over the selector never changes providers.
+        event.ignore()
 
 
 def _build_theme():
@@ -84,7 +100,7 @@ def _build_theme():
 def _style_axis(ax, theme):
     ax.set_facecolor(theme["bg"])
     ax.grid(True, color=theme["grid"], alpha=0.45, linestyle=":")
-    ax.tick_params(colors=theme["muted"], labelsize=8)
+    ax.tick_params(colors=theme["muted"], labelsize=9)
     for spine in ax.spines.values():
         spine.set_color(theme["grid"])
     ax.spines["top"].set_visible(False)
@@ -104,8 +120,8 @@ def _solution_epoch_time(solution) -> datetime:
     if gps_week > 0:
         return datetime(1980, 1, 6) + timedelta(weeks=gps_week, seconds=gps_sow - 18.0)
     if gps_sow > 1_000_000_000.0:
-        return datetime.utcfromtimestamp(gps_sow)
-    return datetime.utcnow()
+        return datetime.fromtimestamp(gps_sow, timezone.utc).replace(tzinfo=None)
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _configure_time_axis(ax, theme) -> None:
@@ -130,7 +146,7 @@ def _configure_time_axis(ax, theme) -> None:
     ax.set_xlabel("UTC time", color=theme["muted"], fontsize=7)
 
 
-def _set_time_limits(ax, times: List[datetime]) -> None:
+def _set_time_limits(ax, times: list[datetime]) -> None:
     if not times:
         return
     first = times[0]
@@ -142,8 +158,30 @@ def _set_time_limits(ax, times: List[datetime]) -> None:
     ax.set_xlim(first - padding, last + padding)
 
 
-def format_solution_status(status) -> str:
+def _append_trend_time(times: list[datetime], sample_time: datetime) -> bool:
+    """Append a long-term sample, or replace the current one within the same second."""
+    if times and (sample_time - times[-1]).total_seconds() < TREND_SAMPLE_INTERVAL_SECONDS:
+        times[-1] = sample_time
+        return False
+    times.append(sample_time)
+    if len(times) > MAX_TREND_POINTS:
+        del times[: len(times) - MAX_TREND_POINTS]
+    return True
+
+
+def _store_trend_value(values: list, value, appended: bool) -> None:
+    if appended or not values:
+        values.append(value)
+    else:
+        values[-1] = value
+    if len(values) > MAX_TREND_POINTS:
+        del values[: len(values) - MAX_TREND_POINTS]
+
+
+def format_solution_status(status, mode=None) -> str:
     raw = getattr(status, "value", str(status))
+    if mode == PositioningMode.PPP and raw in {"Uncertain", "Unfixed"}:
+        return "Converging"
     if raw == "Uncertain":
         return "Unfixed"
     return raw
@@ -187,8 +225,7 @@ def _format_satellite_list(satellites, per_line: int = 8) -> str:
         return "--"
     ordered = sorted(str(item) for item in satellites)
     lines = [
-        ", ".join(ordered[index : index + per_line])
-        for index in range(0, len(ordered), per_line)
+        ", ".join(ordered[index : index + per_line]) for index in range(0, len(ordered), per_line)
     ]
     return "\n".join(lines)
 
@@ -196,41 +233,41 @@ def _format_satellite_list(satellites, per_line: int = 8) -> str:
 class LegacyPositionMapWidget(QWidget):
     """
     Real-time position map display using matplotlib.
-    
+
     Shows:
     - Position track (latitude vs longitude)
     - Current position marker
     - Uncertainty ellipses (optional)
     """
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         self.figure = Figure(figsize=(10, 8), dpi=100)
         self.ax = self.figure.add_subplot(111)
         self.canvas = FigureCanvas(self.figure)
-        
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.canvas)
-        
+
         # Setup map
         self.ax.set_xlabel("Longitude (°E)")
         self.ax.set_ylabel("Latitude (°N)")
         self.ax.set_title("GNSS Position Map")
-        self.ax.grid(True, alpha=0.3, linestyle='--')
-        
+        self.ax.grid(True, alpha=0.3, linestyle="--")
+
         # Data storage
         self.lats = []
         self.lons = []
         self.first_update = True
-        
+
         self.figure.tight_layout()
-    
+
     def update_track(self, latitude: float, longitude: float, hdop: float = 0.0):
         """
         Update position on map with actual geographic coordinates.
-        
+
         Args:
             latitude: Current latitude (degrees)
             longitude: Current longitude (degrees)
@@ -238,18 +275,20 @@ class LegacyPositionMapWidget(QWidget):
         """
         self.lats.append(latitude)
         self.lons.append(longitude)
-        
+
         # Update plot
         self.ax.clear()
         self.ax.set_xlabel("Longitude (°E)")
         self.ax.set_ylabel("Latitude (°N)")
         self.ax.set_title(f"GNSS Position Map - Current: ({longitude:.6f}°E, {latitude:.6f}°N)")
-        self.ax.grid(True, alpha=0.3, linestyle='--')
-        
+        self.ax.grid(True, alpha=0.3, linestyle="--")
+
         # Plot track line
         if len(self.lons) > 1:
-            self.ax.plot(self.lons[:-1], self.lats[:-1], 'b-', alpha=0.6, linewidth=1.5, label='Track')
-        
+            self.ax.plot(
+                self.lons[:-1], self.lats[:-1], "b-", alpha=0.6, linewidth=1.5, label="Track"
+            )
+
         # Plot history points (fade effect)
         if len(self.lons) > 1:
             # Color gradient from old to new
@@ -260,13 +299,22 @@ class LegacyPositionMapWidget(QWidget):
                 rel = (i - start_idx) / denom
                 alpha = 0.3 + 0.7 * rel
                 alpha = max(0.0, min(1.0, alpha))
-                self.ax.scatter(self.lons[i], self.lats[i], c='blue', s=15, alpha=alpha)
-        
+                self.ax.scatter(self.lons[i], self.lats[i], c="blue", s=15, alpha=alpha)
+
         # Plot current position with large marker
         if len(self.lons) > 0:
-            self.ax.scatter(self.lons[-1], self.lats[-1], c='red', s=200, 
-                          marker='*', label=f'Current', zorder=10, edgecolors='darkred', linewidth=1)
-        
+            self.ax.scatter(
+                self.lons[-1],
+                self.lats[-1],
+                c="red",
+                s=200,
+                marker="*",
+                label="Current",
+                zorder=10,
+                edgecolors="darkred",
+                linewidth=1,
+            )
+
         # Add uncertainty circle
         if hdop > 0 and len(self.lons) > 0:
             # hdop may be unitless (typical DOP) or already in meters.
@@ -282,32 +330,40 @@ class LegacyPositionMapWidget(QWidget):
             uncertainty_deg = uncertainty_m / 111000.0
 
             import matplotlib.patches as patches
-            circle = patches.Circle((self.lons[-1], self.lats[-1]), uncertainty_deg, 
-                                   fill=False, color='red', linestyle='--', alpha=0.6, linewidth=1.5)
+
+            circle = patches.Circle(
+                (self.lons[-1], self.lats[-1]),
+                uncertainty_deg,
+                fill=False,
+                color="red",
+                linestyle="--",
+                alpha=0.6,
+                linewidth=1.5,
+            )
             self.ax.add_patch(circle)
-        
+
         # Auto-scale with margin
         if len(self.lons) > 1:
             lon_min, lon_max = min(self.lons), max(self.lons)
             lat_min, lat_max = min(self.lats), max(self.lats)
-            
+
             # Add margin (0.1% of range or minimum 0.0005 degrees)
             lon_range = max(lon_max - lon_min, 0.001)
             lat_range = max(lat_max - lat_min, 0.001)
             margin_lon = lon_range * 0.1
             margin_lat = lat_range * 0.1
-            
+
             self.ax.set_xlim(lon_min - margin_lon, lon_max + margin_lon)
             self.ax.set_ylim(lat_min - margin_lat, lat_max + margin_lat)
         elif len(self.lons) == 1:
             # Single point - show a reasonable view
             self.ax.set_xlim(self.lons[0] - 0.01, self.lons[0] + 0.01)
             self.ax.set_ylim(self.lats[0] - 0.01, self.lats[0] + 0.01)
-        
-        self.ax.legend(loc='upper right', fontsize=9)
+
+        self.ax.legend(loc="upper right", fontsize=9)
         self.figure.tight_layout()
         self.canvas.draw()
-    
+
     def clear_track(self):
         """Clear the position track."""
         self.lats.clear()
@@ -316,10 +372,10 @@ class LegacyPositionMapWidget(QWidget):
         self.ax.set_xlabel("Longitude (°E)")
         self.ax.set_ylabel("Latitude (°N)")
         self.ax.set_title("GNSS Position Map")
-        self.ax.grid(True, alpha=0.3, linestyle='--')
+        self.ax.grid(True, alpha=0.3, linestyle="--")
         self.canvas.draw()
 
-    def export_to_folium(self, filename: Optional[str] = None):
+    def export_to_folium(self, filename: str | None = None):
         """Export current track to a folium HTML map. Returns path to HTML or None.
 
         Falls back gracefully if folium not installed.
@@ -336,17 +392,18 @@ class LegacyPositionMapWidget(QWidget):
         fmap = folium.Map(location=center, zoom_start=15)
 
         # Add track polyline
-        coords = list(zip(self.lats, self.lons))
-        folium.PolyLine(coords, color='blue', weight=3, opacity=0.7).add_to(fmap)
+        coords = list(zip(self.lats, self.lons, strict=False))
+        folium.PolyLine(coords, color="blue", weight=3, opacity=0.7).add_to(fmap)
 
         # Add current marker
-        folium.Marker(location=center, icon=folium.Icon(color='red', icon='star')).add_to(fmap)
+        folium.Marker(location=center, icon=folium.Icon(color="red", icon="star")).add_to(fmap)
 
-        import tempfile, os
+        import os
+        import tempfile
+
         if filename is None:
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.html')
-            filename = tmp.name
-            tmp.close()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
+                filename = tmp.name
 
         fmap.save(filename)
         return os.path.abspath(filename)
@@ -363,17 +420,18 @@ class LegacyPositionMapWidget(QWidget):
             from PySide6.QtWidgets import QDialog, QVBoxLayout
 
             dlg = QDialog()
-            dlg.setWindowTitle('Position Map')
+            dlg.setWindowTitle("Position Map")
             layout = QVBoxLayout(dlg)
             view = QWebEngineView()
-            view.load('file:///' + html_path.replace('\\', '/'))
+            view.load("file:///" + html_path.replace("\\", "/"))
             layout.addWidget(view)
             dlg.resize(900, 700)
             dlg.exec()
             return True
         except Exception:
             import webbrowser
-            webbrowser.open('file://' + html_path)
+
+            webbrowser.open("file://" + html_path)
             return True
 
 
@@ -387,12 +445,19 @@ class PositionMapWidget(QWidget):
         self.samples = []
         self._pan_anchor = None
         self._base_map_enabled = True
-        self._tile_source = "osm"
+        self._tile_source = DEFAULT_MAP_LAYER
         self._tile_cache = {}
         self._tile_cache_lock = threading.Lock()
         cache_root = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
-        self._tile_cache_dir = Path(cache_root or (Path.home() / ".cache" / "RTGS")) / "map_tiles" / "osm"
-        self._tile_cache_dir.mkdir(parents=True, exist_ok=True)
+        self._tile_cache_root = (
+            Path(cache_root or (Path.home() / ".cache" / "RTGS")) / "map_tiles" / "providers"
+        )
+        try:
+            self._tile_cache_root.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            # Some packaged or sandboxed runtimes expose a non-writable Qt
+            # cache location.  Keep the map usable with a process temp cache.
+            self._tile_cache_root = Path(tempfile.gettempdir()) / "rtgs" / "map_tiles" / "providers"
         self._tile_artists = []
         self._tile_request_key = None
         self._pending_tile_signature = None
@@ -422,17 +487,24 @@ class PositionMapWidget(QWidget):
         self.position_summary = QLabel("Waiting for solution")
         self.position_summary.setProperty("class", "muted")
         self.position_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.position_summary.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred
+        )
         header_layout.addWidget(title)
-        header_layout.addWidget(self.position_summary)
+        header_layout.addWidget(self.position_summary, 1)
         self.tile_status = QLabel("")
         self.tile_status.setProperty("class", "muted")
+        self.tile_status.setFixedWidth(
+            self.tile_status.fontMetrics().horizontalAdvance("Map unavailable") + 8
+        )
         header_layout.addWidget(self.tile_status)
-        header_layout.addStretch()
 
         self.follow_button = QToolButton()
         self.follow_button.setCheckable(True)
         self.follow_button.setChecked(True)
-        self.follow_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogYesButton))
+        self.follow_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogYesButton)
+        )
         self.follow_button.setToolTip("Follow latest position")
         self.follow_button.toggled.connect(self._on_follow_changed)
         header_layout.addWidget(self.follow_button)
@@ -448,10 +520,20 @@ class PositionMapWidget(QWidget):
         self.base_map_button.setCheckable(True)
         self.base_map_button.setChecked(True)
         self.base_map_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.base_map_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
-        self.base_map_button.setToolTip("WGS84 OpenStreetMap tiles without GCJ-02 coordinate offset")
+        self.base_map_button.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton)
+        )
+        self.base_map_button.setToolTip("Show the selected Web Mercator basemap")
         self.base_map_button.toggled.connect(self._on_base_map_toggled)
         header_layout.addWidget(self.base_map_button)
+
+        self.tile_source_combo = _MapLayerComboBox()
+        self.tile_source_combo.addItem("Satellite imagery", "satellite")
+        self.tile_source_combo.addItem("Street map", "osm")
+        self.tile_source_combo.setMinimumWidth(132)
+        self.tile_source_combo.setToolTip("Choose the background map layer")
+        self.tile_source_combo.currentIndexChanged.connect(self._on_tile_source_changed)
+        header_layout.addWidget(self.tile_source_combo)
         layout.addWidget(header)
 
         self.figure = Figure(figsize=(10, 8), dpi=100, facecolor=self.theme["bg"])
@@ -476,7 +558,7 @@ class PositionMapWidget(QWidget):
             return
         self._apply_map_axis_style()
         if self.samples:
-            self._redraw(force_autoscale=self.follow_button.isChecked())
+            self._redraw()
         else:
             self.canvas.draw_idle()
 
@@ -505,8 +587,8 @@ class PositionMapWidget(QWidget):
                 "hdop": float(getattr(solution, "hdop", 0.0) or 0.0),
             }
         )
-        if len(self.samples) > MAX_HISTORY:
-            self.samples = self.samples[-MAX_HISTORY:]
+        if len(self.samples) > MAP_HISTORY:
+            self.samples = self.samples[-MAP_HISTORY:]
         self._redraw()
 
     def update_track(
@@ -531,19 +613,20 @@ class PositionMapWidget(QWidget):
                 "hdop": float(hdop or 0.0),
             }
         )
-        if len(self.samples) > MAX_HISTORY:
-            self.samples = self.samples[-MAX_HISTORY:]
+        if len(self.samples) > MAP_HISTORY:
+            self.samples = self.samples[-MAP_HISTORY:]
         self._redraw()
 
     def clear_track(self):
         """Clear the position track."""
         self.samples.clear()
         self.position_summary.setText("Waiting for solution")
+        self.position_summary.setToolTip("")
         self.follow_button.setChecked(True)
         self._initialize_plot()
         self.canvas.draw_idle()
 
-    def export_to_folium(self, filename: Optional[str] = None):
+    def export_to_folium(self, filename: str | None = None):
         """Export the LLH track to a folium HTML map."""
         try:
             import folium
@@ -551,24 +634,33 @@ class PositionMapWidget(QWidget):
             return None
 
         geo_samples = [
-            item
-            for item in self.samples
-            if _finite(item.get("lat")) and _finite(item.get("lon"))
+            item for item in self.samples if _finite(item.get("lat")) and _finite(item.get("lon"))
         ]
         if not geo_samples:
             return None
 
         center = (geo_samples[-1]["lat"], geo_samples[-1]["lon"])
-        fmap = folium.Map(location=center, zoom_start=15)
+        fmap = folium.Map(location=center, zoom_start=15, tiles=None)
+        folium.TileLayer(
+            "OpenStreetMap", name="Street map", show=self._tile_source == "osm"
+        ).add_to(fmap)
+        folium.TileLayer(
+            tiles=ESRI_TILE_HOST + ESRI_TILE_PATH,
+            attr=MAP_ATTRIBUTIONS["satellite"],
+            name="Satellite imagery",
+            show=self._tile_source == "satellite",
+        ).add_to(fmap)
+        folium.LayerControl().add_to(fmap)
         coords = [(item["lat"], item["lon"]) for item in geo_samples]
         folium.PolyLine(coords, color="blue", weight=3, opacity=0.7).add_to(fmap)
         folium.Marker(location=center, icon=folium.Icon(color="red", icon="star")).add_to(fmap)
 
-        import tempfile, os
+        import os
+        import tempfile
+
         if filename is None:
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
-            filename = tmp.name
-            tmp.close()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".html") as tmp:
+                filename = tmp.name
 
         fmap.save(filename)
         return os.path.abspath(filename)
@@ -594,6 +686,7 @@ class PositionMapWidget(QWidget):
             return True
         except Exception:
             import webbrowser
+
             webbrowser.open("file://" + html_path)
             return True
 
@@ -602,6 +695,8 @@ class PositionMapWidget(QWidget):
         self._tile_request_key = None
         self._pending_tile_signature = None
         self._tile_debounce_timer.stop()
+        self.tile_status.clear()
+        self._view_initialized = False
         self._tile_artists = []
         self.ax.clear()
         _style_axis(self.ax, self.theme)
@@ -625,33 +720,71 @@ class PositionMapWidget(QWidget):
                 FuncFormatter(lambda value, _pos: f"{_web_mercator_to_lonlat(0.0, value)[1]:.5f}")
             )
         self._apply_map_axis_style()
-        self.track_outline, = self.ax.plot(
-            [], [], color="#FFFFFF", alpha=0.92, linewidth=4.2,
-            solid_capstyle="round", solid_joinstyle="round", zorder=7,
+        (self.track_outline,) = self.ax.plot(
+            [],
+            [],
+            color="#FFFFFF",
+            alpha=0.92,
+            linewidth=4.2,
+            solid_capstyle="round",
+            solid_joinstyle="round",
+            zorder=7,
         )
-        self.track_line, = self.ax.plot(
-            [], [], color=self.theme["accent"], alpha=1.0, linewidth=2.2,
-            solid_capstyle="round", solid_joinstyle="round", zorder=8,
+        (self.track_line,) = self.ax.plot(
+            [],
+            [],
+            color=self.theme["accent"],
+            alpha=1.0,
+            linewidth=2.2,
+            solid_capstyle="round",
+            solid_joinstyle="round",
+            zorder=8,
         )
-        self.history_points, = self.ax.plot(
-            [], [], linestyle="none", marker="o", markersize=4.0,
-            markerfacecolor=self.theme["accent"], markeredgecolor="#FFFFFF",
-            markeredgewidth=0.6, alpha=0.82, zorder=9,
+        (self.history_points,) = self.ax.plot(
+            [],
+            [],
+            linestyle="none",
+            marker="o",
+            markersize=4.0,
+            markerfacecolor=self.theme["accent"],
+            markeredgecolor="#FFFFFF",
+            markeredgewidth=0.6,
+            alpha=0.82,
+            zorder=9,
         )
-        self.start_point, = self.ax.plot(
-            [], [], linestyle="none", marker="s", markersize=6,
-            markerfacecolor="#FFFFFF", markeredgecolor=self.theme["accent"],
-            markeredgewidth=1.4, zorder=9,
+        (self.start_point,) = self.ax.plot(
+            [],
+            [],
+            linestyle="none",
+            marker="s",
+            markersize=6,
+            markerfacecolor="#FFFFFF",
+            markeredgecolor=self.theme["accent"],
+            markeredgewidth=1.4,
+            zorder=9,
         )
-        self.current_point, = self.ax.plot(
-            [], [], linestyle="none", marker="o", markersize=8,
-            markerfacecolor=self.theme["current"], markeredgecolor=self.theme["fg"],
-            markeredgewidth=0.8, zorder=10,
+        (self.current_point,) = self.ax.plot(
+            [],
+            [],
+            linestyle="none",
+            marker="o",
+            markersize=8,
+            markerfacecolor=self.theme["current"],
+            markeredgecolor=self.theme["fg"],
+            markeredgewidth=0.8,
+            zorder=10,
         )
         from matplotlib.patches import Circle
+
         self.uncertainty_circle = Circle(
-            (0, 0), 0, fill=False, color=self.theme["current"],
-            linestyle="--", alpha=0.55, linewidth=1.1, visible=False,
+            (0, 0),
+            0,
+            fill=False,
+            color=self.theme["current"],
+            linestyle="--",
+            alpha=0.55,
+            linewidth=1.1,
+            visible=False,
         )
         self.ax.add_patch(self.uncertainty_circle)
         self.empty_text = self.ax.text(
@@ -665,27 +798,63 @@ class PositionMapWidget(QWidget):
             fontsize=10,
         )
         self.map_attribution = self.ax.text(
-            0.995, 0.008, "(c) OpenStreetMap contributors",
-            transform=self.ax.transAxes, ha="right", va="bottom",
-            color=self.theme["muted"], fontsize=6, zorder=20,
+            0.995,
+            0.008,
+            MAP_ATTRIBUTIONS[self._tile_source],
+            transform=self.ax.transAxes,
+            ha="right",
+            va="bottom",
+            color=self.theme["muted"],
+            fontsize=6,
+            zorder=20,
             visible=self.display_mode == "LLH" and self._base_map_enabled,
         )
-        self.scale_bar, = self.ax.plot(
-            [], [], color=self.theme["fg"], linewidth=2.5,
-            marker="|", markersize=7, zorder=20,
+        (self.scale_bar,) = self.ax.plot(
+            [],
+            [],
+            color=self.theme["fg"],
+            linewidth=2.5,
+            marker="|",
+            markersize=7,
+            zorder=20,
             visible=self.display_mode == "LLH",
         )
         self.scale_label = self.ax.text(
-            0.0, 0.0, "", ha="center", va="bottom",
-            color=self.theme["fg"], fontsize=7, fontweight="bold",
-            zorder=20, visible=self.display_mode == "LLH",
-        )
-        self.north_label = self.ax.text(
-            0.018, 0.975, "N\n↑", transform=self.ax.transAxes,
-            ha="center", va="top", color=self.theme["fg"],
-            fontsize=8, fontweight="bold", zorder=20,
+            0.0,
+            0.0,
+            "",
+            ha="center",
+            va="bottom",
+            color=self.theme["fg"],
+            fontsize=7,
+            fontweight="bold",
+            zorder=20,
             visible=self.display_mode == "LLH",
         )
+        self.north_label = self.ax.text(
+            0.018,
+            0.975,
+            "N\n↑",
+            transform=self.ax.transAxes,
+            ha="center",
+            va="top",
+            color=self.theme["fg"],
+            fontsize=8,
+            fontweight="bold",
+            zorder=20,
+            visible=self.display_mode == "LLH",
+        )
+        self._update_map_decorations()
+
+    def _update_map_decorations(self):
+        satellite = self._base_map_enabled and self._tile_source == "satellite"
+        for artist in (self.scale_bar, self.scale_label, self.north_label, self.map_attribution):
+            artist.set_color("#FFFFFF" if satellite else self.theme["fg"])
+            artist.set_path_effects(
+                [patheffects.withStroke(linewidth=2, foreground="#20242A")] if satellite else []
+            )
+        self.map_attribution.set_text(MAP_ATTRIBUTIONS[self._tile_source])
+        self.map_attribution.set_visible(self.display_mode == "LLH" and self._base_map_enabled)
 
     def _apply_map_axis_style(self):
         if self.display_mode == "LLH" and self._base_map_enabled:
@@ -717,6 +886,7 @@ class PositionMapWidget(QWidget):
             return
         self.empty_text.set_visible(False)
         self.position_summary.setText(summary)
+        self.position_summary.setToolTip(summary)
         self.track_outline.set_data(xs, ys)
         self.track_line.set_data(xs, ys)
         self.history_points.set_data(xs[-120:-1], ys[-120:-1])
@@ -737,8 +907,15 @@ class PositionMapWidget(QWidget):
         else:
             self.uncertainty_circle.set_visible(False)
 
-        if force_autoscale or self.follow_button.isChecked():
+        if force_autoscale or not self._view_initialized:
             self._autoscale(xs, ys)
+        elif self.follow_button.isChecked():
+            # Keep the viewport steady while a static solution moves inside its padding.
+            for values, (low, high) in ((xs, self.ax.get_xlim()), (ys, self.ax.get_ylim())):
+                inset = (high - low) * 0.06
+                if min(values) < low + inset or max(values) > high - inset:
+                    self._autoscale(xs, ys)
+                    break
         if self.display_mode == "LLH":
             self._fit_map_view_aspect()
             self._update_scale_bar()
@@ -749,11 +926,13 @@ class PositionMapWidget(QWidget):
     def _valid_samples(self):
         if self.display_mode == "XYZ":
             return [
-                item for item in self.samples
+                item
+                for item in self.samples
                 if _finite(item.get("x")) and _finite(item.get("y")) and _finite(item.get("z"))
             ]
         return [
-            item for item in self.samples
+            item
+            for item in self.samples
             if _finite(item.get("lat")) and _finite(item.get("lon")) and _finite(item.get("height"))
         ]
 
@@ -765,25 +944,21 @@ class PositionMapWidget(QWidget):
             summary = f"X {current['x']:.3f}  Y {current['y']:.3f}  Z {current['z']:.3f} m"
             return xs, ys, summary
 
-        projected = [
-            _lonlat_to_web_mercator(item["lon"], item["lat"])
-            for item in samples
-        ]
+        projected = [_lonlat_to_web_mercator(item["lon"], item["lat"]) for item in samples]
         xs = [point[0] for point in projected]
         ys = [point[1] for point in projected]
         summary = f"{current['lat']:.7f}, {current['lon']:.7f}   H {current['height']:.2f} m"
         return xs, ys, summary
 
     def _autoscale(self, xs, ys):
+        self._view_initialized = True
         x_min, x_max = min(xs), max(xs)
         y_min, y_max = min(ys), max(ys)
         if self.display_mode == "XYZ":
             min_range = 1.0
             ground_to_map = 1.0
         else:
-            _lon, center_lat = _web_mercator_to_lonlat(
-                (x_min + x_max) / 2.0, (y_min + y_max) / 2.0
-            )
+            _lon, center_lat = _web_mercator_to_lonlat((x_min + x_max) / 2.0, (y_min + y_max) / 2.0)
             ground_to_map = 1.0 / max(math.cos(math.radians(center_lat)), 0.1)
             min_range = (60.0 if self._base_map_enabled else 30.0) * ground_to_map
         x_range = max(x_max - x_min, min_range)
@@ -841,7 +1016,11 @@ class PositionMapWidget(QWidget):
         bar_y = min(y0, y1) + abs(y1 - y0) * 0.055
         self.scale_bar.set_data([start_x, start_x + scale_map_m], [bar_y, bar_y])
         self.scale_bar.set_visible(True)
-        label = f"{scale_ground_m / 1000.0:g} km" if scale_ground_m >= 1000.0 else f"{scale_ground_m:g} m"
+        label = (
+            f"{scale_ground_m / 1000.0:g} km"
+            if scale_ground_m >= 1000.0
+            else f"{scale_ground_m:g} m"
+        )
         self.scale_label.set_position((start_x + scale_map_m / 2.0, bar_y + abs(y1 - y0) * 0.018))
         self.scale_label.set_text(label)
         self.scale_label.set_visible(True)
@@ -849,7 +1028,7 @@ class PositionMapWidget(QWidget):
     @staticmethod
     def _tile_xy(lon: float, lat: float, zoom: int) -> tuple[int, int]:
         lat = max(-85.05112878, min(85.05112878, float(lat)))
-        n = 2 ** zoom
+        n = 2**zoom
         x = int((float(lon) + 180.0) / 360.0 * n)
         lat_rad = math.radians(lat)
         y = int((1.0 - math.asinh(math.tan(lat_rad)) / math.pi) / 2.0 * n)
@@ -857,7 +1036,7 @@ class PositionMapWidget(QWidget):
 
     @staticmethod
     def _tile_extent(x: int, y: int, zoom: int) -> tuple[float, float, float, float]:
-        n = 2 ** zoom
+        n = 2**zoom
         tile_size_m = 2.0 * WEB_MERCATOR_HALF_WORLD_M / n
         west = -WEB_MERCATOR_HALF_WORLD_M + x * tile_size_m
         east = west + tile_size_m
@@ -877,13 +1056,19 @@ class PositionMapWidget(QWidget):
             abs(x1 - x0) / max(1.0, self.canvas.width() * dpr),
             abs(y1 - y0) / max(1.0, self.canvas.height() * dpr),
         )
-        zoom = max(3, min(19, int(math.ceil(math.log2(2.0 * WEB_MERCATOR_HALF_WORLD_M / (256.0 * resolution))))))
+        zoom = max(
+            3,
+            min(
+                19,
+                int(math.ceil(math.log2(2.0 * WEB_MERCATOR_HALF_WORLD_M / (256.0 * resolution)))),
+            ),
+        )
         lon0, lat0 = _web_mercator_to_lonlat(min(x0, x1), min(y0, y1))
         lon1, lat1 = _web_mercator_to_lonlat(max(x0, x1), max(y0, y1))
         while True:
             tx0, ty0 = self._tile_xy(lon0, lat1, zoom)
             tx1, ty1 = self._tile_xy(lon1, lat0, zoom)
-            n = 2 ** zoom
+            n = 2**zoom
             tile_count = (tx1 - tx0 + 1) * (ty1 - ty0 + 1)
             if tile_count <= 20 or zoom <= 3:
                 break
@@ -892,7 +1077,7 @@ class PositionMapWidget(QWidget):
             tx0, tx1 = max(0, tx0 - 1), min(n - 1, tx1 + 1)
         if ty0 == ty1:
             ty0, ty1 = max(0, ty0 - 1), min(n - 1, ty1 + 1)
-        signature = (zoom, tx0, tx1, ty0, ty1)
+        signature = (self._tile_source, zoom, tx0, tx1, ty0, ty1)
         if signature == self._tile_request_key:
             self._pending_tile_signature = None
             self._tile_debounce_timer.stop()
@@ -918,14 +1103,21 @@ class PositionMapWidget(QWidget):
             name="rtgs-map-tiles",
         ).start()
 
-    def _tile_url_candidates(self, zoom: int, x: int, y: int) -> tuple[str, ...]:
+    @staticmethod
+    def _tile_url_candidates(source: str, zoom: int, x: int, y: int) -> tuple[str, ...]:
+        if source == "satellite":
+            path = ESRI_TILE_PATH.format(z=zoom, x=x, y=y)
+            return (
+                ESRI_TILE_HOST + path,
+                "https://services.arcgisonline.com" + path,
+            )
         osm_de = f"https://tile.openstreetmap.de/{zoom}/{x}/{y}.png"
         osm_hot = f"https://a.tile.openstreetmap.fr/hot/{zoom}/{x}/{y}.png"
         osm_standard = f"https://tile.openstreetmap.org/{zoom}/{x}/{y}.png"
         return osm_de, osm_hot, osm_standard
 
-    def _download_tiles(self, generation: int, signature: tuple[int, int, int, int, int]):
-        zoom, tx0, tx1, ty0, ty1 = signature
+    def _download_tiles(self, generation: int, signature: tuple[str, int, int, int, int, int]):
+        source, zoom, tx0, tx1, ty0, ty1 = signature
         try:
             from PIL import Image
         except Exception:
@@ -933,19 +1125,20 @@ class PositionMapWidget(QWidget):
             return
 
         coordinates = [
-            (zoom, tile_x, tile_y, Image)
+            (source, zoom, tile_x, tile_y, Image)
             for tile_y in range(ty0, ty1 + 1)
             for tile_x in range(tx0, tx1 + 1)
         ]
         with ThreadPoolExecutor(max_workers=min(6, len(coordinates))) as pool:
             results = list(pool.map(self._load_tile, coordinates))
         images = [result for result in results if result is not None]
-        self._tile_signals.tiles_ready.emit(generation, signature, images)
+        with contextlib.suppress(RuntimeError):
+            self._tile_signals.tiles_ready.emit(generation, signature, images)
 
     def _load_tile(self, request_data):
-        zoom, tile_x, tile_y, image_class = request_data
-        cache_key = (zoom, tile_x, tile_y)
-        cache_path = self._tile_cache_dir / f"{zoom}_{tile_x}_{tile_y}.tile"
+        source, zoom, tile_x, tile_y, image_class = request_data
+        cache_key = (source, zoom, tile_x, tile_y)
+        cache_path = self._tile_cache_root / source / f"{zoom}_{tile_x}_{tile_y}.tile"
         with self._tile_cache_lock:
             image = self._tile_cache.get(cache_key)
         if image is None and cache_path.is_file():
@@ -955,12 +1148,10 @@ class PositionMapWidget(QWidget):
                 with self._tile_cache_lock:
                     self._tile_cache[cache_key] = image
             except Exception:
-                try:
+                with contextlib.suppress(OSError):
                     cache_path.unlink()
-                except OSError:
-                    pass
         if image is None:
-            for url in self._tile_url_candidates(zoom, tile_x, tile_y):
+            for url in self._tile_url_candidates(source, zoom, tile_x, tile_y):
                 try:
                     request = Request(url, headers={"User-Agent": "RTGS/0.1 map viewer"})
                     with urlopen(request, timeout=2.0) as response:
@@ -968,10 +1159,9 @@ class PositionMapWidget(QWidget):
                     with image_class.open(io.BytesIO(raw)) as tile:
                         image = np.asarray(tile.convert("RGBA"))
                     with self._tile_cache_lock:
-                        try:
+                        with contextlib.suppress(OSError):
+                            cache_path.parent.mkdir(parents=True, exist_ok=True)
                             cache_path.write_bytes(raw)
-                        except OSError:
-                            pass
                         self._tile_cache[cache_key] = image
                         while len(self._tile_cache) > 256:
                             self._tile_cache.pop(next(iter(self._tile_cache)))
@@ -986,12 +1176,10 @@ class PositionMapWidget(QWidget):
         if generation != self._tile_generation or signature != self._tile_request_key:
             return
         self.tile_status.setText("Map ready" if images else "Map unavailable")
-        for artist in self._tile_artists:
-            try:
-                artist.remove()
-            except (AttributeError, ValueError):
-                pass
-        self._tile_artists = []
+        if not images:
+            # Retain the current layer at its last available resolution.
+            return
+        self._clear_tile_artists()
         view = (self.ax.get_xlim(), self.ax.get_ylim())
         for extent, image in images:
             artist = self.ax.imshow(
@@ -1003,10 +1191,15 @@ class PositionMapWidget(QWidget):
                 zorder=0,
             )
             self._tile_artists.append(artist)
-        if images:
-            self.ax.set_xlim(*view[0])
-            self.ax.set_ylim(*view[1])
+        self.ax.set_xlim(*view[0])
+        self.ax.set_ylim(*view[1])
         self.canvas.draw_idle()
+
+    def _clear_tile_artists(self):
+        for artist in self._tile_artists:
+            with contextlib.suppress(AttributeError, ValueError):
+                artist.remove()
+        self._tile_artists.clear()
 
     def _on_base_map_toggled(self, enabled: bool):
         self._base_map_enabled = bool(enabled)
@@ -1016,17 +1209,24 @@ class PositionMapWidget(QWidget):
         self._tile_debounce_timer.stop()
         if not self._base_map_enabled:
             self.tile_status.setText("")
-            self.map_attribution.set_visible(False)
-            for artist in self._tile_artists:
-                try:
-                    artist.remove()
-                except (AttributeError, ValueError):
-                    pass
-            self._tile_artists = []
-        elif self.display_mode == "LLH":
-            self.map_attribution.set_visible(True)
+            self._clear_tile_artists()
+        self._update_map_decorations()
         self._apply_map_axis_style()
         self._redraw(force_autoscale=True)
+
+    def _on_tile_source_changed(self, _index: int):
+        source = self.tile_source_combo.currentData()
+        if source == self._tile_source:
+            return
+        self._tile_source = source
+        self._tile_generation += 1
+        self._tile_request_key = None
+        self._pending_tile_signature = None
+        self._tile_debounce_timer.stop()
+        self.tile_status.clear()
+        self._clear_tile_artists()
+        self._update_map_decorations()
+        self._redraw()
 
     def reset_view(self):
         self.follow_button.setChecked(True)
@@ -1042,8 +1242,12 @@ class PositionMapWidget(QWidget):
         scale = 0.82 if event.button == "up" else 1.22
         x0, x1 = self.ax.get_xlim()
         y0, y1 = self.ax.get_ylim()
-        self.ax.set_xlim(event.xdata - (event.xdata - x0) * scale, event.xdata + (x1 - event.xdata) * scale)
-        self.ax.set_ylim(event.ydata - (event.ydata - y0) * scale, event.ydata + (y1 - event.ydata) * scale)
+        self.ax.set_xlim(
+            event.xdata - (event.xdata - x0) * scale, event.xdata + (x1 - event.xdata) * scale
+        )
+        self.ax.set_ylim(
+            event.ydata - (event.ydata - y0) * scale, event.ydata + (y1 - event.ydata) * scale
+        )
         self.follow_button.setChecked(False)
         if self.display_mode == "LLH":
             self._update_scale_bar()
@@ -1052,11 +1256,21 @@ class PositionMapWidget(QWidget):
         self.canvas.draw_idle()
 
     def _on_press(self, event):
-        if event.button == 1 and event.inaxes == self.ax and event.xdata is not None and event.ydata is not None:
+        if (
+            event.button == 1
+            and event.inaxes == self.ax
+            and event.xdata is not None
+            and event.ydata is not None
+        ):
             self._pan_anchor = (event.x, event.y, self.ax.get_xlim(), self.ax.get_ylim())
 
     def _on_motion(self, event):
-        if self._pan_anchor is None or event.inaxes != self.ax or event.xdata is None or event.ydata is None:
+        if (
+            self._pan_anchor is None
+            or event.inaxes != self.ax
+            or event.xdata is None
+            or event.ydata is None
+        ):
             return
         anchor_x, anchor_y, x_limits, y_limits = self._pan_anchor
         width = max(1.0, float(self.ax.bbox.width))
@@ -1087,18 +1301,18 @@ class LegacyPositionInfoWidget(QWidget):
     """
     Display current positioning information in a table format.
     """
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         layout = QVBoxLayout(self)
-        
+
         # Create table
         self.table = QTableWidget()
         self.table.setColumnCount(2)
         self.table.setHorizontalHeaderLabels(["Parameter", "Value"])
         self.table.setMaximumHeight(400)
-        
+
         # Pre-fill common parameters
         parameters = [
             "Latitude",
@@ -1115,27 +1329,27 @@ class LegacyPositionInfoWidget(QWidget):
             "Solution Status",
             "Convergence",
         ]
-        
+
         self.table.setRowCount(len(parameters))
         self.parameter_rows = {}
-        
+
         for i, param in enumerate(parameters):
             self.parameter_rows[param] = i
             item = QTableWidgetItem(param)
             item.setFont(QFont("Courier", 10))
             self.table.setItem(i, 0, item)
-            
+
             value_item = QTableWidgetItem("--")
             value_item.setFont(QFont("Courier", 10))
             self.table.setItem(i, 1, value_item)
-        
+
         layout.addWidget(self.table)
-    
+
     def update_solution(self, solution):
         """Update table with new solution."""
         if solution is None:
             return
-        
+
         updates = {
             "Latitude": f"{solution.latitude:.6f}°",
             "Longitude": f"{solution.longitude:.6f}°",
@@ -1151,13 +1365,13 @@ class LegacyPositionInfoWidget(QWidget):
             "Solution Status": solution.status.value,
             "Convergence": "Yes" if solution.convergence else "No",
         }
-        
+
         for param, value in updates.items():
             if param in self.parameter_rows:
                 row = self.parameter_rows[param]
                 item = QTableWidgetItem(value)
                 item.setFont(QFont("Courier", 10))
-                
+
                 # Color code status
                 if param == "Solution Status":
                     if "Fixed" in value:
@@ -1166,7 +1380,7 @@ class LegacyPositionInfoWidget(QWidget):
                         item.setForeground(QColor("orange"))
                     else:
                         item.setForeground(QColor("red"))
-                
+
                 self.table.setItem(row, 1, item)
 
     def clear(self):
@@ -1178,31 +1392,13 @@ class LegacyPositionInfoWidget(QWidget):
 
 
 class PositionInfoWidget(QWidget):
-    """Current positioning information with switchable coordinate rows."""
-
-    COMMON_PARAMETERS = [
-        "Reference",
-        "East / North / Up Error",
-        "Horizontal / 3D Error",
-        "Clock Bias",
-        "Num Satellites",
-        "Solution Source",
-        "Used Systems",
-        "Candidate Systems",
-        "Used Satellites",
-        "Quality Reason",
-        "Differential Age",
-        "Ambiguity Ratio",
-        "HDOP",
-        "VDOP",
-        "PDOP",
-        "Solution Status",
-        "Convergence",
-    ]
+    """Dense, mode-aware current positioning summary."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.display_mode = "LLH"
+        self.positioning_mode = PositioningMode.SPP
+        self._show_reference = False
         self.current_solution = None
         self.theme = _build_theme()
 
@@ -1210,20 +1406,28 @@ class PositionInfoWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["Parameter", "Value"])
-        self.table.setMaximumHeight(520)
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(
+            ["Position / state", "Value", "Quality / diagnostics", "Value"]
+        )
         self.table.setAlternatingRowColors(True)
         self.table.setWordWrap(True)
         self.table.setShowGrid(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.verticalHeader().setVisible(False)
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        layout.addWidget(self.table)
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        self.table.verticalHeader().setDefaultSectionSize(max(28, self.fontMetrics().height() + 10))
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        header.setStretchLastSection(True)
+        layout.addWidget(self.table, 1)
 
         self.parameter_rows = {}
+        self.parameter_cells = {}
         self._rebuild_rows()
 
     def set_display_mode(self, mode: str):
@@ -1235,12 +1439,30 @@ class PositionInfoWidget(QWidget):
         if self.current_solution is not None:
             self.update_solution(self.current_solution)
 
+    def set_positioning_mode(self, mode: PositioningMode):
+        if mode == self.positioning_mode:
+            return
+        self.positioning_mode = mode
+        self.current_solution = None
+        self._show_reference = False
+        self._rebuild_rows()
+
     def update_solution(self, solution):
         """Update table with a new solution."""
         if solution is None:
             return
 
         self.current_solution = solution
+        mode = getattr(solution, "mode", self.positioning_mode)
+        if not isinstance(mode, PositioningMode):
+            mode = self.positioning_mode
+        has_reference = bool(getattr(solution, "has_reference_position", False))
+        if mode != self.positioning_mode or has_reference != self._show_reference:
+            self.positioning_mode = mode
+            self._show_reference = has_reference
+            self._rebuild_rows()
+
+        epoch_time = _solution_epoch_time(solution)
         if self.display_mode == "XYZ":
             updates = {
                 "ECEF X": f"{solution.ecef_x:.3f} m",
@@ -1256,6 +1478,7 @@ class PositionInfoWidget(QWidget):
 
         updates.update(
             {
+                "Epoch (UTC)": epoch_time.strftime("%Y-%m-%d %H:%M:%S"),
                 "Reference": (
                     getattr(solution, "reference_source", "") or "--"
                     if getattr(solution, "has_reference_position", False)
@@ -1275,80 +1498,158 @@ class PositionInfoWidget(QWidget):
                 "Num Satellites": str(solution.num_satellites),
                 "Solution Source": getattr(solution, "solution_source", "") or "--",
                 "Used Systems": _format_counts_value(getattr(solution, "used_system_counts", {})),
-                "Candidate Systems": _format_counts_value(getattr(solution, "candidate_system_counts", {})),
+                "Candidate Systems": _format_counts_value(
+                    getattr(solution, "candidate_system_counts", {})
+                ),
                 "Used Satellites": _format_satellite_list(getattr(solution, "used_satellites", [])),
                 "Quality Reason": getattr(solution, "quality_reason", "") or "--",
                 "Differential Age": (
                     f"{solution.differential_age_s:.2f} s"
-                    if getattr(solution, "mode", None) == PositioningMode.RTK else "--"
+                    if getattr(solution, "mode", None) == PositioningMode.RTK
+                    else "--"
                 ),
                 "Ambiguity Ratio": (
                     f"{solution.ambiguity_ratio:.2f}"
-                    if getattr(solution, "mode", None) == PositioningMode.RTK else "--"
+                    if getattr(solution, "mode", None) == PositioningMode.RTK
+                    else "--"
                 ),
                 "HDOP": f"{solution.hdop:.2f}" if _finite(solution.hdop) else "--",
                 "VDOP": f"{solution.vdop:.2f}" if _finite(solution.vdop) else "--",
                 "PDOP": f"{solution.pdop:.2f}" if _finite(solution.pdop) else "--",
-                "Solution Status": format_solution_status(solution.status),
-                "Convergence": "Yes" if solution.convergence else "No",
+                "Solution Status": format_solution_status(solution.status, mode),
+                "Convergence": "Stable" if solution.convergence else "Evaluating",
+                "Iterations": str(getattr(solution, "num_iterations", 0) or 0),
+                "Processing Time": (
+                    f"{float(getattr(solution, 'processing_time_ms', 0.0) or 0.0):.1f} ms"
+                ),
             }
         )
+        if mode != PositioningMode.PPP:
+            updates["Convergence"] = "Yes" if solution.convergence else "No"
+        else:
+            diagnostics = getattr(solution, "diagnostics", {}) or {}
+            ar_status = diagnostics.get("ar_status")
+            uses_bie = "ar_bie_best_weight" in diagnostics
+            count = getattr(solution, "ambiguity_fixed_count", 0)
+            candidates = diagnostics.get("ar_candidate_count", 0)
+            ratio = getattr(solution, "ambiguity_ratio", 0.0)
+            updates["PPP Ambiguities"] = {
+                "fixed": "BIE constraints applied" if uses_bie else "Integer constraints fixed",
+                "waiting": "Float",
+                "disabled": "Disabled",
+                "rejected": "Float (candidate rejected)",
+            }.get(ar_status, "Float")
+            updates["AR Constraints / Candidates"] = f"{count} / {candidates}"
+            updates["AR Validation"] = (
+                ("Accepted fraction" if uses_bie else "Integer ratio") + f" {ratio:.2f}"
+                if ratio > 0.0
+                else "--"
+            )
+            group_details = [
+                f"{group['system']} {'/'.join(group['signals'])} "
+                f"{str(group.get('status', 'evaluating')).replace('-', ' ')}"
+                for group in diagnostics.get("ar_groups", [])
+            ]
+            ar_reason = diagnostics.get("ar_rejection_reason")
+            updates["AR Detail"] = (
+                " · ".join(detail for detail in (ar_reason, *group_details) if detail) or "--"
+            )
+            excursion = diagnostics.get("position_stability_excursion_m")
+            sigma = diagnostics.get("position_sigma_3d_m")
+            if _finite(excursion) and _finite(sigma):
+                span = diagnostics.get("position_stability_span_s", 0.0)
+                updates["Coordinate Stability"] = (
+                    f"{excursion:.3f} m / {span:.0f} s · σ {sigma:.3f} m"
+                )
 
-        resize_needed = False
         for param, value in updates.items():
-            if param not in self.parameter_rows:
+            if param not in self.parameter_cells:
                 continue
-            row = self.parameter_rows[param]
-            item = self.table.item(row, 1)
+            row, column = self.parameter_cells[param]
+            item = self.table.item(row, column)
             if item.text() != value:
                 item.setText(value)
-                if param in {"Used Satellites", "Quality Reason"}:
-                    resize_needed = True
+                item.setToolTip(value)
             if param == "Solution Status":
                 item.setForeground(_status_color(solution.status, self.theme))
                 item.setFont(_make_font("Consolas", 10, QFont.Weight.Bold))
-        if resize_needed:
-            self.table.resizeRowsToContents()
 
     def clear(self):
         """Reset the table to placeholder values."""
         self.current_solution = None
-        for row in range(self.table.rowCount()):
-            value_item = QTableWidgetItem("--")
-            value_item.setFont(_make_font("Consolas", 10))
-            self.table.setItem(row, 1, value_item)
+        self._show_reference = False
+        self._rebuild_rows()
 
     def _rebuild_rows(self):
-        coordinate_rows = (
+        coordinate_fields = (
             ["ECEF X", "ECEF Y", "ECEF Z"]
             if self.display_mode == "XYZ"
             else ["Latitude", "Longitude", "Height (WGS84)"]
         )
-        parameters = coordinate_rows + self.COMMON_PARAMETERS
-        self.table.setRowCount(len(parameters))
+        primary_fields = [
+            "Epoch (UTC)",
+            *coordinate_fields,
+            "Solution Status",
+            "Convergence",
+            "Solution Source",
+            "Clock Bias",
+            "Num Satellites",
+        ]
+        diagnostic_fields = [
+            "Used Systems",
+            "Candidate Systems",
+            "Used Satellites",
+            "Quality Reason",
+            "HDOP",
+            "VDOP",
+            "PDOP",
+            "Iterations",
+            "Processing Time",
+        ]
+        if self.positioning_mode == PositioningMode.RTK:
+            primary_fields.append("Differential Age")
+            diagnostic_fields.append("Ambiguity Ratio")
+        elif self.positioning_mode == PositioningMode.PPP:
+            primary_fields.insert(6, "PPP Ambiguities")
+            diagnostic_fields = [
+                "Coordinate Stability",
+                "AR Constraints / Candidates",
+                "AR Validation",
+                "AR Detail",
+                *diagnostic_fields,
+            ]
+        if self._show_reference:
+            primary_fields.append("Reference")
+            diagnostic_fields.extend(["East / North / Up Error", "Horizontal / 3D Error"])
+
+        self.table.setRowCount(max(len(primary_fields), len(diagnostic_fields)))
+        self.table.clearContents()
         self.parameter_rows = {}
+        self.parameter_cells = {}
 
-        for i, param in enumerate(parameters):
-            self.parameter_rows[param] = i
-            label_item = QTableWidgetItem(param)
-            label_item.setFont(_make_font("Segoe UI", 10, QFont.Weight.DemiBold))
-            label_item.setForeground(QColor(self.theme["muted"]))
-            label_item.setFlags(label_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(i, 0, label_item)
+        for label_column, fields in ((0, primary_fields), (2, diagnostic_fields)):
+            for row, param in enumerate(fields):
+                self.parameter_rows[param] = row
+                self.parameter_cells[param] = (row, label_column + 1)
+                label_item = QTableWidgetItem(param)
+                label_item.setFont(_make_font("Segoe UI", 10, QFont.Weight.DemiBold))
+                label_item.setForeground(QColor(self.theme["muted"]))
+                label_item.setFlags(label_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(row, label_column, label_item)
 
-            value_item = QTableWidgetItem("--")
-            value_item.setFont(_make_font("Consolas", 10))
-            value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
-            self.table.setItem(i, 1, value_item)
+                value_item = QTableWidgetItem("--")
+                value_item.setFont(_make_font("Consolas", 10))
+                value_item.setFlags(value_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                self.table.setItem(row, label_column + 1, value_item)
 
 
 class AccuracyWidget(QWidget):
     """Four compact, independently scaled DOP monitors."""
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.theme = _build_theme()
-        
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -1357,10 +1658,10 @@ class AccuracyWidget(QWidget):
         self.canvas = FigureCanvas(self.figure)
         layout.addWidget(self.canvas)
         self.dop_history = {
-            'HDOP': [],
-            'VDOP': [],
-            'PDOP': [],
-            'GDOP': [],
+            "HDOP": [],
+            "VDOP": [],
+            "PDOP": [],
+            "GDOP": [],
         }
         self.times = []
         self.epochs = 0
@@ -1379,15 +1680,14 @@ class AccuracyWidget(QWidget):
         self.render_enabled = bool(enabled)
         if self.render_enabled:
             self._render_history()
-    
+
     def update_solution(self, solution):
         """Update DOP values and plot."""
         if solution is None:
             return
-        
+
         self.epochs += 1
-        self.times.append(_solution_epoch_time(solution))
-        self.times = self.times[-MAX_HISTORY:]
+        appended = _append_trend_time(self.times, _solution_epoch_time(solution))
         values = {
             "HDOP": getattr(solution, "hdop", np.nan),
             "VDOP": getattr(solution, "vdop", np.nan),
@@ -1395,8 +1695,9 @@ class AccuracyWidget(QWidget):
             "GDOP": getattr(solution, "gdop", np.nan),
         }
         for key, value in values.items():
-            self.dop_history[key].append(float(value) if _finite(value) else np.nan)
-            self.dop_history[key] = self.dop_history[key][-MAX_HISTORY:]
+            _store_trend_value(
+                self.dop_history[key], float(value) if _finite(value) else np.nan, appended
+            )
 
         if self.render_enabled:
             self._render_history()
@@ -1404,8 +1705,8 @@ class AccuracyWidget(QWidget):
     def _render_history(self):
         if not self.dop_history["HDOP"]:
             return
-        x = self.times[-len(self.dop_history["HDOP"]):]
-        for key, ax in zip(self.dop_history, self.axes.flat):
+        x = self.times[-len(self.dop_history["HDOP"]) :]
+        for key, ax in zip(self.dop_history, self.axes.flat, strict=False):
             history = np.asarray(self.dop_history[key], dtype=float)
             self.lines[key].set_data(x, history)
             latest = history[-1]
@@ -1415,7 +1716,7 @@ class AccuracyWidget(QWidget):
             ceiling = max(2.0, float(np.max(finite)) * 1.2) if finite.size else 2.0
             ax.set_ylim(0, ceiling)
         self.canvas.draw_idle()
-    
+
     def clear(self):
         """Clear history and plot."""
         for key in self.dop_history:
@@ -1431,19 +1732,27 @@ class AccuracyWidget(QWidget):
             self.canvas.draw_idle()
 
     def _initialize_plots(self):
-        for key, ax in zip(self.dop_history, self.axes.flat):
+        for key, ax in zip(self.dop_history, self.axes.flat, strict=False):
             _style_axis(ax, self.theme)
             ax.set_title(key, loc="left", color=self.theme["muted"], fontsize=8, fontweight="bold")
             ax.tick_params(labelsize=7)
             ax.set_ylim(0, 2)
             _configure_time_axis(ax, self.theme)
-            self.lines[key], = ax.plot([], [], color=self.colors[key], linewidth=1.4)
+            (self.lines[key],) = ax.plot([], [], color=self.colors[key], linewidth=1.4)
             self.value_labels[key] = ax.text(
-                0.98, 0.93, "--", transform=ax.transAxes,
-                ha="right", va="top", color=self.theme["fg"],
-                fontsize=11, fontweight="bold",
+                0.98,
+                0.93,
+                "--",
+                transform=ax.transAxes,
+                ha="right",
+                va="top",
+                color=self.theme["fg"],
+                fontsize=11,
+                fontweight="bold",
             )
-        self.figure.subplots_adjust(left=0.08, right=0.98, bottom=0.08, top=0.91, hspace=0.40, wspace=0.22)
+        self.figure.subplots_adjust(
+            left=0.08, right=0.98, bottom=0.08, top=0.91, hspace=0.40, wspace=0.22
+        )
 
 
 class AtmosphereWidget(QWidget):
@@ -1484,7 +1793,6 @@ class AtmosphereWidget(QWidget):
         layout.addLayout(summary)
         layout.addWidget(self.canvas, 1)
         self.lines = {}
-        self.value_labels = {}
         self.render_enabled = False
         self._initialize_plots()
 
@@ -1494,29 +1802,25 @@ class AtmosphereWidget(QWidget):
             self._render_history()
 
     def _initialize_plots(self):
-        for index, (name, ax) in enumerate(zip(self.PARAMETERS, self.axes)):
+        for index, (name, ax) in enumerate(zip(self.PARAMETERS, self.axes, strict=False)):
             _style_axis(ax, self.theme)
-            ax.set_title(f"{name} (m)", loc="left", color=self.theme["muted"], fontsize=8, fontweight="bold")
+            ax.set_title(
+                f"{name} (m)", loc="left", color=self.theme["muted"], fontsize=8, fontweight="bold"
+            )
             ax.tick_params(labelsize=7)
             ax.set_ylim(*self.DEFAULT_LIMITS[name])
             _configure_time_axis(ax, self.theme)
             if index < len(self.PARAMETERS) - 1:
                 ax.tick_params(labelbottom=False)
                 ax.set_xlabel("")
-            self.lines[name], = ax.plot([], [], color=self.colors[name], linewidth=1.4)
-            self.value_labels[name] = ax.text(
-                0.98, 0.90, "--", transform=ax.transAxes,
-                ha="right", va="top", color=self.theme["fg"],
-                fontsize=10, fontweight="bold",
-            )
-        self.figure.subplots_adjust(left=0.10, right=0.98, bottom=0.13, top=0.96, hspace=0.38)
+            (self.lines[name],) = ax.plot([], [], color=self.colors[name], linewidth=1.4)
+        self.figure.subplots_adjust(left=0.10, right=0.98, bottom=0.13, top=0.88, hspace=0.48)
 
     def update_solution(self, solution):
         if solution is None:
             return
         self.epochs += 1
-        self.times.append(_solution_epoch_time(solution))
-        self.times = self.times[-MAX_HISTORY:]
+        appended = _append_trend_time(self.times, _solution_epoch_time(solution))
         mode_value = getattr(solution, "mode", None)
         mode = str(getattr(mode_value, "name", mode_value) or "").upper()
         raw_values = {
@@ -1525,14 +1829,12 @@ class AtmosphereWidget(QWidget):
             "ZWD": getattr(solution, "zwd", np.nan),
         }
         has_estimate = mode == "PPP" or any(
-            _finite(value) and abs(float(value)) > 1e-9
-            for value in raw_values.values()
+            _finite(value) and abs(float(value)) > 1e-9 for value in raw_values.values()
         )
         values = raw_values if has_estimate else {name: np.nan for name in self.PARAMETERS}
         for name, value in values.items():
             numeric_value = float(value) if _finite(value) else np.nan
-            self.history[name].append(numeric_value)
-            self.history[name] = self.history[name][-MAX_HISTORY:]
+            _store_trend_value(self.history[name], numeric_value, appended)
             self.summary_labels[name].setText(
                 f"{name}  {numeric_value:.3f} m" if np.isfinite(numeric_value) else f"{name}  --"
             )
@@ -1542,12 +1844,10 @@ class AtmosphereWidget(QWidget):
     def _render_history(self):
         if not self.history["ZTD"]:
             return
-        x = self.times[-len(self.history["ZTD"]):]
-        for name, ax in zip(self.PARAMETERS, self.axes):
+        x = self.times[-len(self.history["ZTD"]) :]
+        for name, ax in zip(self.PARAMETERS, self.axes, strict=False):
             values = np.asarray(self.history[name], dtype=float)
             self.lines[name].set_data(x, values)
-            latest = values[-1]
-            self.value_labels[name].set_text(f"{latest:.3f}" if np.isfinite(latest) else "--")
             _set_time_limits(ax, x)
             finite = values[np.isfinite(values)]
             self._set_parameter_limits(name, ax, finite)
@@ -1572,9 +1872,8 @@ class AtmosphereWidget(QWidget):
         for name in self.PARAMETERS:
             self.history[name].clear()
             self.lines[name].set_data([], [])
-            self.value_labels[name].set_text("--")
             self.summary_labels[name].setText(f"{name}  --")
-        for name, ax in zip(self.PARAMETERS, self.axes):
+        for name, ax in zip(self.PARAMETERS, self.axes, strict=False):
             ax.set_ylim(*self.DEFAULT_LIMITS[name])
         if self.render_enabled:
             self.canvas.draw_idle()
@@ -1584,65 +1883,69 @@ class LegacyResidualWidget(QWidget):
     """
     Display pseudorange residuals statistics.
     """
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         layout = QVBoxLayout(self)
-        
+
         # Create figure for residuals
         self.figure = Figure(figsize=(8, 4), dpi=100)
         self.ax = self.figure.add_subplot(111)
         self.canvas = FigureCanvas(self.figure)
-        
+
         layout.addWidget(self.canvas)
-        
+
         # Storage for history
         self.residuals_mean_hist = []
         self.residuals_std_hist = []
         self.residuals_max_hist = []
         self.epochs = 0
-    
+
     def update_solution(self, solution):
         """Update residuals display."""
         if solution is None:
             return
-        
+
         self.epochs += 1
         self.residuals_mean_hist.append(solution.residuals_mean)
         self.residuals_std_hist.append(solution.residuals_std)
         self.residuals_max_hist.append(solution.residuals_max)
-        
+
         # Keep only last 300 epochs
         max_hist = 300
         if len(self.residuals_mean_hist) > max_hist:
             self.residuals_mean_hist = self.residuals_mean_hist[-max_hist:]
             self.residuals_std_hist = self.residuals_std_hist[-max_hist:]
             self.residuals_max_hist = self.residuals_max_hist[-max_hist:]
-        
+
         # Update plot
         self.ax.clear()
-        
+
         x = range(max(0, self.epochs - max_hist), self.epochs)
-        
+
         if len(self.residuals_mean_hist) > 0:
-            self.ax.plot(x, self.residuals_mean_hist, label='Mean', color='blue')
-            self.ax.fill_between(x, 
-                                np.array(self.residuals_mean_hist) - np.array(self.residuals_std_hist),
-                                np.array(self.residuals_mean_hist) + np.array(self.residuals_std_hist),
-                                alpha=0.3, color='blue', label='±σ')
-            self.ax.plot(x, self.residuals_max_hist, label='Max', color='red', linestyle='--')
-        
-        self.ax.set_xlabel('Epoch')
-        self.ax.set_ylabel('Residual (m)')
-        self.ax.set_title('Pseudorange Residuals Statistics')
-        self.ax.legend(loc='upper right')
+            self.ax.plot(x, self.residuals_mean_hist, label="Mean", color="blue")
+            self.ax.fill_between(
+                x,
+                np.array(self.residuals_mean_hist) - np.array(self.residuals_std_hist),
+                np.array(self.residuals_mean_hist) + np.array(self.residuals_std_hist),
+                alpha=0.3,
+                color="blue",
+                label="±σ",
+            )
+            self.ax.plot(x, self.residuals_max_hist, label="Max", color="red", linestyle="--")
+
+        self.ax.set_xlabel("Epoch")
+        self.ax.set_ylabel("Residual (m)")
+        self.ax.set_title("Pseudorange Residuals Statistics")
+        self.ax.legend(loc="upper right")
         self.ax.grid(True, alpha=0.3)
-        self.ax.axhline(y=0, color='k', linestyle='-', linewidth=0.5)
-        
+        self.ax.axhline(y=0, color="k", linestyle="-", linewidth=0.5)
+
         self.figure.tight_layout()
         self.canvas.draw()
-    
+
     def clear(self):
         """Clear history and plot."""
         self.residuals_mean_hist.clear()
@@ -1737,8 +2040,17 @@ class ResidualWidget(QWidget):
         if solution is None or format_solution_status(getattr(solution, "status", "")) == "No Fix":
             return
         self.epochs += 1
-        self.solutions.append(solution)
-        self.solutions = self.solutions[-MAX_HISTORY:]
+        sample_time = _solution_epoch_time(solution)
+        if (
+            self.solutions
+            and (sample_time - _solution_epoch_time(self.solutions[-1])).total_seconds()
+            < TREND_SAMPLE_INTERVAL_SECONDS
+        ):
+            self.solutions[-1] = solution
+        else:
+            self.solutions.append(solution)
+            if len(self.solutions) > MAX_TREND_POINTS:
+                del self.solutions[: len(self.solutions) - MAX_TREND_POINTS]
         if self.render_enabled:
             self._redraw()
 
@@ -1758,8 +2070,14 @@ class ResidualWidget(QWidget):
         colors = [self.theme["east"], self.theme["north"], self.theme["up"]]
         self.lines = [self.ax.plot([], [], color=color, linewidth=1.5)[0] for color in colors]
         self.placeholder = self.ax.text(
-            0.5, 0.5, "Waiting for positioning solution...", transform=self.ax.transAxes,
-            ha="center", va="center", color=self.theme["muted"], fontsize=10,
+            0.5,
+            0.5,
+            "Waiting for positioning solution...",
+            transform=self.ax.transAxes,
+            ha="center",
+            va="center",
+            color=self.theme["muted"],
+            fontsize=10,
         )
         self.ax.set_ylim(-1.0, 1.0)
         self._update_labels(False)
@@ -1773,9 +2091,15 @@ class ResidualWidget(QWidget):
         if self.display_mode == "XYZ":
             title = "ECEF coordinate error" if uses_reference else "ECEF offset from first solution"
         else:
-            title = "East / North / Up position error" if uses_reference else "ENU offset from first solution"
+            title = (
+                "East / North / Up position error"
+                if uses_reference
+                else "ENU offset from first solution"
+            )
         self.ax.set_title(title, color=self.theme["fg"], fontsize=10, fontweight="bold")
-        self.ax.set_ylabel("Error (m)" if uses_reference else "Offset (m)", color=self.theme["muted"])
+        self.ax.set_ylabel(
+            "Error (m)" if uses_reference else "Offset (m)", color=self.theme["muted"]
+        )
 
     def _redraw(self):
         times, series, uses_reference = self._series_for_mode()
@@ -1799,7 +2123,9 @@ class ResidualWidget(QWidget):
         _set_time_limits(self.ax, times)
         self._update_labels(uses_reference)
 
-        all_values = np.asarray([value for values in series.values() for value in values], dtype=float)
+        all_values = np.asarray(
+            [value for values in series.values() for value in values], dtype=float
+        )
         finite = np.abs(all_values[np.isfinite(all_values)])
         if self.auto_y.isChecked():
             max_abs = max(0.05, float(np.max(finite))) if finite.size else 1.0
@@ -1817,7 +2143,8 @@ class ResidualWidget(QWidget):
     def _series_for_mode(self):
         if self.display_mode == "XYZ":
             valid = [
-                sol for sol in self.solutions
+                sol
+                for sol in self.solutions
                 if _finite(getattr(sol, "ecef_x", np.nan))
                 and _finite(getattr(sol, "ecef_y", np.nan))
                 and _finite(getattr(sol, "ecef_z", np.nan))
@@ -1846,7 +2173,9 @@ class ResidualWidget(QWidget):
                 False,
             )
 
-        referenced = [sol for sol in self.solutions if getattr(sol, "has_reference_position", False)]
+        referenced = [
+            sol for sol in self.solutions if getattr(sol, "has_reference_position", False)
+        ]
         if referenced:
             return (
                 [_solution_epoch_time(sol) for sol in referenced],
@@ -1859,7 +2188,8 @@ class ResidualWidget(QWidget):
             )
 
         valid = [
-            sol for sol in self.solutions
+            sol
+            for sol in self.solutions
             if _finite(getattr(sol, "latitude", np.nan))
             and _finite(getattr(sol, "longitude", np.nan))
             and _finite(getattr(sol, "height", np.nan))
@@ -1871,7 +2201,10 @@ class ResidualWidget(QWidget):
         return (
             [_solution_epoch_time(sol) for sol in valid],
             {
-                "East": [float((sol.longitude - ref.longitude) * 111000.0 * np.cos(ref_lat_rad)) for sol in valid],
+                "East": [
+                    float((sol.longitude - ref.longitude) * 111000.0 * np.cos(ref_lat_rad))
+                    for sol in valid
+                ],
                 "North": [float((sol.latitude - ref.latitude) * 111000.0) for sol in valid],
                 "Up": [float(sol.height - ref.height) for sol in valid],
             },

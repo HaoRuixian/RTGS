@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-import math
 
 import numpy as np
 
 from core.reflectometry.config import EkfConfig, IrConfig, ProductsConfig
-from core.reflectometry.models import ProductResult, ReflectorHeightResult, SeaLevelResult
-from core.reflectometry.models import ObservationRecord, SnrUnit
+from core.reflectometry.models import (
+    ObservationRecord,
+    ProductResult,
+    ReflectorHeightResult,
+    SeaLevelResult,
+    SnrUnit,
+)
 from core.reflectometry.services.preprocessing import _resolve_wavelength
+
+_RH_GRID_CHUNK_SIZE = 256
 
 
 @dataclass(slots=True)
@@ -122,8 +129,12 @@ class EkfReflectometryProcessor:
                 "window_end": output.window_end.isoformat() if output.window_end else None,
                 "windowing": "centered",
                 "rh_initialization": "lsp_grid",
-                "rh_initial_arc_count": self.rh_initialization.arc_count if self.rh_initialization else 0,
-                "rh_initial_m": self.rh_initialization.reflector_height_m if self.rh_initialization else None,
+                "rh_initial_arc_count": (
+                    self.rh_initialization.arc_count if self.rh_initialization else 0
+                ),
+                "rh_initial_m": (
+                    self.rh_initialization.reflector_height_m if self.rh_initialization else None
+                ),
             }
             products.append(
                 ReflectorHeightResult(
@@ -134,8 +145,13 @@ class EkfReflectometryProcessor:
                     metadata=dict(metadata),
                 )
             )
-            if self.products_config.enable_sea_level and self.products_config.sea_level_reference is not None:
-                sea_level_m = float(self.products_config.sea_level_reference) - output.reflector_height_m
+            if (
+                self.products_config.enable_sea_level
+                and self.products_config.sea_level_reference is not None
+            ):
+                sea_level_m = (
+                    float(self.products_config.sea_level_reference) - output.reflector_height_m
+                )
                 products.append(
                     SeaLevelResult(
                         timestamp=output.timestamp,
@@ -156,7 +172,9 @@ class EkfReflectometryProcessor:
     def _fallback_reflector_height(self) -> float:
         if self.config.initial_rh_m is not None and math.isfinite(float(self.config.initial_rh_m)):
             return float(self.config.initial_rh_m)
-        return 0.5 * (float(self.ir_config.min_reflector_height) + float(self.ir_config.max_reflector_height))
+        return 0.5 * (
+            float(self.ir_config.min_reflector_height) + float(self.ir_config.max_reflector_height)
+        )
 
     def _ingest_epoch(self, timestamp: datetime, observations: list[ObservationRecord]) -> None:
         valid_epoch: list[tuple[_ArcState, float, float]] = []
@@ -211,10 +229,18 @@ class EkfReflectometryProcessor:
         time_gap = (observation.timestamp - arc_state.last_timestamp).total_seconds()
         if time_gap > self._arc_gap_threshold_seconds():
             return True
-        if time_gap > 0 and arc_state.last_elevation_deg is not None and observation.elevation_deg is not None:
+        if (
+            time_gap > 0
+            and arc_state.last_elevation_deg is not None
+            and observation.elevation_deg is not None
+        ):
             delta = float(observation.elevation_deg) - float(arc_state.last_elevation_deg)
             step_sign = 1 if delta > 1e-6 else -1 if delta < -1e-6 else 0
-            if arc_state.direction_sign is not None and step_sign != 0 and step_sign != arc_state.direction_sign:
+            if (
+                arc_state.direction_sign is not None
+                and step_sign != 0
+                and step_sign != arc_state.direction_sign
+            ):
                 return True
         return False
 
@@ -241,7 +267,12 @@ class EkfReflectometryProcessor:
         detrended = float(residual[-1])
         arc_state.detrended_samples = [
             (sample_time, float(sample_residual), float(sample_sin))
-            for sample_time, sample_residual, sample_sin in zip(window_timestamps, residual, sin_values)
+            for sample_time, sample_residual, sample_sin in zip(
+                window_timestamps,
+                residual,
+                sin_values,
+                strict=True,
+            )
         ]
 
         if arc_state.last_elevation_deg is not None:
@@ -351,7 +382,11 @@ class EkfReflectometryProcessor:
             old_x = self._state_vector()
             n_old = len(self.state_arcs)
             n_new = n_old - 1
-            rows = [0] + [1 + index for index in keep_local] + [1 + n_old + index for index in keep_local]
+            rows = (
+                [0]
+                + [1 + index for index in keep_local]
+                + [1 + n_old + index for index in keep_local]
+            )
             new_x = old_x[rows]
             self.P = self.P[np.ix_(rows, rows)]
             self.state_arcs.pop(remove_index)
@@ -363,7 +398,9 @@ class EkfReflectometryProcessor:
         for index, arc_state in enumerate(self.state_arcs):
             arc_state.local_index = index
 
-    def _ekf_step(self, timestamp: datetime, valid_epoch: list[tuple[_ArcState, float, float]]) -> None:
+    def _ekf_step(
+        self, timestamp: datetime, valid_epoch: list[tuple[_ArcState, float, float]]
+    ) -> None:
         x_pred = self._state_vector()
         n_local = len(self.state_arcs)
         P_pred = self.P.copy()
@@ -388,7 +425,9 @@ class EkfReflectometryProcessor:
 
         m = len(measurements)
         H = np.zeros((m, 1 + 2 * m), dtype=float)
-        local_indices = [int(arc_state.local_index) for _z, _sin_elevation, arc_state in measurements]
+        local_indices = [
+            int(arc_state.local_index) for _z, _sin_elevation, arc_state in measurements
+        ]
         active_rows = [0]
         active_rows.extend(1 + local_index for local_index in local_indices)
         active_rows.extend(1 + n_local + local_index for local_index in local_indices)
@@ -478,8 +517,12 @@ class EkfReflectometryProcessor:
         rh = float(np.mean([point.reflector_height_m for point in window_points]))
         covariance = float(np.mean([point.covariance_m2 for point in window_points]))
         active_arc_count = int(max(point.active_arc_count for point in window_points))
-        active_frequency_arc_count = int(max(point.active_frequency_arc_count for point in window_points))
-        innovation_values = [point.innovation_rms for point in window_points if point.innovation_rms is not None]
+        active_frequency_arc_count = int(
+            max(point.active_frequency_arc_count for point in window_points)
+        )
+        innovation_values = [
+            point.innovation_rms for point in window_points if point.innovation_rms is not None
+        ]
         innovation_rms = float(np.mean(innovation_values)) if innovation_values else None
         return EkfOutput(
             timestamp=output_time,
@@ -494,7 +537,9 @@ class EkfReflectometryProcessor:
         )
 
 
-def _group_by_timestamp(observations: list[ObservationRecord]) -> list[tuple[datetime, list[ObservationRecord]]]:
+def _group_by_timestamp(
+    observations: list[ObservationRecord],
+) -> list[tuple[datetime, list[ObservationRecord]]]:
     groups: dict[datetime, list[ObservationRecord]] = {}
     for observation in sorted(observations, key=lambda item: item.timestamp):
         groups.setdefault(observation.timestamp, []).append(observation)
@@ -505,7 +550,7 @@ def _align_timestamp(timestamp: datetime, interval_seconds: int) -> datetime:
     if timestamp.tzinfo is None:
         epoch_seconds = int(timestamp.replace(tzinfo=timezone.utc).timestamp())
         aligned_epoch = epoch_seconds - epoch_seconds % interval_seconds
-        return datetime.utcfromtimestamp(aligned_epoch)
+        return datetime.fromtimestamp(aligned_epoch, timezone.utc).replace(tzinfo=None)
     epoch_seconds = int(timestamp.timestamp())
     aligned_epoch = epoch_seconds - epoch_seconds % interval_seconds
     return datetime.fromtimestamp(aligned_epoch, tz=timestamp.tzinfo)
@@ -607,17 +652,58 @@ def _estimate_arc_rh_grid(
 ) -> float | None:
     best_rss = float("inf")
     best_rh = None
-    y = residual.reshape(-1, 1)
-    for rh_value in rh_grid:
-        theta = (4.0 * math.pi * float(rh_value) / float(wavelength_m)) * sin_elevation
-        design = np.column_stack((np.sin(theta), np.cos(theta)))
-        coef, *_ = np.linalg.lstsq(design, y, rcond=None)
-        fitted = design @ coef
-        rss = float(np.sum(np.square(y - fitted)))
-        if rss < best_rss:
-            best_rss = rss
-            best_rh = float(rh_value)
+    y = np.asarray(residual, dtype=float).reshape(-1)
+    sin_values = np.asarray(sin_elevation, dtype=float).reshape(-1)
+    angular_scale = 4.0 * math.pi / float(wavelength_m)
+
+    for start in range(0, len(rh_grid), _RH_GRID_CHUNK_SIZE):
+        heights = np.asarray(rh_grid[start : start + _RH_GRID_CHUNK_SIZE], dtype=float)
+        rss_values = _grid_chunk_residual_sums(y, sin_values, angular_scale, heights)
+        best_index = int(np.argmin(rss_values))
+        chunk_best_rss = float(rss_values[best_index])
+        if chunk_best_rss < best_rss:
+            best_rss = chunk_best_rss
+            best_rh = float(heights[best_index])
     return best_rh
+
+
+def _grid_chunk_residual_sums(
+    residual: np.ndarray,
+    sin_elevation: np.ndarray,
+    angular_scale: float,
+    heights: np.ndarray,
+) -> np.ndarray:
+    theta = heights[:, None] * angular_scale * sin_elevation[None, :]
+    sin_theta = np.sin(theta)
+    cos_theta = np.cos(theta)
+
+    sin_squared = np.sum(sin_theta * sin_theta, axis=1)
+    sin_cos = np.sum(sin_theta * cos_theta, axis=1)
+    cos_squared = np.sum(cos_theta * cos_theta, axis=1)
+    sin_residual = sin_theta @ residual
+    cos_residual = cos_theta @ residual
+    determinant = sin_squared * cos_squared - sin_cos * sin_cos
+    stable = np.abs(determinant) > np.finfo(float).eps * np.maximum(
+        sin_squared * cos_squared,
+        1.0,
+    )
+
+    sin_coefficients = np.empty_like(determinant)
+    cos_coefficients = np.empty_like(determinant)
+    sin_coefficients[stable] = (
+        sin_residual[stable] * cos_squared[stable] - cos_residual[stable] * sin_cos[stable]
+    ) / determinant[stable]
+    cos_coefficients[stable] = (
+        cos_residual[stable] * sin_squared[stable] - sin_residual[stable] * sin_cos[stable]
+    ) / determinant[stable]
+
+    for index in np.flatnonzero(~stable):
+        design = np.column_stack((sin_theta[index], cos_theta[index]))
+        coefficient, *_ = np.linalg.lstsq(design, residual.reshape(-1, 1), rcond=None)
+        sin_coefficients[index], cos_coefficients[index] = coefficient[:, 0]
+
+    fitted = sin_coefficients[:, None] * sin_theta + cos_coefficients[:, None] * cos_theta
+    return np.sum(np.square(residual[None, :] - fitted), axis=1)
 
 
 def _arc_detrended_prefix(
@@ -633,7 +719,12 @@ def _arc_detrended_prefix(
     timestamps, residual, sin_values = detrended_window
     return [
         (sample_time, float(sample_residual), float(sample_sin))
-        for sample_time, sample_residual, sample_sin in zip(timestamps, residual, sin_values)
+        for sample_time, sample_residual, sample_sin in zip(
+            timestamps,
+            residual,
+            sin_values,
+            strict=True,
+        )
     ]
 
 

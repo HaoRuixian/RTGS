@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from datetime import datetime
-import math
 from statistics import mean
 
 from core.reflectometry.config import IrConfig, ProcessingConfig, minimum_required_arc_samples
-from core.reflectometry.models import ArcDirection
-from core.reflectometry.models import ArcStatistics, ObservationRecord, SatelliteArc
+from core.reflectometry.models import ArcDirection, ArcStatistics, ObservationRecord, SatelliteArc
 
 
 class ArcBuilder:
@@ -31,7 +30,11 @@ class ArcBuilder:
         for record in observations:
             if record.elevation_deg is None:
                 continue
-            if not (self.processing_config.min_elevation_deg <= record.elevation_deg <= self.processing_config.max_elevation_deg):
+            if not (
+                self.processing_config.min_elevation_deg
+                <= record.elevation_deg
+                <= self.processing_config.max_elevation_deg
+            ):
                 continue
             grouped[record.satellite_system_key].append(record)
 
@@ -84,7 +87,12 @@ class ArcBuilder:
             step_sign = 1 if diff > 1e-6 else -1 if diff < -1e-6 else 0
 
             split_required = time_gap > self.processing_config.max_time_gap_seconds
-            if not split_required and direction_sign is not None and step_sign != 0 and step_sign != direction_sign:
+            if (
+                not split_required
+                and direction_sign is not None
+                and step_sign != 0
+                and step_sign != direction_sign
+            ):
                 split_required = True
 
             if split_required:
@@ -107,7 +115,9 @@ class ArcBuilder:
         elevations = [item.elevation_deg or 0.0 for item in observations]
         azimuths = [item.azimuth_deg for item in observations if item.azimuth_deg is not None]
         snr_values = [item.snr for item in observations]
-        expected_samples = int(round(duration_seconds / max(self.sampling_interval_seconds, 1e-6))) + 1
+        expected_samples = (
+            int(round(duration_seconds / max(self.sampling_interval_seconds, 1e-6))) + 1
+        )
         gap_ratio = max(0.0, 1.0 - (len(observations) / max(expected_samples, 1)))
         return ArcStatistics(
             sample_count=len(observations),
@@ -134,9 +144,13 @@ class ArcBuilder:
         azimuths = [item.azimuth_deg for item in observations if item.azimuth_deg is not None]
         mean_azimuth = _circular_mean_deg(azimuths) if azimuths else None
         elevation_rate_deg_per_min = None
-        midpoint_time = observations[0].timestamp + (observations[-1].timestamp - observations[0].timestamp) / 2
+        midpoint_time = (
+            observations[0].timestamp + (observations[-1].timestamp - observations[0].timestamp) / 2
+        )
         midpoint_elevation_deg = _interpolate_elevation(elevation_samples, midpoint_time)
-        elevation_rate_rad_per_s = _estimate_elevation_rate_rad_per_s(elevation_samples, midpoint_time)
+        elevation_rate_rad_per_s = _estimate_elevation_rate_rad_per_s(
+            elevation_samples, midpoint_time
+        )
         if elevation_rate_rad_per_s is not None:
             elevation_rate_deg_per_min = math.degrees(elevation_rate_rad_per_s) * 60.0
         roc = _roc_like(midpoint_elevation_deg, elevation_rate_rad_per_s)
@@ -161,7 +175,11 @@ class ArcBuilder:
 
 def _estimate_direction(observations: list[ObservationRecord]) -> ArcDirection:
     diffs = []
-    for current, previous in zip(observations[1:], observations[:-1]):
+    for current, previous in zip(
+        observations[1:],
+        observations[:-1],
+        strict=True,
+    ):
         if current.elevation_deg is None or previous.elevation_deg is None:
             continue
         delta = current.elevation_deg - previous.elevation_deg
@@ -195,7 +213,11 @@ def _interpolate_elevation(
     if target_time >= ordered[-1][0]:
         return ordered[-1][1]
 
-    for (left_time, left_elevation), (right_time, right_elevation) in zip(ordered[:-1], ordered[1:]):
+    for (left_time, left_elevation), (right_time, right_elevation) in zip(
+        ordered[:-1],
+        ordered[1:],
+        strict=True,
+    ):
         if not (left_time <= target_time <= right_time):
             continue
         span_seconds = (right_time - left_time).total_seconds()
@@ -215,7 +237,11 @@ def _estimate_elevation_rate_rad_per_s(
         return None
     ordered = sorted(elevation_samples, key=lambda item: item[0])
     right_index = next(
-        (index for index, (timestamp, _elevation) in enumerate(ordered) if timestamp >= reference_time),
+        (
+            index
+            for index, (timestamp, _elevation) in enumerate(ordered)
+            if timestamp >= reference_time
+        ),
         len(ordered) - 1,
     )
     left_index = max(right_index - 1, 0)

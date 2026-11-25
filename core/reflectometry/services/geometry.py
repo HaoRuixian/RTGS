@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
-from typing import Callable
 
 from core.reflectometry.config import GeometryConfig, ProcessingConfig, ReflectionZoneConfig
 from core.reflectometry.models import ObservationRecord
-
 
 GeometryCallback = Callable[[ObservationRecord], tuple[float, float]]
 
@@ -30,7 +29,9 @@ class GeometryResolver:
         resolved: list[ObservationRecord] = []
         for record in observations:
             candidate = record
-            if (candidate.azimuth_deg is None or candidate.elevation_deg is None) and self.config.compute_az_el_if_missing:
+            if (
+                candidate.azimuth_deg is None or candidate.elevation_deg is None
+            ) and self.config.compute_az_el_if_missing:
                 if self.geometry_callback is None:
                     continue
                 azimuth_deg, elevation_deg = self.geometry_callback(candidate)
@@ -101,5 +102,3 @@ def _angle_in_windows(angle_deg: float, windows: list[list[float]]) -> bool:
         if start > end and (normalized >= start or normalized <= end):
             return True
     return False
-
-

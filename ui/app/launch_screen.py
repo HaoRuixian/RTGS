@@ -2,52 +2,52 @@
 
 import sys
 
-from PySide6.QtWidgets import (
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QHBoxLayout,
-    QPushButton,
-    QLabel,
-    QFrame,
-    QSizePolicy,
-    QGraphicsDropShadowEffect,
-)
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFont, QColor, QPixmap, QPainter, QIcon
-from PySide6.QtSvgWidgets import QSvgWidget
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtSvgWidgets import QSvgWidget
+from PySide6.QtWidgets import (
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
+
 from ui.responsive import adaptive_window_size, window_ui_scale
 
-
 ICONS = {
-    "monitoring": '''<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    "monitoring": """<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
-    </svg>''',
-    "positioning": '''<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    </svg>""",
+    "positioning": """<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
         <circle cx="12" cy="10" r="2"/>
-    </svg>''',
-    "reflectometry": '''<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    </svg>""",
+    "reflectometry": """<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M2 19h20" opacity="0.3"/>
         <path d="M3 5l9 11 9-11"/>
         <path d="M12 16v5" stroke-dasharray="2 2"/>
-    </svg>''',
-    "refractometry": '''<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    </svg>""",
+    "refractometry": """<svg viewBox="0 0 24 24" fill="none" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M2 8h20" opacity="0.2"/>
         <path d="M2 16h20" opacity="0.2"/>
         <path d="M5 3l4 5 2 8 5 5"/>
-    </svg>''',
+    </svg>""",
 }
 
-WINDOW_ICON_SVG = '''
+WINDOW_ICON_SVG = """
 <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
     <circle cx="12" cy="12" r="3" fill="#00A0FF"/>
     <path d="M12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22" stroke="#00A0FF" stroke-width="2" stroke-linecap="round" opacity="0.3"/>
     <path d="M12 5C15.866 5 19 8.13401 19 12C19 15.866 15.866 19 12 19" stroke="#00A0FF" stroke-width="2" stroke-linecap="round" opacity="0.6"/>
     <path d="M12 8C14.2091 8 16 9.79086 16 12C16 14.2091 14.2091 16 12 16" stroke="#00A0FF" stroke-width="2" stroke-linecap="round"/>
 </svg>
-'''
+"""
 
 
 class ModuleCard(QPushButton):
@@ -136,16 +136,14 @@ class ModuleCard(QPushButton):
     def _set_style(self, hovered):
         border_color = f"{self._accent_color}" if hovered else "#E6EBF0"
         bg_color = "#F8FBFF" if hovered else "#FFFFFF"
-        self.setStyleSheet(
-            f"""
+        self.setStyleSheet(f"""
             QPushButton {{
                 background-color: {bg_color};
                 border: 1px solid {border_color};
                 border-radius: 14px;
                 text-align: left;
             }}
-            """
-        )
+            """)
 
     def enterEvent(self, event):
         self._set_style(True)
@@ -154,6 +152,7 @@ class ModuleCard(QPushButton):
     def leaveEvent(self, event):
         self._set_style(False)
         super().leaveEvent(event)
+
 
 class LaunchScreen(QMainWindow):
     module_selected = Signal(str)
@@ -203,8 +202,7 @@ class LaunchScreen(QMainWindow):
         # =========================
         self.left_panel = QFrame()
         self.left_panel.setFixedWidth(320)
-        self.left_panel.setStyleSheet(
-            """
+        self.left_panel.setStyleSheet("""
             QFrame {
                 background-color: #16181B;
                 border-right: 1px solid #262A2F;
@@ -213,8 +211,7 @@ class LaunchScreen(QMainWindow):
                 background: transparent;
                 color: #E5E7EB;
             }
-            """
-        )
+            """)
 
         self.left_layout = QVBoxLayout(self.left_panel)
         self.left_layout.setContentsMargins(32, 34, 32, 28)
@@ -279,9 +276,7 @@ class LaunchScreen(QMainWindow):
         self.right_layout.setSpacing(0)
 
         self.header_text = QLabel("Workbench")
-        self.header_text.setStyleSheet(
-            "font-size: 22px; font-weight: 700; color: #111827;"
-        )
+        self.header_text.setStyleSheet("font-size: 22px; font-weight: 700; color: #111827;")
         self.right_layout.addWidget(self.header_text)
 
         self.right_layout.addSpacing(6)
@@ -289,23 +284,37 @@ class LaunchScreen(QMainWindow):
         self.header_subtext = QLabel(
             "Choose a processing module to enter the corresponding GNSS workspace."
         )
-        self.header_subtext.setStyleSheet(
-            "font-size: 12px; color: #6B7280; margin-bottom: 16px;"
-        )
+        self.header_subtext.setStyleSheet("font-size: 12px; color: #6B7280; margin-bottom: 16px;")
         self.right_layout.addWidget(self.header_subtext)
 
         self.cards_container = QVBoxLayout()
         self.cards_container.setSpacing(10)
 
         modules = [
-            ("monitoring", "Signal Quality Monitoring",
-            "Real-time observation of SNR/CNR, constellation health.", "#0064D2"),
-            ("positioning", "Precise Positioning",
-            "High-precision RTK/PPP solutions with multi-frequency fusion.", "#0064D2"),
-            ("reflectometry", "GNSS-Reflectometry",
-            "Surface-reflected signal analysis for sea level, snow depth and environmental sensing.", "#0064D2"),
-            ("refractometry", "GNSS-Refractometry",
-            "Tropospheric and ionospheric delay modeling with ZTD estimation.", "#0064D2"),
+            (
+                "monitoring",
+                "Signal Quality Monitoring",
+                "Real-time observation of SNR/CNR, constellation health.",
+                "#0064D2",
+            ),
+            (
+                "positioning",
+                "Precise Positioning",
+                "High-precision RTK/PPP solutions with multi-frequency fusion.",
+                "#0064D2",
+            ),
+            (
+                "reflectometry",
+                "GNSS-Reflectometry",
+                "Surface-reflected signal analysis for sea level, snow depth and environmental sensing.",
+                "#0064D2",
+            ),
+            (
+                "refractometry",
+                "GNSS-Refractometry",
+                "Tropospheric and ionospheric delay modeling with ZTD estimation.",
+                "#0064D2",
+            ),
         ]
 
         for mod_id, title, desc, color in modules:
